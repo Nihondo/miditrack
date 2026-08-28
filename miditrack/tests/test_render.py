@@ -43,6 +43,40 @@ class TestListSoundfonts(unittest.TestCase):
         missing = self.root / "does-not-exist"
         self.assertEqual(render.list_soundfonts([missing]), [])
 
+    def test_symlinks_to_the_same_real_file_are_deduplicated(self) -> None:
+        # ファイル名ソートで real.sf2 が最後になるよう、先頭寄りの名前をリンクに使う。
+        dir_a = self.root / "a"
+        dir_a.mkdir()
+        real = dir_a / "zzz_real.sf2"
+        real.write_bytes(b"0000")
+        (dir_a / "aaa_alias1.sf2").symlink_to(real)
+        (dir_a / "bbb_alias2.sf2").symlink_to(real)
+
+        results = render.list_soundfonts([dir_a])
+        names = [item["name"] for item in results]
+        self.assertEqual(names, ["aaa_alias1.sf2"])
+
+    def test_symlink_listed_first_wins_when_real_file_sorts_later(self) -> None:
+        dir_a = self.root / "a"
+        dir_a.mkdir()
+        real = dir_a / "zzz_real.sf2"
+        real.write_bytes(b"0000")
+        (dir_a / "aaa_alias.sf2").symlink_to(real)
+
+        results = render.list_soundfonts([dir_a])
+        names = [item["name"] for item in results]
+        self.assertEqual(names, ["aaa_alias.sf2"])
+
+    def test_different_real_files_with_same_extension_are_both_kept(self) -> None:
+        dir_a = self.root / "a"
+        dir_a.mkdir()
+        (dir_a / "one.sf2").write_bytes(b"0")
+        (dir_a / "two.sf2").write_bytes(b"00")
+
+        results = render.list_soundfonts([dir_a])
+        names = [item["name"] for item in results]
+        self.assertEqual(names, ["one.sf2", "two.sf2"])
+
     def test_default_dirs_match_midi2wav_sh(self) -> None:
         # midi2wav.sh の DEFAULT_SOUNDFONT_DIRS と1対1で対応させる。
         dirs = render.default_soundfont_dirs()

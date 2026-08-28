@@ -41,9 +41,14 @@ def list_soundfonts(dirs: list[Path] | None = None) -> list[dict]:
 
     midi2wav.sh の -S（対話選択）と同じ「ディレクトリ順、ディレクトリ内はファイル名順」
     で列挙する。存在しないディレクトリ（未マウントの外付けSSD等）は黙ってスキップする。
+
+    シンボリックリンクはたどるが、実体（resolve()した絶対パス）が同じものは
+    最初に見つかった1件のみを残し重複を除く。midi2wav.sh の
+    collect_available_soundfonts() と同じ挙動。
     """
     search_dirs = dirs if dirs is not None else default_soundfont_dirs()
     results: list[dict] = []
+    seen_real_paths: set[Path] = set()
     for directory in search_dirs:
         if not directory.is_dir():
             continue
@@ -53,6 +58,10 @@ def list_soundfonts(dirs: list[Path] | None = None) -> list[dict]:
             if p.is_file() and p.suffix.lower() in _SOUNDFONT_EXTENSIONS
         ]
         for path in matches:
+            real_path = path.resolve()
+            if real_path in seen_real_paths:
+                continue
+            seen_real_paths.add(real_path)
             results.append(
                 {
                     "path": str(path),

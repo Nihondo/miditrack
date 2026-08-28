@@ -16,7 +16,8 @@ OUTPUT=""
 SOUNDFONT_DIRS=()
 CUSTOM_SOUNDFONT_DIRS=()
 
-resolve_script_path() {
+# シンボリックリンクを再帰的にたどり、実体の絶対パスを返す（realpath 代替）。
+resolve_real_path() {
     local source_path="$1"
     local source_dir
     local link_target
@@ -35,7 +36,7 @@ resolve_script_path() {
     printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
 }
 
-SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]}")"
+SCRIPT_PATH="$(resolve_real_path "${BASH_SOURCE[0]}")"
 PROJECT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" >/dev/null 2>&1 && pwd)"
 
 # === デフォルトの SoundFont 探索先（先に見つかったものを優先） ===
@@ -123,10 +124,27 @@ list_soundfonts_in_dir() {
 }
 
 # 探索ディレクトリ群から見つかる SoundFont を全て列挙する（ディレクトリ順、ディレクトリ内はファイル名順）。
+# シンボリックリンクはたどるが、実体（realpath）が同じものは最初に見つかった1件のみを残し重複を除く。
 collect_available_soundfonts() {
-    local dir
+    local dir path real_path seen is_duplicate
+    local -a seen_real_paths=()
+
     for dir in "${SOUNDFONT_DIRS[@]}"; do
-        list_soundfonts_in_dir "$dir"
+        while IFS= read -r path; do
+            real_path="$(resolve_real_path "$path")"
+
+            is_duplicate=false
+            for seen in "${seen_real_paths[@]}"; do
+                if [[ "$seen" == "$real_path" ]]; then
+                    is_duplicate=true
+                    break
+                fi
+            done
+            [[ "$is_duplicate" == true ]] && continue
+
+            seen_real_paths+=("$real_path")
+            printf '%s\n' "$path"
+        done < <(list_soundfonts_in_dir "$dir")
     done
 }
 
