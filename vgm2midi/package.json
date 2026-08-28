@@ -1,0 +1,33 @@
+{
+  "name": "vgm2midi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Convert VGM/VGZ files to MIDI, including YM2203 OPN, YM2608 OPNA, YM3526/YM3812/Y8950 OPL, and HuC6280 PSG support.",
+  "main": "dist/index.js",
+  "bin": {
+    "vgm2midi": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && node dist/cli.js",
+    "dev": "tsx src/cli.ts",
+    "test": "npm run build && node --test tests/*.test.js",
+    "verify:native-stems": "npm run build && bash scripts/build-native.sh && node scripts/verify-native-stems.js",
+    "audit:corpus": "npm run build && node scripts/corpus-audit.js"
+  },
+  "keywords": ["vgm", "vgz", "midi", "converter", "cli", "video-game-music", "chiptune", "ym2203", "ym2608", "ym3812", "ym3526", "y8950", "opn", "opna", "opl", "huc6280", "pc-engine", "turbografx-16"],
+  "author": "JK (jkarenko)",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "commander": "^14.0.2",
+    "midi-writer-js": "^3.1.1",
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/pako": "^2.0.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

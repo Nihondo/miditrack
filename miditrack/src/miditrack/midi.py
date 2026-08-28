@@ -1,0 +1,464 @@
+"""MIDIトラックの解析と、トラックごとのプログラムチェンジ適用・保存。
+
+読み込み・書き込みのパターンは note_ext/src/note_ext/midi.py の
+import_mido() / load_note_events() / save_midi_atomic() を踏襲している
+（ただし他パッケージからのimportはしない — このリポジトリの独立パッケージ間の
+既存方針。nsf2midi/spc2midi がそれぞれ独立に midi2wav.cpp を持つのと同じ扱い）。
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .errors import MidiTrackError, WebValidationError
+from .gm import PERCUSSION_CHANNEL
+
+MIN_TRACK_VOLUME_PERCENT = 0
+MAX_TRACK_VOLUME_PERCENT = 200
+DEFAULT_TRACK_VOLUME_PERCENT = 100
+
+# セッション全体の速度倍率・移調（半音）。トラック別の音色・音量とは異なり、
+# ファイル全体に対して1組だけ持つ（miditrack/CLAUDE.md「Why speed/pitch also
+# exists at the MIDI layer」参照）。
+DEFAULT_SPEED_RATIO = 1.0
+MIN_SPEED_RATIO = 0.1
+MAX_SPEED_RATIO = 10.0
+DEFAULT_TRANSPOSE_SEMITONES = 0
+MIN_TRANSPOSE_SEMITONES = -24
+MAX_TRANSPOSE_SEMITONES = 24
+
+# SMFの既定テンポ（tempoメタが1つも無いファイルでの4分音符=120BPM相当）。
+DEFAULT_TEMPO_MICROSECONDS = 500_000
+# set_tempoメタはマイクロ秒/4分音符を3バイトで表現するため、この値を超えられない。
+MAX_TEMPO_MICROSECONDS = 0xFFFFFF
+MIN_TEMPO_MICROSECONDS = 1
+
+
+def import_mido() -> Any:
+    """MIDI処理時だけmidoを読み込み、不足時は導入方法を示す。"""
+    try:
+        import mido
+    except ImportError as error:
+        raise MidiTrackError(
+            "MIDI処理にはmidoが必要です。miditrack/README_ja.mdの「インストール」に"
+            "従ってvenvを作成してください"
+        ) from error
+    return mido
+
+
+@dataclass(frozen=True)
+class TrackInfo:
+    """1トラック分の解析結果。"""
+
+    index: int
+    name: str
+    channels: tuple[int, ...]
+    note_count: int
+    current_program: int | None
+    program_change_count: int
+    editable: bool
+    reason: str | None  # None | "percussion" | "multi-channel" | "no-notes"
+
+
+def _track_name(track: Any) -> str | None:
+    for message in track:
+        if message.is_meta and message.type == "track_name":
+            name = message.name.strip()
+            if name:
+                return name
+            return None
+    return None
+
+
+def analyze_track(track: Any, index: int) -> TrackInfo:
+    """1トラックを走査し、チャンネル・ノート数・既存プログラムチェンジを検出する。"""
+    channels: set[int] = set()
+    note_count = 0
+    program_changes: list[int] = []  # 出現順のプログラム番号（チャンネル別に後でフィルタ）
+    program_change_channels: list[int] = []
+
+    for message in track:
+        if message.type in ("note_on", "note_off"):
+            channels.add(message.channel)
+            if message.type == "note_on" and message.velocity > 0:
+                note_count += 1
+        elif message.type == "program_change":
+            program_changes.append(message.program)
+            program_change_channels.append(message.channel)
+
+    sorted_channels = tuple(sorted(channels))
+    name = _track_name(track) or f"Track {index}"
+
+    current_program: int | None = None
+    program_change_count = 0
+    reason: str | None
+    editable: bool
+
+    if len(sorted_channels) == 0:
+        editable = False
+        reason = "no-notes"
+    elif len(sorted_channels) == 1:
+        channel = sorted_channels[0]
+        if channel == PERCUSSION_CHANNEL:
+            editable = False
+            reason = "percussion"
+        else:
+            editable = True
+            reason = None
+        # このトラックの単一チャンネルに対する既存プログラムチェンジを検出する。
+        # vgm2midi は全トラックにGM81を送信済み、nsf2midiのgm.mdfプリセットも
+        # チャンネルごとに音色を送信済みなので、「生成直後は空」という前提を
+        # 置かずに検出する（miditrack/CLAUDE.md参照）。
+        matching = [
+            program
+            for program, ch in zip(program_changes, program_change_channels)
+            if ch == channel
+        ]
+        program_change_count = len(matching)
+        if matching:
+            current_program = matching[0]
+    else:
+        editable = False
+        reason = "multi-channel"
+
+    return TrackInfo(
+        index=index,
+        name=name,
+        channels=sorted_channels,
+        note_count=note_count,
+        current_program=current_program,
+        program_change_count=program_change_count,
+        editable=editable,
+        reason=reason,
+    )
+
+
+def analyze_midi_file(path: Path) -> tuple[Any, list[TrackInfo]]:
+    """MIDIファイルを読み、(mido.MidiFile, トラック解析結果の一覧) を返す。"""
+    mido = import_mido()
+    try:
+        midi_file = mido.MidiFile(path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(f"MIDIを読み込めません: {path}: {error}") from error
+
+    if len(midi_file.tracks) == 0:
+        raise MidiTrackError("トラックが1つもありません")
+
+    tracks = [analyze_track(track, index) for index, track in enumerate(midi_file.tracks)]
+
+    if not any(track.note_count > 0 for track in tracks):
+        raise MidiTrackError("演奏データのあるトラックがありません")
+
+    return midi_file, tracks
+
+
+def validate_assignments(
+    tracks: list[TrackInfo], raw_assignments: dict[int, int | None]
+) -> dict[int, int]:
+    """PATCH /api/session/tracks の入力を検証し、有効な割り当てだけを返す。
+
+    値がNone（＝「変更しない」）のキーは結果から除外する。
+    """
+    tracks_by_index = {track.index: track for track in tracks}
+    validated: dict[int, int] = {}
+    for track_index, program in raw_assignments.items():
+        if program is None:
+            continue
+        track = tracks_by_index.get(track_index)
+        if track is None:
+            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+        if not track.editable:
+            reason_ja = {
+                "percussion": "パーカッションチャンネル（ch10）のため変更できません",
+                "multi-channel": "複数チャンネルを含むため変更できません",
+                "no-notes": "ノートがないため変更できません",
+            }.get(track.reason or "", "変更できないトラックです")
+            raise WebValidationError(f"トラック{track_index}: {reason_ja}")
+        if not isinstance(program, int) or isinstance(program, bool) or not 0 <= program <= 127:
+            raise WebValidationError(f"GMプログラム番号は0-127の範囲で指定してください: {program}")
+        validated[track_index] = program
+    return validated
+
+
+def validate_volumes(
+    tracks: list[TrackInfo], raw_volumes: dict[int, int | None]
+) -> dict[int, int]:
+    """トラック別音量（0-200%）を検証し、既定値100%以外だけを返す。"""
+    tracks_by_index = {track.index: track for track in tracks}
+    validated: dict[int, int] = {}
+    for track_index, volume in raw_volumes.items():
+        if volume is None:
+            continue
+        track = tracks_by_index.get(track_index)
+        if track is None:
+            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+        if track.note_count == 0:
+            raise WebValidationError(f"トラック{track_index}: ノートがないため音量を変更できません")
+        if not isinstance(volume, int) or isinstance(volume, bool):
+            raise WebValidationError(f"トラック音量は整数で指定してください: {volume}")
+        if not MIN_TRACK_VOLUME_PERCENT <= volume <= MAX_TRACK_VOLUME_PERCENT:
+            raise WebValidationError(
+                f"トラック音量は{MIN_TRACK_VOLUME_PERCENT}-{MAX_TRACK_VOLUME_PERCENT}%の"
+                f"範囲で指定してください: {volume}"
+            )
+        if volume == DEFAULT_TRACK_VOLUME_PERCENT:
+            continue
+        validated[track_index] = volume
+    return validated
+
+
+def validate_speed_ratio(value: Any) -> float:
+    """速度倍率を検証する。1.0が既定（変更なし）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WebValidationError(f"速度倍率は数値で指定してください: {value!r}")
+    number = float(value)
+    if not (MIN_SPEED_RATIO <= number <= MAX_SPEED_RATIO):
+        raise WebValidationError(
+            f"速度倍率は{MIN_SPEED_RATIO}〜{MAX_SPEED_RATIO}の範囲で指定してください: {number}"
+        )
+    return number
+
+
+def validate_transpose_semitones(value: Any) -> int:
+    """移調量（半音）を検証する。小数は明示的に拒否する（ピッチベンドは非対応）。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WebValidationError(f"ピッチ（半音）は整数で指定してください: {value!r}")
+    if not (MIN_TRANSPOSE_SEMITONES <= value <= MAX_TRANSPOSE_SEMITONES):
+        raise WebValidationError(
+            f"ピッチ（半音）は{MIN_TRANSPOSE_SEMITONES}〜{MAX_TRANSPOSE_SEMITONES}の"
+            f"範囲で指定してください: {value}"
+        )
+    return value
+
+
+def _scale_tempo(midi_file: Any, speed: float) -> None:
+    """全トラックのset_tempoメタをspeedで割る。1つも無ければ挿入する。
+
+    nsf2midi/vgm2midiはtick 0に1つだけ、spc2midi(VGMTrans)は曲中にも
+    テンポ変化を出しうるが、「存在する全set_tempoを一律に割る」でどちらも
+    正しく速度倍率が反映される。
+    """
+    mido = import_mido()
+    found = False
+    for track in midi_file.tracks:
+        for message in track:
+            if message.is_meta and message.type == "set_tempo":
+                found = True
+                scaled = round(message.tempo / speed)
+                message.tempo = max(MIN_TEMPO_MICROSECONDS, min(MAX_TEMPO_MICROSECONDS, scaled))
+    if found:
+        return
+    scaled = round(DEFAULT_TEMPO_MICROSECONDS / speed)
+    tempo = max(MIN_TEMPO_MICROSECONDS, min(MAX_TEMPO_MICROSECONDS, scaled))
+    midi_file.tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=tempo, time=0))
+
+
+def _transpose_track(track: Any, semitones: int) -> None:
+    """note_on/note_off/polytouchのノート番号を移調する。
+
+    パーカッションチャンネル（ch10）はGMドラムのノート番号が音程ではなく
+    打楽器の種類を表すため対象外。0-127を外れたノートはクランプせず削除する
+    （note_on/note_offは同じノート番号なので必ず対で落ち、鳴りっぱなしには
+    ならない）。削除は_filter_track()を再利用し、トラック総tick長を保つ。
+    """
+
+    def keep(message: Any) -> bool:
+        if message.is_meta:
+            return True
+        if message.type not in ("note_on", "note_off", "polytouch"):
+            return True
+        if getattr(message, "channel", None) == PERCUSSION_CHANNEL:
+            return True
+        new_note = message.note + semitones
+        if not 0 <= new_note <= 127:
+            return False
+        message.note = new_note
+        return True
+
+    _filter_track(track, keep)
+
+
+def apply_assignments(
+    original_path: Path,
+    assignments: dict[int, int],
+    output_path: Path,
+    volumes: dict[int, int] | None = None,
+    speed: float = DEFAULT_SPEED_RATIO,
+    transpose: int = DEFAULT_TRANSPOSE_SEMITONES,
+) -> dict[str, int]:
+    """原本を読み直し、音色・トラック別Note Onベロシティ倍率・全体の速度/移調を適用して保存する。
+
+    既存のプログラムチェンジがあれば値を書き換えるだけ（delta-time連鎖を壊さない
+    ＝タイミング完全維持）。無ければ、そのチャンネルの最初のメッセージの直前に
+    time=0 で挿入する（後続のtickは一切ずれない）。音量は共有MIDIチャンネルへCC7を
+    送らず、対象トラック内のNote On velocityだけを原本値から倍率変換するため、同じ
+    チャンネルを使う別トラックの音量へ干渉しない。speed/transposeが既定値
+    （1.0・0）のときはテンポ・ノート番号を一切書き換えず、常に原本を読み直す
+    apply_assignments()自体の不変条件により、この関数を繰り返し呼んでも
+    速度・移調が累積することはない。
+    """
+    mido = import_mido()
+    try:
+        midi_file = mido.MidiFile(original_path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(f"MIDIを読み込めません: {original_path}: {error}") from error
+
+    updated = 0
+    inserted = 0
+
+    for track_index, program in assignments.items():
+        if track_index >= len(midi_file.tracks):
+            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+        track = midi_file.tracks[track_index]
+
+        channel = _single_note_channel(track)
+        if channel is None or channel == PERCUSSION_CHANNEL:
+            raise WebValidationError(f"トラック{track_index}は編集対象外です")
+
+        existing = [m for m in track if m.type == "program_change" and m.channel == channel]
+        if existing:
+            for message in existing:
+                message.program = program
+            updated += 1
+        else:
+            insert_index = _first_channel_message_index(track, channel)
+            new_message = mido.Message(
+                "program_change", program=program, channel=channel, time=0
+            )
+            track.insert(insert_index, new_message)
+            inserted += 1
+
+    for track_index, volume in (volumes or {}).items():
+        if track_index >= len(midi_file.tracks):
+            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+        track = midi_file.tracks[track_index]
+        if not any(message.type == "note_on" and message.velocity > 0 for message in track):
+            raise WebValidationError(f"トラック{track_index}は音量変更対象外です")
+        for message in track:
+            if message.type != "note_on" or message.velocity <= 0:
+                continue
+            if volume == 0:
+                message.velocity = 0
+            else:
+                message.velocity = max(1, min(127, round(message.velocity * volume / 100)))
+
+    if speed != DEFAULT_SPEED_RATIO:
+        _scale_tempo(midi_file, speed)
+    if transpose != DEFAULT_TRANSPOSE_SEMITONES:
+        for track in midi_file.tracks:
+            _transpose_track(track, transpose)
+
+    save_midi_atomic(midi_file, output_path)
+    return {"updated": updated, "inserted": inserted}
+
+
+def _single_note_channel(track: Any) -> int | None:
+    """トラックのnote_on/note_offが使う単一チャンネルを返す。0または複数ならNone。"""
+    channels = {m.channel for m in track if m.type in ("note_on", "note_off")}
+    if len(channels) != 1:
+        return None
+    return next(iter(channels))
+
+
+def _first_channel_message_index(track: Any, channel: int) -> int:
+    """指定チャンネルを持つ最初のメッセージのインデックスを返す。
+
+    MetaMessage（track_name/set_tempo等）にはchannelがないため、
+    hasattrで安全にスキップする。
+    """
+    for i, message in enumerate(track):
+        if getattr(message, "channel", None) == channel:
+            return i
+    # channels集合の算出元と同じmessageが必ず存在するはずだが、念のためのフォールバック。
+    return len(track)
+
+
+def write_track_subset(
+    source_path: Path,
+    keep_indices: set[int],
+    output_path: Path,
+    *,
+    strip_bank_select: bool = False,
+) -> bool:
+    """keep_indices のトラックだけが鳴るMIDIを output_path に書く。
+
+    ゲーム由来SoundFontと汎用GM SoundFontのハイブリッドレンダリング用に、
+    1本のMIDIを「音色を手動指定していないトラック」と「手動指定したトラック」
+    の2本へ分割する際に使う。keep_indices に含まれないトラックは、トラック
+    自体は残したまま非メタメッセージ（note_on/note_off/program_change/
+    control_change/pitchwheel等）をすべて取り除き、そのデルタタイムを直後の
+    メッセージへ繰り越す。トラックを丸ごと削除しないので、テンポ・拍子などの
+    メタイベントがどのトラックにあっても両方の出力に残り、end_of_trackの
+    絶対tickも保存される（＝2つの出力の演奏長がそろう）。
+
+    strip_bank_select=True のときは、残すトラックからもバンクセレクト
+    （CC0/CC32）を取り除く。spc2midiの出力はVGMTransのBankSelectStyle::GSに
+    従ってCC0にprogNum>>7を載せるが、そのbankは「ゲーム由来SoundFontの中での
+    バンク」であって汎用GM SoundFontには存在しないため、そのまま送ると
+    fluidsynthがプリセットを見つけられず直前の音色を保持してしまう。
+
+    戻り値は「書き出したMIDIにvelocity>0のnote_onが1つでも残っているか」。
+    Falseならfluidsynthに渡しても無音なので、呼び出し側でレンダリングを
+    省ける。
+    """
+    mido = import_mido()
+    try:
+        midi_file = mido.MidiFile(source_path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(f"MIDIを読み込めません: {source_path}: {error}") from error
+
+    has_notes = False
+    for index, track in enumerate(midi_file.tracks):
+        if index in keep_indices:
+            if any(m.type == "note_on" and m.velocity > 0 for m in track):
+                has_notes = True
+            if strip_bank_select:
+                _filter_track(track, lambda m: not _is_bank_select(m))
+        else:
+            _filter_track(track, lambda m: m.is_meta)
+
+    save_midi_atomic(midi_file, output_path)
+    return has_notes
+
+
+def _is_bank_select(message: Any) -> bool:
+    return (
+        not message.is_meta
+        and message.type == "control_change"
+        and message.control in (0, 32)
+    )
+
+
+def _filter_track(track: Any, keep: Any) -> None:
+    """条件に合わないメッセージを取り除き、そのデルタタイムを直後へ繰り越す。
+
+    末尾で落ちた場合は最後に残ったメッセージ（通常end_of_track）へ加算するので、
+    トラック全体の総tick長は不変。track（mido.MidiTrackはlistのサブクラス）を
+    その場で置換する。
+    """
+    carried = 0
+    kept: list[Any] = []
+    for message in track:
+        if not keep(message):
+            carried += message.time
+            continue
+        message.time += carried
+        carried = 0
+        kept.append(message)
+    if carried and kept:
+        kept[-1].time += carried
+    track[:] = kept
+
+
+def save_midi_atomic(midi_file: Any, path: Path) -> None:
+    """MIDIを同じディレクトリの一時ファイルから原子的に置換する。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.stem}.tmp{path.suffix}")
+    try:
+        midi_file.save(temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)

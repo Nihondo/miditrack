@@ -1,0 +1,265 @@
+; gm.mdf -- General MIDI 再現重視プリセット。
+;
+; default.mdf (原本 nsf2midi.exe 0.14 互換のリファレンス) は変更しない。
+; こちらは default.mdf と同じ 13 セクション構成を保ちつつ、CLAUDE.md の
+; "Added: reproduction-fidelity pass" に記載した拡張キー
+; (NoiseDrumMapEnabled / PcmSampleMapEnabled / DutyProgramChangeEnabled) を
+; 有効化し、Velocity も既定で有効にして音量ダイナミクスを残す。
+;
+; 使い方: nsf2midi -m gm.mdf input.nsf output.mid
+;
+; NOTE: EXTENDED-CHANNEL1..8 は曲が使う拡張チップ (VRC6/FDS/S5B/N163) に応じて
+; 実際の割当が変わる (channel_map.cpp 参照)。DutyProgramChangeEnabled は
+; ChannelKind::Square/Vrc6Pulse のみに効くコード側ガードがあるため、VRC6以外の
+; 拡張チップではこのキーを立てても無害だが無効果。EXTENDED-CHANNEL3 の
+; Instrument=81 (GM Lead 2 sawtooth) は VRC6 Saw チャンネル前提の値で、
+; S5B/N163 使用曲では単なる別リード音色として鳴る (トレードオフ、README 参照)。
+
+[SQUARE-CHANNEL1]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[SQUARE-CHANNEL2]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL1]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL2]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL3]
+; VRC6 Saw 前提 (GM 81 Lead 2 sawtooth)。S5B/N163 使用曲ではこのスロットは
+; それらのチャンネル3に流用されるが、duty 概念がないため
+; DutyProgramChangeEnabled は無効果 (Instrument=81 のまま鳴る)。
+Instrument=81
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=0
+[EXTENDED-CHANNEL4]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL5]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL6]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL7]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[EXTENDED-CHANNEL8]
+Instrument=80
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+AttackEnabled=1
+DecayEnabled=1
+PitchBendEnabled=1
+Velocity=1
+Volume=127
+RelativeDividedPoint=2
+AbsoluteDividedPoint=0
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+DutyProgramChangeEnabled=1
+[TRIANGELE-CHANNEL]
+; GM 39 Synth Bass 1 (0-based Instrument=38)。三角波はベースライン用途が
+; 大半のため、原本のリード系デフォルト(80)よりベース系音色の方が実態に合う。
+; LevelChangeEnabled/AttackEnabled/DecayEnabled/Velocity は明示していない —
+; MdfFile のコンストラクタが Triangle スロットの既定値を無効化済み
+; (STATE_VOLUME が線形カウンタで音量ではないため。CLAUDE.md 参照)。
+Instrument=38
+BankHi=0
+BankLo=0
+Reverb=0
+Chorus=0
+Volume=127
+PitchBendEnabled=1
+ChannelEnabled=1
+MonoEnabled=0
+PortamentEnabled=0
+NoteNumberAdjust=0
+[NOISE-CHANNEL]
+; Instrument はマップ無効時のフォールバックとしてのみ使われる
+; (NoiseDrumMapEnabled=1 なので通常は周期+LFSRモードから42/38/45/37を選ぶ)。
+; AbsoluteDividedPoint は原本の 7 から 1 に下げ、弱いハイハットも Velocity=1 で
+; 強弱表現できるようにした。LevelChangeEnabled=1 で音量急上昇によるロール
+; 再トリガーも有効化。
+Instrument=42
+BankHi=0
+BankLo=0
+AttackEnabled=1
+DecayEnabled=1
+Velocity=1
+Volume=110
+RelativeDividedPoint=4
+AbsoluteDividedPoint=1
+FrequencyChangeEnabled=1
+LevelChangeEnabled=1
+ChannelEnabled=1
+NoiseDrumMapEnabled=1
+[PCM-CHANNEL]
+; Velocity は明示していない -- DPCM トリガーは常に ComputeVelocity(127) 固定で
+; 呼ばれる (detector.cpp) ため、Velocity=1 にしても効果がない。
+Instrument=36
+BankHi=0
+BankLo=0
+Volume=110
+ChannelEnabled=1
+PcmSampleMapEnabled=1

@@ -1,0 +1,431 @@
+:root {
+  --brand: #7799dd;
+  --brand-dark: #5674b9;
+  --brand-light: #eef2fa;
+  --brand-gradient: linear-gradient(135deg, #7799dd 0%, #5674b9 100%);
+  --neutral-0: #fff;
+  --neutral-10: #fafbfc;
+  --neutral-20: #f4f5f7;
+  --neutral-30: #ebecf0;
+  --neutral-40: #dfe1e6;
+  --neutral-60: #5e6c84;
+  --neutral-80: #42526e;
+  --neutral-100: #172b4d;
+  --success: #16a34a;
+  --warning: #b45309;
+  --danger: #d92d20;
+  --toast-bg: var(--neutral-100);
+  --shadow-card: 0 1px 2px rgba(23, 43, 77, 0.04), 0 3px 8px rgba(23, 43, 77, 0.08);
+  --shadow-brand: 0 1px 3px rgba(86, 116, 185, 0.3);
+  --font-sans: "Lucida Grande", Verdana, AquaKana, ArialMT,
+    "Hiragino Kaku Gothic ProN", "ヒラギノ角ゴ ProN W3", "メイリオ", Meiryo,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light dark;
+}
+
+/* ダークモード: ニュートラル階調を反転し、常時ダークで固定したい
+   要素（--toast-bg等）は反転対象から切り離して別変数で定義する。 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand-dark: #6a8ecf;
+    --brand-light: #253247;
+    --neutral-0: #1b2129;
+    --neutral-10: #20262f;
+    --neutral-20: #262d37;
+    --neutral-30: #333c48;
+    --neutral-40: #414b59;
+    --neutral-60: #9aa7bb;
+    --neutral-80: #c3ccdb;
+    --neutral-100: #eef1f6;
+    --warning: #eab308;
+    --toast-bg: #10151d;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--neutral-100);
+  background: linear-gradient(160deg, var(--brand-light) 0, var(--neutral-10) 360px);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select { font: inherit; }
+button { color: inherit; }
+
+.visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+.app-header {
+  min-height: 72px;
+  color: #fff;
+  background: var(--brand-gradient);
+  box-shadow: 0 2px 8px rgba(86, 116, 185, 0.25);
+}
+
+.header-inner {
+  width: min(1000px, 100%);
+  min-height: 72px;
+  margin: 0 auto;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  text-shadow: 0 -1px rgba(0, 51, 102, 0.35), 0 1px rgba(0, 51, 102, 0.35);
+}
+
+.eyebrow {
+  margin: 0 0 2px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+}
+
+.privacy-note { margin: 0; color: rgba(255, 255, 255, 0.9); font-size: 12px; }
+
+.app-shell {
+  width: min(1000px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+}
+
+.card {
+  padding: 24px;
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-30);
+  border-top: 3px solid var(--brand);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+}
+
+.card-heading {
+  margin-bottom: 20px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.card-heading h2 { margin: 0 0 4px; font-size: 18px; letter-spacing: -0.01em; }
+.card-heading p { margin: 0; color: var(--neutral-60); font-size: 13px; }
+
+.step-number {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  color: #fff;
+  background: var(--brand-gradient);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: var(--shadow-brand);
+}
+
+.disabled-section { opacity: 0.58; }
+.disabled-section.ready { opacity: 1; }
+
+.drop-zone {
+  min-height: 142px;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  color: var(--neutral-80);
+  background: var(--neutral-10);
+  border: 2px dashed var(--neutral-40);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.drop-zone:hover, .drop-zone.dragging {
+  background: var(--brand-light);
+  border-color: var(--brand);
+}
+
+.drop-zone:focus-within { outline: 3px solid rgba(119, 153, 221, 0.28); outline-offset: 2px; }
+.drop-zone svg { width: 30px; height: 30px; fill: none; stroke: var(--brand-dark); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.drop-zone strong { font-size: 15px; }
+.drop-zone span { color: var(--neutral-60); font-size: 12px; }
+.drop-zone input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.compact-toolbar { margin-top: 12px; }
+
+.button {
+  min-height: 38px;
+  padding: 9px 15px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: transform 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+}
+
+.button.primary { color: #fff; background: var(--brand-gradient); box-shadow: var(--shadow-brand); }
+.button.secondary { color: var(--neutral-80); background: var(--neutral-0); border-color: var(--neutral-40); }
+.button.ghost { color: var(--neutral-60); background: transparent; border-color: var(--neutral-30); }
+.button.small { min-height: 32px; padding: 6px 10px; font-size: 12px; }
+.reset-action { margin-left: auto; }
+.button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(86, 116, 185, 0.2); }
+.button:disabled { color: var(--neutral-60); background: var(--neutral-20); border-color: var(--neutral-30); box-shadow: none; cursor: not-allowed; }
+
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 3px solid rgba(119, 153, 221, 0.32);
+  outline-offset: 2px;
+}
+
+.field-help { margin: 7px 0 0; color: var(--neutral-60); font-size: 11px; }
+
+.table-scroll { overflow-x: auto; }
+
+.track-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.track-table th {
+  padding: 8px 10px;
+  color: var(--neutral-60);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--neutral-30);
+}
+
+.track-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--neutral-20);
+  vertical-align: top;
+}
+
+.track-row.is-locked { color: var(--neutral-60); }
+
+.track-name { color: var(--neutral-100); font-weight: 600; }
+.track-channel { color: var(--neutral-60); font-variant-numeric: tabular-nums; }
+
+.track-volume-control {
+  min-width: 180px;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 44px;
+  gap: 8px;
+  align-items: center;
+}
+
+.track-volume-control input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--brand-dark);
+}
+
+.track-volume-value {
+  color: var(--neutral-80);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.lock-reason { color: var(--neutral-60); font-size: 12px; }
+
+.pc-warning {
+  margin-top: 4px;
+  color: var(--warning);
+  font-size: 11px;
+}
+
+.program-select {
+  width: 100%;
+  min-width: 220px;
+  padding: 6px 8px;
+  color: var(--neutral-100);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+}
+
+.source-select {
+  min-width: 9.5rem;
+  padding: 6px 8px;
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+  background: var(--neutral-0);
+  color: var(--neutral-100);
+}
+
+/* VGM/NSFで原曲の音源（実機チップレンダリング）を選んだトラック行。
+   SPCの原曲の音色（SoundFontバンク切替）はis-hardwareを付与しない
+   （音量スライダーが引き続き有効なままなので視覚的にも区別する）。 */
+.track-row.is-hardware {
+  background: var(--brand-light);
+}
+
+.field-group {
+  margin-bottom: 16px;
+}
+
+.convert-panel {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--neutral-10);
+  border: 1px solid var(--neutral-30);
+  border-radius: 12px;
+}
+
+.convert-panel[hidden] { display: none; }
+
+.convert-panel-title {
+  margin: 0 0 12px;
+  color: var(--neutral-80);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.convert-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* 音源変換オプションは説明文の長いチェックボックスを1行ずつ表示する。
+   timingグループがあるVGMだけ、テンポ・ループ回数・秒数を3列へまとめる。 */
+#convert-options {
+  display: flex;
+  flex-direction: column;
+}
+
+#convert-options.has-timing-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+}
+
+#convert-options.has-timing-group > .convert-field[data-layout-group="timing"] {
+  min-width: 0;
+}
+
+#convert-options.has-timing-group > .convert-field:not([data-layout-group="timing"]) {
+  grid-column: 1 / -1;
+}
+
+.convert-field label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--neutral-80);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.convert-field input[type="number"],
+.convert-field input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--neutral-100);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+}
+
+/* flex-wrap + field-helpのflex-basis:100%で、説明文をチェックボックス/
+   ラベルと横並びにせず常に次の行へ折り返す（幅が狭いときに全員が
+   縦一列に潰れて文字化けのように見えるのを防ぐ）。 */
+.convert-field.is-checkbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.convert-field.is-checkbox label { margin-bottom: 0; }
+.convert-field.is-checkbox .field-help { flex-basis: 100%; }
+
+.convert-field.is-disabled { opacity: 0.5; }
+.convert-field .field-help { margin: 4px 0 0; }
+
+.playlist-note { color: var(--brand-dark); font-weight: 600; }
+.playlist-note[hidden] { display: none; }
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--neutral-80);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.player-card {
+  margin-top: 16px;
+}
+
+.player-card audio {
+  width: 100%;
+}
+
+.transform-panel,
+.pitch-shift-panel {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--neutral-10);
+  border: 1px solid var(--neutral-30);
+  border-radius: 12px;
+}
+
+.transform-panel > .field-label { margin-bottom: 12px; }
+.transform-panel .convert-options { margin-bottom: 4px; }
+
+.pitch-shift-panel > .field-label { margin-bottom: 12px; }
+.pitch-shift-panel .convert-options { margin-bottom: 12px; }
+.pitch-shift-panel .toolbar { margin-bottom: 4px; }
+
+.status-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 12px 16px;
+  color: #fff;
+  background: var(--toast-bg);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(23, 43, 77, 0.22);
+  font-size: 13px;
+}
+.status-toast.error { background: var(--danger); }
+.status-toast.success { background: var(--success); }
+.busy { cursor: progress; }
+
+@media (max-width: 640px) {
+  .header-inner { flex-direction: column; align-items: flex-start; gap: 8px; }
+  #convert-options.has-timing-group { grid-template-columns: 1fr; }
+  #convert-options.has-timing-group > .convert-field:not([data-layout-group="timing"]) {
+    grid-column: auto;
+  }
+}

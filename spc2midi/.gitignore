@@ -1,0 +1,6 @@
+.DS_Store
+build/
+_deps/
+*.mid
+*.sf2
+*.dls

@@ -1,0 +1,21 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "macos-arm64",
+      "generator": "Ninja",
+      "binaryDir": "$env{HOME}/.cache/spc2midi/build/macos-arm64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "FETCHCONTENT_BASE_DIR": "$env{HOME}/.cache/spc2midi/_deps"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "macos-arm64",
+      "configurePreset": "macos-arm64"
+    }
+  ]
+}

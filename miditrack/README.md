@@ -1,0 +1,114 @@
+# miditrack
+
+`miditrack` is a local Web tool that lets you convert a chiptune source file straight to MIDI, assign a General MIDI instrument (Program Change) to each track, and audition the result immediately. It can read a `.nsf`/`.nsfe`, `.spc`/`.spc2`/`.rsn`, or `.vgm`/`.vgz` file directly (converting it via the bundled `nsf2midi`/`spc2midi`/`vgm2midi` CLIs), or a `.mid`/`.midi` file produced elsewhere.
+
+`nsf2midi`/`spc2midi`/`vgm2midi` only ever *write* MIDI — none of them offer a way to go back and pick a different instrument afterward, and none has its own Web UI. `miditrack` covers the whole downstream workflow in one page: converting the source file, re-picking each track's instrument, and rendering the result through [midi2wav.sh](../midi2wav.sh) for in-browser playback and download — without a separate trip to the terminal.
+
+## Features
+
+- **Convert a source file directly**: drop a `.nsf`/`.spc`/`.rsn`/`.vgm` file (or its variants) onto the same upload zone as a `.mid`. For formats with multiple songs/sequences (NSF, SPC), miditrack lists them (via each tool's own `-l`) so you can pick one, plus the format's main options (duration/PAL for NSF, loop count for SPC, tempo/loop/duration for VGM)
+- **Upload a `.zip` archive, or several files at once**: a ZIP containing one or more source files (real rip packs are often distributed this way) is extracted automatically; if it holds more than one convertible file, a "ファイル" (File) dropdown lets you pick which one, without a second upload. Dropping/selecting a source file together with its `.m3u` playlist works the same way — no ZIP required
+- **Song titles from a bundled `.m3u` playlist**: when a `.m3u` naming each track ships alongside the source file (loose, or inside the ZIP), miditrack reads it (the same extended-M3U format `foo_input_gme`/Game_Music_Emu players use) and shows the real song titles in the "曲" (Song) dropdown instead of a bare track number
+- Automatic track analysis: track name, channel(s) used, note count, and **detection of any existing Program Change** (`vgm2midi` sends GM 81 "Lead 1 (square)" to every track, and `nsf2midi`'s `gm.mdf` preset also sends a per-channel instrument, so this detection is required, not optional)
+- **Per-track volume from 0–200%**: every track with notes, including percussion and multi-channel tracks, gets an accessible volume slider. Volume is applied to that track's Note On velocities, so tracks that share a MIDI channel do not change each other
+- **Per-track "Original game sound"/SoundFont selection, unified across all three formats**: SPC, VGM, and NSF each expose the same Source dropdown — **Original game sound** (**"（推奨）"/"(recommended)"** appended when the row was auto-suggested) or **SoundFont** — whenever a track can be routed away from the selected GM SoundFont. The underlying mechanism differs per format (SPC: a SoundFont generated from the SPC's own BRR samples; VGM: libvgm physical-chip-channel rendering; NSF: `nsf2midi`'s own per-channel chip rendering), but the dropdown values, labels, and per-track behavior are identical. Original SPC sound only disables the instrument control (track volume stays available, since it's still a FluidSynth render); Original VGM/NSF sound disables both instrument and volume (the audio is real hardware/chip output that never passes through FluidSynth). Switching a track to SoundFont for the first time selects GM 81 "Lead 1 (square)" as a safe starting instrument
+- **Format-specific auto-preselection**: SPC's "ゲーム本来の音色で鳴らす" defaults every note-bearing track to Original once a SoundFont is generated. VGM's "ノイズ/DACを実機音でミックス" preselects only the safely-identifiable subset (SN76489/Game Boy noise, YM2612 DAC, supported OPL/OPNA rhythm/PCM); ambiguous shared channels (AY/SSG, HuC6280, YM2151 noise) stay on SoundFont. NSF's own "実機音（原曲の音源）を使う" preselects every note-bearing channel — NES channels never share one physical channel the way some VGM chip families do, so there's no ambiguous case to leave out
+- **Optional OPN Ch3 Special percussion conversion for VGM**: enable "OPN Ch3 SpecialをGMドラムに変換" to pass `--ch3-special-percussion` to `vgm2midi`, replacing the four operator-pitch tracks from YM2203, YM2608, or YM2612 with heuristic GM kick/snare/hi-hat/cymbal/tom hits
+- GM instruments are grouped into the 16 standard families (Piano, Chromatic Percussion, Organ, Guitar, Bass, Strings, Ensemble, Brass, Reed, Pipe, Synth Lead, Synth Pad, Synth Effects, Ethnic, Percussive, Sound Effects) for easy selection
+- **Pick a SoundFont right in the browser**: lists whatever `.sf2`/`.sf3` files `midi2wav.sh`'s own search directories find (`../soundfonts`, `~/Library/Audio/Sounds/Banks`, etc. — see [../midi2wav.sh](../midi2wav.sh)'s own `--help` for the full list) and lets you switch which one gets used for rendering
+- Applying renders a `.wav` via [midi2wav.sh](../midi2wav.sh) (fluidsynth + SoundFont) and plays it back through an `<audio>` element — **real seek/scrub support**
+- Download the edited `.mid`, or the rendered `.wav` itself — a real deliverable, not just a preview. The uploaded/converted original is never modified
+- **Whole-song speed and pitch, applied directly to the MIDI**: set a speed multiplier and a semitone transpose in "全体の速度・ピッチ" (Overall speed/pitch) and every render, WAV download, and MIDI download reflects it — no time-stretch artifacts, since it's a tempo-meta scale and a note-number shift, not audio processing. Any `chipNoise` real-audio stem is kept in sync automatically (via a single [../pitch_shift.sh](../pitch_shift.sh) pass) whenever this is set to something other than the default
+- **Download speed/pitch variations of the audition WAV as a ZIP**: calls [../pitch_shift.sh](../pitch_shift.sh) to generate every combination of speed factor × pitch (semitones) from the rendered WAV, bundled into one ZIP download. Defaults match `pitch_shift.sh`'s own defaults (1.2x/0.8x speed, -2 to +2 semitones = 10 files), and can be overridden as comma-separated lists. This is independent of the whole-song speed/pitch above — use that one to audition/export a single transformed take, use this one to batch-produce several ready-to-use WAV variants
+- Everything (source files, images, audio, MIDI) is processed locally — same local-only security design as `tools/pixelart_web.py`
+
+## Requirements
+
+- macOS
+- Python 3.10+
+- [fluidsynth](https://www.fluidsynth.org/) (`brew install fluid-synth`) and a General MIDI SoundFont (see [../midi2wav.sh](../midi2wav.sh)'s resolution order)
+- To audition a VGM track's Original game sound (libvgm), build the pinned native helper once with `cd ../vgm2midi && ./scripts/build-native.sh`. Set `VGM2MIDI_STEMS_HELPER` only when using a non-default helper location. NSF's Original game sound needs no separate build step — it uses the bundled `nsf2midi` binary directly
+- To convert source files: the bundled [`nsf2midi`](../nsf2midi/), [`spc2midi`](../spc2midi/), and [`vgm2midi`](../vgm2midi/) — all three ship a prebuilt binary/`dist/`, so no separate build step is normally needed. `.mid`/`.midi` files never need any of these.
+- For `chipNoise` stem mixing, the "速度・ピッチのバリエーション" (speed/pitch variations) feature, or the "全体の速度・ピッチ" (whole-song speed/pitch) feature when a `chipNoise` stem needs to stay in sync: [ffmpeg](https://ffmpeg.org/); the ZIP variations and the stem sync both additionally need [rubberband-cli](https://breakfastquay.com/rubberband/) (`brew install ffmpeg rubberband`). The whole-song speed/pitch feature itself needs neither when no `chipNoise` stem is present — it only edits the MIDI
+
+## Installation
+
+```bash
+cd miditrack
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e .
+```
+
+To invoke `miditrack` from any working directory, create a PATH symlink once:
+
+```bash
+ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
+```
+
+The `miditrack.sh` wrapper always selects this `.venv` (same design as `note_ext.sh`). It resolves relative or absolute symlinks, preserves the caller's working directory, and passes all arguments through unchanged. Without a `.venv`, it stops with a setup hint instead of silently falling back to another Python.
+
+## Usage
+
+```bash
+miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
+```
+
+Passing `MIDI_FILE` preloads it when the browser opens. Without it, use the "音源またはMIDIを選択" (Select source or MIDI) upload control in the browser. `MIDI_FILE` only accepts `.mid`/`.midi` — source files (`.nsf`, `.spc`, `.vgm`, ...) are always uploaded from the browser.
+
+**Starting from a `.mid`/`.midi` file:**
+
+1. Select the file (drag-and-drop supported)
+2. The track list appears. Editable tracks have an instrument dropdown pre-selected with any instrument already detected in the file; every track with notes also has a 0–200% volume slider (100% leaves the original velocities unchanged). When a converted source provides an alternate playback source, the compatible SPC/VGM/NSF rows offer Original game sound/SoundFont in the same Source dropdown. Original SPC sound disables only the instrument control (volume stays available); Original VGM/NSF sound disables both instrument and volume controls
+3. Optionally switch the **SoundFont** dropdown in the audition card (defaults to `midi2wav.sh`'s own resolution)
+4. Optionally set a speed multiplier and/or a semitone transpose in "全体の速度・ピッチ" (Overall speed/pitch) — this changes the MIDI itself (tempo and note numbers), so it carries through to every render, WAV download, and MIDI download until changed back
+5. Click "適用して試聴" (Apply & Audition) to render, then use the `<audio>` player — dragging the scrubber seeks freely
+6. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) to save the result
+7. Optionally enter comma-separated speed factors and pitch (semitone) values in "速度・ピッチのバリエーション" (Speed/pitch variations) and click "速度・ピッチ違いをZIPでダウンロード" (Download speed/pitch variations as ZIP) to get every combination bundled in one ZIP (renders the audition WAV first automatically if it hasn't been rendered yet)
+
+**Starting from a source file (`.nsf`/`.spc`/`.rsn`/`.vgm`/..., a `.zip` of several, or a source file plus its `.m3u`):**
+
+1. Drop the file(s) onto the same upload zone — a single source file, a source file together with its `.m3u` playlist, or a `.zip` archive. miditrack detects each convertible file's format and, for NSF/SPC, lists its songs/sequences (calling the tool's own `-l`/`--list`); if a `.m3u` is present (loose or inside the ZIP) and names the file's tracks, those titles replace the bare track numbers automatically
+2. If more than one convertible file was found (a ZIP with several, or several files selected at once), pick which one with the **ファイル** (File) dropdown — the first is selected by default
+3. Pick a song (if listed) and adjust the format's options (duration/PAL for NSF, loop count for SPC, tempo/loop count/duration for VGM — the three VGM timing controls share one row on wider screens, and loop count and duration can't both be set). NSF and VGM also offer `chipNoise`: both preselect Original game sound for safely identifiable rows once converted (NSF preselects every note-bearing NES channel, since none of them share a physical channel; VGM preselects only the safely identifiable noise/DAC/rhythm rows). You can revise every available row in the Source dropdown after conversion. For percussion-driven YM2203/YM2608/YM2612 sources, VGM additionally offers "OPN Ch3 SpecialをGMドラムに変換" to enable `vgm2midi --ch3-special-percussion`. SPC offers "ゲーム本来の音色で鳴らす" (`gameSoundfont`, off by default): when enabled and the SPC contains usable instrument data, each note-bearing track starts on Original game sound and can be switched independently to the selected GM SoundFont. Switching back to Original keeps the chosen GM program for later but does not apply it; track volume remains effective for either source on SPC. If no game SoundFont can be generated, every SPC track simply uses the GM SoundFont as if the option were off
+4. Click "MIDIに変換" (Convert to MIDI). The track list then appears exactly as if you'd uploaded a `.mid` directly, and steps 2–5 above apply the same way
+5. Re-converting (a different song, a different file, or different options) discards the current track assignments and any render, the same way re-uploading a `.mid` does
+
+### Options
+
+| Option | Description |
+|---|---|
+| `MIDI_FILE` | `.mid`/`.midi` file to preload at startup (optional; source files are not accepted here — upload them from the browser) |
+| `-s, --soundfont FILE` | Default SoundFont at startup. Without it, `midi2wav.sh`'s own resolution applies (`MIDI2WAV_SOUNDFONT` env var, `../soundfonts`, etc.). Can be changed anytime from the browser's "SoundFont" dropdown |
+| `--no-browser` | Don't open a browser tab automatically |
+| `--version` | Show version |
+
+## Limitations
+
+- **The percussion channel (MIDI channel 10) is out of scope for instrument remapping.** Tracks using it are listed but show no dropdown. GM drum-kit switching (via Bank Select) is not supported.
+- **Tracks spanning multiple channels are not editable** (in practice this rarely matters — `nsf2midi`/`spc2midi`/`vgm2midi` output is normally one channel per track).
+- **Audition is "render then play,"** not a live softsynth — changing an instrument doesn't change the sound instantly; click "Apply & Audition" again to re-render.
+- **VGM's Original game sound routing follows physical chip channels, not MIDI-track independence.** When several MIDI rows represent one physical channel (for example multiple sample IDs), changing one row changes the whole group. AY/SSG, HuC6280, and YM2151 noise can share a channel with a tonal voice, so those ambiguous mappings are never auto-selected even when the checkbox is enabled. NSF has no such sharing — every NES channel maps to exactly one MIDI row, so its Original game sound rows are always independent and always safe to auto-select.
+- Track volume scales Note On velocity. Values above 100% can clip individual velocities at MIDI's maximum 127; 0% converts Note On events to velocity 0 (mute).
+- `vgm2midi` can wrap MIDI-channel assignment past channel 10 when many chip families are active in one VGM (see `vgm2midi/CLAUDE.md`), which can put an otherwise-melodic track on the percussion channel. This is a known `vgm2midi` limitation; `miditrack` judges editability purely by channel number, so it inherits that collision as-is.
+- A format-0 SMF (all channels in one track) is treated as "multi-channel" and is effectively not editable.
+- **`.m3u` title matching is best-effort.** It only applies to NSF/SPC (formats with a song list); it matches the playlist's filename field against the uploaded file's own name, and maps titles to songs by track number when the playlist provides one (falling back to line order otherwise). A stale or mismatched playlist won't error — it just won't relabel anything.
+- **ZIP uploads have simple caps** (at most 200 member files, 512MB uncompressed total) to avoid choking on an oversized or malformed archive; this isn't hardened against a maliciously crafted ZIP, matching this tool's overall "local, single-user, launch-scoped token" trust model.
+- **Speed/pitch variations also have a combination-count cap** (roughly up to 12 speeds/pitches each, 40 combinations total) — a simple guard against launching too many concurrent `rubberband` processes or bloating the ZIP. Re-rendering (changing the SoundFont, changing a track assignment, or clicking "Apply & Audition" again) invalidates any already-generated ZIP; click "速度・ピッチ違いをZIPでダウンロード" again to regenerate it.
+- **The whole-song speed/pitch is capped at 0.1x–10x speed and ±24 semitones**, and only accepts whole-semitone transpose (no pitch bend). A note pushed outside MIDI's 0–127 range by the transpose is simply dropped, not clamped, so extreme transpositions can silently drop very high or very low notes rather than folding them into an unrelated octave. The percussion channel (MIDI channel 10) is never transposed, matching the instrument-remapping limitation above. If a `chipNoise` real-audio stem is attached, syncing it to a non-default speed/pitch needs the same `ffmpeg`/`rubberband-cli` the ZIP feature below needs.
+
+## Troubleshooting
+
+- **"SoundFont not found"**: pass `--soundfont` explicitly, set `MIDI2WAV_SOUNDFONT`, or place a `.sf2` in one of the search directories `../midi2wav.sh --help` lists.
+- **"midi2wav not found"**: confirm `fluidsynth` is installed (`brew install fluid-synth`).
+- **"nsf2midi/spc2midi/vgm2midi not found"**: these three ship a prebuilt binary/`dist/` in this repository, so this normally shouldn't happen. If you moved or rebuilt one, either restore it at its usual repo-relative path or set `NSF2MIDI_BIN`/`SPC2MIDI_BIN`/`VGM2MIDI_BIN` to its executable.
+- **"対応するSNESサウンドドライバが見つかりませんでした" (no supported SNES driver found)**: the SPC file's music driver isn't one of the ~20 families `spc2midi`/VGMTrans recognizes — this file can't be converted by miditrack.
+- **"対応する音源ファイルが見つかりません" (no convertible source file found)**: none of the uploaded files (or ZIP members) matched a supported extension — a ZIP or `.m3u` alone, with nothing else, also triggers this.
+- **"有効なZIPファイルではありません" (not a valid ZIP file)**: the uploaded `.zip` is corrupted or not actually a ZIP.
+- **"miditrack requires Flask"**: recreate `.venv` following the install steps above.
+- **"pitch_shift.sh が見つかりません" (pitch_shift.sh not found)**: confirm `ffmpeg` and `rubberband-cli` are installed (`brew install ffmpeg rubberband`). If it's still not found, set `PITCH_SHIFT_BIN` to the script's location explicitly.
+- **"速度×ピッチの組み合わせ数が多すぎます" (too many speed×pitch combinations)**: reduce how many speeds/pitches you specify (the combination-count cap is 40).
+
+## License
+
+MIT
