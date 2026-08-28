@@ -30,8 +30,12 @@ double FrequencyOf(ChannelKind kind, int period, int n163_active_channels, bool 
             return clk / (14.0 * (period + 1));
         case ChannelKind::Fds:
             if (period <= 0) return 0.0;
-            // NESdev: freq = period * clk / 2^20
-            return period * clk / 1048576.0;
+            // third_party/NotSoFatso/Wave_FDS.h の DoTicks() が実際に刻む速さから逆算:
+            // 波形テーブル1インデックス進めるのに (65536/period) CPUサイクルかかり、
+            // 波形は64ステップで1周するため、1周期 = 64*65536/period = 4194304/period
+            // サイクル。よって freq = period * clk / 4194304 (= period * clk / 2^22)。
+            // 旧実装は 2^20 で割っており、実際の4倍(2オクターブ)高い周波数を算出していた。
+            return period * clk / 4194304.0;
         case ChannelKind::N163: {
             if (period <= 0) return 0.0;
             const int n = std::clamp(n163_active_channels, 1, 8);

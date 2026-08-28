@@ -606,6 +606,62 @@ amplitude 7812 (audible FDS output). `make test` (the existing
 `tests/test_detector.cpp` suite) still passes — it never exercises
 `SetChannelOptions()`.
 
+## Fixed: FDS notes came out two octaves too high
+
+`pitch.cpp`'s `FrequencyOf(ChannelKind::Fds, ...)` computed
+`period * clk / 1048576.0` (2^20), sourced from a NESdev-wiki-style
+formula per this file's own "Design notes" section above. That divisor is
+wrong for what this vendored core's emulation actually does — derived from
+`third_party/NotSoFatso/Wave_FDS.h`'s `DoTicks()` (the ground truth, since
+`detector.cpp` reconstructs notes from *this* emulation's register/state
+values, not from an independently-correct physical formula): the wave
+accumulator advances one of its 64 wavetable steps every
+`65536.0f / nFreq.W` CPU cycles (`freq = 65536.0f / (subfreq + nFreq.W)`,
+`Wave_FDS.h`'s `DoTicks()`), so one full 64-step waveform cycle takes
+`64 * 65536 / period = 4194304 / period` CPU cycles — making the real
+output frequency `period * clk / 4194304` (2^22), not `/ 1048576` (2^20).
+The old formula was off by a factor of exactly 4 (two octaves, 24
+semitones) high for every FDS note. Fixed by changing the divisor to
+`4194304.0` and documenting the derivation inline.
+
+Verified with the same hand-built FDS test NSF used for the
+`--chip-render` fix above (`$4082/$4083` frequency register set to
+`0x0800` = 2048): `nsf2midi -m default.mdf -t 0 -d 2 ... -v` emitted
+`note_on note=105` against the pre-fix binary and `note_on note=81`
+against the post-fix binary — exactly 24 semitones apart, confirming both
+the bug and the fix. `make test` still passes (no existing test exercises
+FDS pitch conversion).
+
+Also confirmed against a real game rip (`zelda.nsf`, "Zelda no Densetsu"):
+`GetState(CHANNEL_FDS, STATE_PERIOD, 0)` returned `1092` for the FDS lead
+in track 0, and `-v` now emits `note=70` for it (was `note=94` before this
+fix — the same 24-semitone gap). Directly instrumenting
+`Wave_FDS.h`'s `DoTicks()` (temporary `-DFDS_DEBUG_FREQ` build, since
+removed) confirmed the emulator's own wavetable-index wraps 3841 CPU
+cycles apart for `period=1092`, matching `4194304/1092 ≈ 3841.5` — i.e.
+the divisor fix is exactly what the vendored emulation core itself does,
+not just a NESdev-wiki formula taken on faith. User-confirmed by ear
+against the real game audio: the post-fix build no longer sounds "too
+high."
+
+**Build-cache pitfall hit while debugging this**: right after landing the
+divisor fix, a plain `make` (no `make clean`) linked a binary that still
+computed the *old* (2^20) frequency — confirmed by disassembling
+`build/app_pitch.o` and decoding the embedded FP constant
+(`objdump -d` + manually decoding the `movk`-constructed immediate as an
+IEEE-754 double). `app_pitch.o`'s own mtime matched `src/pitch.cpp`'s to
+the second and *looked* like a correct incremental rebuild, but the
+constant baked into it was stale. Root cause unconfirmed (most likely
+mtime-second-granularity collision from rapid-fire `git stash`/`make`
+cycles run less than a second apart while narrowing down the `--chip-render`
+fix earlier in the same session), but the practical lesson: **after any
+`git stash pop` (or any edit landing within the same second as a prior
+build), do `make clean && make` before trusting the result** — this
+codebase's `Makefile` has no header-dependency tracking either (only
+`.cpp` sources are prerequisites), so a header-only change (e.g. to
+`third_party/NotSoFatso/Wave_FDS.h`) silently no-ops on a plain `make`
+regardless.
+
 ## Out of scope (by user decision)
 
 - CoreMIDI live playback (the original could play through a MIDI device;
