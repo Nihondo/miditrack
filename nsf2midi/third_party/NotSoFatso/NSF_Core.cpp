@@ -1941,6 +1941,13 @@ void CNSFCore::SetChannelOptions(UINT chan,int mix,int vol,int pan,int inv)
 
 	if((mix == 0) || (mix == 1))
 	{
+		// bChannelMix[] はチャンネルの物理的な再生順 (VRC6, MMC5, N106, FME-7/S5B, FDS)
+		// でパックされており、CHANNEL_* 定数の公開順 (VRC6, VRC7FM, FDS, MMC5, N163, S5B)
+		// とは一致しない (EmulateAPU() のミキシング呼び出しが参照する実際のインデックスを
+		// 参照)。単純な `chan - 5` はこのズレを無視しており、VRC6 (たまたま両者の先頭が
+		// 一致する) 以外の拡張チャンネルすべてで無関係なインデックスを書き換えてしまう
+		// バグだった。CHANNEL_VRC7FM1-6 (8-13) はそもそも bChannelMix を経由せず
+		// VRC7_Mix() で別処理されるため、ここではミュート不可 (デフォルトで無視)。
 		switch(chan)
 		{
 		case 0:	mWave_Squares.bChannelMix[0] = mix; break;
@@ -1948,7 +1955,18 @@ void CNSFCore::SetChannelOptions(UINT chan,int mix,int vol,int pan,int inv)
 		case 2:	mWave_TND.bTriChannelMix = mix; break;
 		case 3:	mWave_TND.bNoiseChannelMix = mix; break;
 		case 4:	mWave_TND.bDMCChannelMix = mix; break;
-		default: bChannelMix[chan - 5] = mix; break;
+		case 5: case 6: case 7:				// CHANNEL_VRC6SQUARE1..VRC6SAW -> bChannelMix[0..2]
+			bChannelMix[chan - 5] = mix; break;
+		case 14:								// CHANNEL_FDS -> bChannelMix[23]
+			bChannelMix[23] = mix; break;
+		case 15: case 16: case 17:				// MMC5_SQUARE1..MMC5_DPCM -> bChannelMix[3..5]
+			bChannelMix[chan - 12] = mix; break;
+		case 18: case 19: case 20: case 21:	// N163_WAVE1..WAVE8 -> bChannelMix[6..13]
+		case 22: case 23: case 24: case 25:
+			bChannelMix[chan - 12] = mix; break;
+		case 26: case 27: case 28:				// S5B_SQUARE1..3 -> bChannelMix[20..22]
+			bChannelMix[chan - 6] = mix; break;
+		default: break;
 		}
 	}
 

@@ -549,6 +549,63 @@ for every NES channel, the same way it already does for VGM via
   volume slider while the remaining hardware-selected tracks stayed
   disabled.
 
+## Fixed: `--chip-render` selecting FDS (or MMC5/N163/S5B) rendered silence
+
+`RenderChipWav()` mutes all 29 NotSoFatso mixer channels and unmutes only
+the selected ones via `CNSFCore::SetChannelOptions(chan, mix, ...)`
+(`third_party/NotSoFatso/NSF_Core.cpp`). That function's `mix` branch used
+to compute the internal mixer-flag array index as a flat `chan - 5` for
+every channel above the 5 "main" ones (`SQUARE1/2`, `TRIANGLE`, `NOISE`,
+`DPCM`). This is wrong: `bChannelMix[24]` is packed in the order
+`EmulateAPU()`'s own mixing calls actually read it in — VRC6 (3), MMC5 (3),
+N106 (8), FME-7/S5B (3), FDS (1) — while the public `CHANNEL_*` constants
+(`NSF_Core.h`) are ordered VRC6 (3), VRC7FM (6), FDS (1), MMC5 (3), N163
+(8), S5B (3). Only VRC6 happens to have the same starting offset in both
+orderings, so `chan - 5` silently wrote to the wrong element (or, for
+`CHANNEL_FDS = 14`, to `bChannelMix[9]` — the slot N163's 4th channel
+actually reads) for every other expansion chip. Concretely: unmuting FDS
+via `SetChannelOptions(CHANNEL_FDS, 1, ...)` never touched
+`bChannelMix[23]` (the index `mWave_FDS.DoTicks()` actually checks), so FDS
+stayed muted from the initial all-mute loop and rendered pure silence —
+this is what a user reported as "FDS sounds missing from the original
+hardware audio render" (`miditrack`'s "原曲の音源" track source, which
+calls this same `--chip-render` path via `nsf_chip.py`). N163/S5B/MMC5 had
+the same class of bug, just landing on different wrong indices.
+
+Fixed by replacing the flat `default: bChannelMix[chan - 5]` with explicit
+`case` ranges that map each public `CHANNEL_*`/`N163_WAVE*`/`S5B_SQUARE*`
+value to the *actual* index used elsewhere in `EmulateAPU()`
+(`SetChannelOptions()`'s switch statement now documents this packing order
+inline). `CHANNEL_VRC7FM1-6` (8-13) is left as a no-op: VRC7 output never
+goes through `bChannelMix` at all — it's mixed separately via
+`VRC7_Mix()` — so this API could never mute it either before or after this
+fix (`nsf2midi` doesn't expose VRC7 as a selectable channel anyway; see
+`channel_map.cpp`'s `UnsupportedChipName()`). EPSM channels (`chan >= 29`)
+were already rejected by this function's own early `if(chan >= 29) return;`
+guard and remain so — also consistent with EPSM being unsupported here.
+
+This is the one deliberate exception to treating `third_party/NotSoFatso`
+as a frozen vendored drop: it's a straightforward upstream indexing bug in
+a mixer-mute helper the original Winamp-plugin/DLL-wrapper callers
+(dropped from this vendoring, see `third_party/NotSoFatso/README.md`)
+apparently never exercised for anything but VRC6, so it went unnoticed
+until this project's `--chip-render`/`--chip-wav` selective-mute usage hit
+it. The ordinary MIDI-conversion path (`main.cpp`'s ~line 378) also calls
+`SetChannelOptions()`, but only ever to unmute *every* channel
+(`mix=1` for `i` in `0..28`), which this bug never affected — the flat-vs-
+packed index mismatch only matters when muting/unmuting a *subset*.
+
+Verified with a hand-built minimal NSF (`NESM` header, `nExtraChip =
+EXTSOUND_FDS`, an init routine that writes a 64-byte ramp into the FDS
+wave table via `$4089`/`$4040-$407F` and sets a fixed volume-envelope gain
+and nonzero frequency via `$4080`/`$4082`/`$4083`, silent play routine):
+`--chip-render FDS --track 0 --sample-count 44100` against the pre-fix
+binary produced a WAV with peak amplitude 0 (silence, reproducing the bug
+exactly); the identical command against the post-fix binary produced peak
+amplitude 7812 (audible FDS output). `make test` (the existing
+`tests/test_detector.cpp` suite) still passes — it never exercises
+`SetChannelOptions()`.
+
 ## Out of scope (by user decision)
 
 - CoreMIDI live playback (the original could play through a MIDI device;
