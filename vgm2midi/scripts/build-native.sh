@@ -56,4 +56,10 @@ cmake -S "$project_dir/native" -B "$build_dir" -G Ninja \
   -DFETCHCONTENT_SOURCE_DIR_LIBVGM="$source_dir" \
   -DVGM2MIDI_NATIVE_CACHE="$cache_dir"
 cmake --build "$build_dir" --target vgm2midi_stems
-echo "$build_dir/vgm2midi_stems"
+
+# Only the finished binary is copied into the Dropbox checkout; the mutable
+# cache/source/build directories above stay external per the guard loop.
+installed_dir="$project_dir/native/bin"
+mkdir -p "$installed_dir"
+cp "$build_dir/vgm2midi_stems" "$installed_dir/vgm2midi_stems"
+echo "$installed_dir/vgm2midi_stems"

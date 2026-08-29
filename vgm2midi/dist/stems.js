@@ -40,7 +40,7 @@ const path = __importStar(require("path"));
 /** libvgm helper invocation contract for sample-exact chip stem rendering. */
 function renderLibvgmStems(inputPath, outputDirectory, totalSamples) {
     const helper = process.env.VGM2MIDI_STEMS_HELPER
-        ?? '/tmp/vgm2midi-native-build/vgm2midi_stems';
+        ?? path.join(__dirname, '..', 'native', 'bin', 'vgm2midi_stems');
     if (!fs.existsSync(helper)) {
         throw new Error(`--stems requires the native helper; run vgm2midi/scripts/build-native.sh or set VGM2MIDI_STEMS_HELPER (${helper})`);
     }

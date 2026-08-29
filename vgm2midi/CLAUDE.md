@@ -1043,14 +1043,25 @@ npm run verify:native-stems
 
 `scripts/build-native.sh` pins libvgm to `57585ea`. Its mutable source, cache,
 and build directories default to `/tmp/vgm2midi-libvgm`, its `source` child,
-and `/tmp/vgm2midi-native-build`; they must stay outside this checkout. Set
-`VGM2MIDI_NATIVE_CACHE`, `VGM2MIDI_LIBVGM_SOURCE`, or
-`VGM2MIDI_NATIVE_BUILD` to choose other external locations. A locally cached
-pin is checked out without fetching. `VGM2MIDI_NATIVE_OFFLINE=1` is useful in
-CI: it fails before any git action when the source cache is absent, and fails
-without fetching when a cached checkout lacks the pin. Native manifest strings
-must JSON-escape quotes, backslashes, and controls while passing UTF-8 bytes
-through unchanged; `verify:native-stems` checks this with quote/backslash paths.
+and `/tmp/vgm2midi-native-build`; they must stay outside this checkout (a
+macOS reboot clears `/tmp`, which is why the finished binary — not the
+mutable state — gets copied out, see below). Set `VGM2MIDI_NATIVE_CACHE`,
+`VGM2MIDI_LIBVGM_SOURCE`, or `VGM2MIDI_NATIVE_BUILD` to choose other external
+locations. A locally cached pin is checked out without fetching.
+`VGM2MIDI_NATIVE_OFFLINE=1` is useful in CI: it fails before any git action
+when the source cache is absent, and fails without fetching when a cached
+checkout lacks the pin. Native manifest strings must JSON-escape quotes,
+backslashes, and controls while passing UTF-8 bytes through unchanged;
+`verify:native-stems` checks this with quote/backslash paths.
+
+After a successful build, the script copies only the finished
+`vgm2midi_stems` binary into `native/bin/` inside this checkout (gitignored —
+it's architecture-specific and reproducible from the pin, so it isn't
+committed). `renderLibvgmStems()` (`src/stems.ts`) resolves the helper from
+the `VGM2MIDI_STEMS_HELPER` env var, or else `native/bin/vgm2midi_stems`
+next to the installed package. This means a `/tmp`-clearing reboot no longer
+requires re-running `build-native.sh` before the next `--stems` run, as long
+as `native/bin/` was already populated.
 
 Audit a mounted, immutable corpus with:
 
