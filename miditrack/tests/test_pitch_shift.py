@@ -1,7 +1,10 @@
 """miditrack.pitch_shift のテスト。
 
 pitch_shift.sh を実際には起動せず、subprocess.run() を差し替えて
-argv構造と shell=False の呼び出し規約、バリデーション規則だけを検証する。
+argv構造と shell=False の呼び出し規約だけを検証する。速度・ピッチの
+バリデーション規則自体はmidi.validate_variation_options()側にあり、
+tests/test_midi.pyのTestValidateVariationOptionsで検証する
+（このモジュールはchipNoiseステム同期専用に縮小されたため）。
 """
 
 from __future__ import annotations
@@ -47,51 +50,6 @@ class TestResolvePitchShiftBin(unittest.TestCase):
         resolved = pitch_shift.resolve_pitch_shift_bin()
         self.assertTrue(resolved.endswith("pitch_shift.sh"))
         self.assertTrue(Path(resolved).is_file())
-
-
-class TestValidatePitchShiftOptions(unittest.TestCase):
-    def test_none_uses_defaults(self) -> None:
-        speeds, pitches = pitch_shift.validate_pitch_shift_options(None, None)
-        self.assertEqual(speeds, pitch_shift.DEFAULT_SPEEDS)
-        self.assertEqual(pitches, pitch_shift.DEFAULT_PITCHES)
-
-    def test_custom_values_are_parsed_as_floats(self) -> None:
-        speeds, pitches = pitch_shift.validate_pitch_shift_options([1.5, 2], [-3, 0, 3])
-        self.assertEqual(speeds, [1.5, 2.0])
-        self.assertEqual(pitches, [-3.0, 0.0, 3.0])
-
-    def test_empty_list_is_rejected(self) -> None:
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options([], None)
-
-    def test_non_numeric_value_is_rejected(self) -> None:
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options(["fast"], None)
-
-    def test_bool_value_is_rejected(self) -> None:
-        # bool は int のサブクラスなので明示的に弾く必要がある。
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options([True], None)
-
-    def test_out_of_range_speed_is_rejected(self) -> None:
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options([0], None)
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options([100], None)
-
-    def test_out_of_range_pitch_is_rejected(self) -> None:
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options(None, [-100])
-
-    def test_too_many_speeds_is_rejected(self) -> None:
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options(list(range(1, 20)), None)
-
-    def test_too_many_combinations_is_rejected(self) -> None:
-        speeds = [1.0] * pitch_shift.MAX_SPEED_COUNT
-        pitches = [0] * pitch_shift.MAX_PITCH_COUNT
-        with self.assertRaises(PitchShiftError):
-            pitch_shift.validate_pitch_shift_options(speeds, pitches)
 
 
 class TestRunPitchShift(unittest.TestCase):

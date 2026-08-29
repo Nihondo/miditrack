@@ -107,7 +107,7 @@
         <audio id="player" controls preload="metadata"></audio>
       </div>
 
-      <div class="transform-panel">
+      <div class="variation-panel">
         <p class="field-label">全体の速度・ピッチ</p>
         <div class="convert-options">
           <div class="convert-field">
@@ -119,25 +119,23 @@
             <input type="number" id="transform-transpose" value="0" min="-24" max="24" step="1">
           </div>
         </div>
-        <p class="field-help">MIDIのテンポとノート番号に直接反映されるため音質劣化がなく、試聴・WAVダウンロード・MIDIダウンロードのすべてに反映されます。</p>
-      </div>
+        <p class="field-help">MIDIのテンポとノート番号を直接書き換えるため音質劣化がなく、試聴・WAVダウンロード・MIDIダウンロードのすべてに反映されます。</p>
 
-      <div class="pitch-shift-panel">
-        <p class="field-label">速度・ピッチのバリエーション</p>
+        <p class="field-label variation-subsection">バリエーションをまとめて生成</p>
         <div class="convert-options">
           <div class="convert-field">
-            <label for="pitch-shift-speeds">速度倍率（カンマ区切り）</label>
-            <input type="text" id="pitch-shift-speeds" value="1.2, 0.8">
+            <label for="variation-speeds">速度倍率（カンマ区切り）</label>
+            <input type="text" id="variation-speeds" value="1.2, 0.8">
           </div>
           <div class="convert-field">
-            <label for="pitch-shift-pitches">ピッチ（半音、カンマ区切り）</label>
-            <input type="text" id="pitch-shift-pitches" value="-2, -1, 0, 1, 2">
+            <label for="variation-transposes">ピッチ（半音、カンマ区切り）</label>
+            <input type="text" id="variation-transposes" value="-2, -1, 0, 1, 2">
           </div>
         </div>
         <div class="toolbar">
-          <button type="button" class="button secondary" id="pitch-shift-button">速度・ピッチ違いをZIPでダウンロード</button>
+          <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード（WAV+MIDI）</button>
         </div>
-        <p class="field-help">こちらは試聴WAVをrubberbandで加工する方式です。組み合わせをまとめて量産したい場合はこちらを使ってください（上の「全体の速度・ピッチ」とは独立に動作します）。</p>
+        <p class="field-help">上と同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAVとMIDIをZIPにまとめます。上の「全体の速度・ピッチ」の設定は変更されません。</p>
       </div>
     </article>
   </main>

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -15,10 +16,10 @@ from unittest import mock
 
 import mido
 
-from miditrack import libvgm, nsf_chip
+from miditrack import libvgm, nsf_chip, preferences
 from miditrack.convert import SourceFormat
 from miditrack.errors import ConvertError
-from miditrack.web import WebSession, create_app
+from miditrack.web import WebSession, create_app, resolve_startup_soundfont_override
 
 
 def build_zip_bytes(members: dict[str, bytes]) -> bytes:
@@ -30,6 +31,31 @@ def build_zip_bytes(members: dict[str, bytes]) -> bytes:
 
 TOKEN = "test-token"
 AUTH_HEADERS = {"X-Miditrack-Token": TOKEN}
+
+# POST /api/soundfontはpreferences.save_preferences()を呼ぶため、このモジュール
+# 全体で実際のユーザー設定(~/Library/Application Support/miditrack/preferences.json)
+# を汚染しないよう、一時ディレクトリへ差し替える。TestWebAppPreferencesが
+# 自分のテスト用に一時的に切り替える分もこの上に正しくネストして復元される。
+_preferences_tmpdir: tempfile.TemporaryDirectory | None = None
+_preferences_env_backup: str | None = None
+
+
+def setUpModule() -> None:
+    global _preferences_tmpdir, _preferences_env_backup
+    _preferences_tmpdir = tempfile.TemporaryDirectory()
+    _preferences_env_backup = os.environ.get("MIDITRACK_PREFERENCES_PATH")
+    os.environ["MIDITRACK_PREFERENCES_PATH"] = str(
+        Path(_preferences_tmpdir.name) / "preferences.json"
+    )
+
+
+def tearDownModule() -> None:
+    if _preferences_env_backup is None:
+        os.environ.pop("MIDITRACK_PREFERENCES_PATH", None)
+    else:
+        os.environ["MIDITRACK_PREFERENCES_PATH"] = _preferences_env_backup
+    if _preferences_tmpdir is not None:
+        _preferences_tmpdir.cleanup()
 
 
 def build_fixture_bytes() -> bytes:
@@ -435,73 +461,206 @@ class TestWebApp(unittest.TestCase):
         response = self.client.get("/api/download/wav", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 400)
 
-    # --- 速度・ピッチのバリエーション ---
+    # --- 速度・ピッチのバリエーション（MIDIレイヤー一括生成） ---
 
-    def test_pitch_shift_renders_first_when_not_yet_rendered(self) -> None:
+    def test_variations_default_lists_produce_ten_combinations(self) -> None:
         self._upload()
-        response = self.client.post("/api/pitch-shift", headers=AUTH_HEADERS)
+        response = self.client.post("/api/variations", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(len(self.render_calls), 1)
-        self.assertEqual(len(self.pitch_shift_calls), 1)
-        # 既定値（速度2種 x ピッチ5種）= 10件。
+        # 既定値（速度2種 x ピッチ5種）= 10件。単体変換と同じMIDI適用+レンダリングを
+        # 組み合わせの数だけ呼ぶので、render_callsも10回になる。
         self.assertEqual(len(payload["items"]), 10)
-        self.assertEqual(payload["downloadUrl"], "/api/download/pitch-shift")
+        self.assertEqual(payload["downloadUrl"], "/api/download/variations")
+        self.assertEqual(len(self.render_calls), 10)
+        # バッチ経路はMIDIレイヤーで完結し、rubberband(pitch_shift.sh)は
+        # 一切呼ばれない（このfixtureにはchip_stem_pathが無いため同期も不要）。
+        # これが本改修の看板となる回帰ガード: 旧実装のようにWAV後処理へは
+        # 一切フォールバックしない。
+        self.assertEqual(self.pitch_shift_calls, [])
 
-    def test_pitch_shift_uses_custom_speeds_and_pitches(self) -> None:
+    def test_variations_uses_custom_lists(self) -> None:
         self._upload()
-        self.client.post("/api/render", headers=AUTH_HEADERS)
         response = self.client.post(
-            "/api/pitch-shift",
+            "/api/variations",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
-            data=json.dumps({"speeds": [1.5], "pitches": [-1, 1]}),
+            data=json.dumps({"speeds": [1.5], "transposes": [-1, 1]}),
         )
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(len(payload["items"]), 2)
-        _, _, speeds, pitches = self.pitch_shift_calls[-1]
-        self.assertEqual(speeds, [1.5])
-        self.assertEqual(pitches, [-1, 1])
+        self.assertEqual(len(self.render_calls), 2)
 
-    def test_pitch_shift_rejects_too_many_combinations(self) -> None:
+    def test_variations_rejects_too_many_combinations(self) -> None:
         self._upload()
-        speeds = [1.0] * 8
-        pitches = [0] * 12
+        speeds = [round(1.0 + i * 0.01, 2) for i in range(6)]
+        transposes = list(range(8))
         response = self.client.post(
-            "/api/pitch-shift",
+            "/api/variations",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
-            data=json.dumps({"speeds": speeds, "pitches": pitches}),
+            data=json.dumps({"speeds": speeds, "transposes": transposes}),
         )
-        self.assertEqual(response.status_code, 502)
-        self.assertEqual(len(self.pitch_shift_calls), 0)
+        # バリデーション失敗はそもそも400が正しい（旧実装はPitchShiftError経由で502だった）。
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.render_calls, [])
 
-    def test_pitch_shift_without_upload_is_rejected(self) -> None:
-        response = self.client.post("/api/pitch-shift", headers=AUTH_HEADERS)
+    def test_variations_rejects_non_integer_transpose(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"transposes": [1.5]}),
+        )
         self.assertEqual(response.status_code, 400)
 
-    def test_download_pitch_shift_requires_prior_generation(self) -> None:
-        self._upload()
-        response = self.client.get("/api/download/pitch-shift", headers=AUTH_HEADERS)
+    def test_variations_without_upload_is_rejected(self) -> None:
+        response = self.client.post("/api/variations", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 400)
 
-    def test_download_pitch_shift_returns_zip_with_all_variants(self) -> None:
+    def test_variations_zip_contains_wav_and_mid_for_every_combination(self) -> None:
         self._upload()
-        self.client.post("/api/pitch-shift", headers=AUTH_HEADERS)
-        response = self.client.get("/api/download/pitch-shift", headers=AUTH_HEADERS)
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.2, 0.8], "transposes": [-1, 0]}),
+        )
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
         self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
         self.assertIn(".zip", response.headers.get("Content-Disposition", ""))
         archive = zipfile.ZipFile(io.BytesIO(response.data))
-        self.assertEqual(len(archive.namelist()), 10)
+        names = archive.namelist()
+        self.assertEqual(len(names), 8)  # 2速度 x 2移調 x (wav+mid)
+        for name in names:
+            self.assertTrue(name.startswith("fixture_"))
+        wav_stems = {n[: -len(".wav")] for n in names if n.endswith(".wav")}
+        mid_stems = {n[: -len(".mid")] for n in names if n.endswith(".mid")}
+        self.assertEqual(len(wav_stems), 4)
+        self.assertEqual(wav_stems, mid_stems)
 
-    def test_pitch_shift_invalidated_by_new_render(self) -> None:
+    def test_variation_filenames_encode_speed_and_transpose(self) -> None:
         self._upload()
-        self.client.post("/api/pitch-shift", headers=AUTH_HEADERS)
-        self.client.get("/api/download/pitch-shift", headers=AUTH_HEADERS)
-        # 再レンダリングすると古いピッチシフトZIPは無効化される。
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.2], "transposes": [-2]}),
+        )
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        self.assertIn("fixture_x1.2_p-2.wav", archive.namelist())
+        self.assertIn("fixture_x1.2_p-2.mid", archive.namelist())
+
+    def test_variation_midi_carries_scaled_tempo_and_shifted_notes(self) -> None:
+        self._upload()
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [2.0], "transposes": [12]}),
+        )
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        variation_midi = mido.MidiFile(file=io.BytesIO(archive.read("fixture_x2_p12.mid")))
+        tempos = [
+            m.tempo for track in variation_midi.tracks for m in track if m.type == "set_tempo"
+        ]
+        self.assertEqual(tempos, [250000])  # 500000 / 2.0
+        note_on = next(m for m in variation_midi.tracks[0] if m.type == "note_on")
+        self.assertEqual(note_on.note, 72)  # 60 + 12
+
+    def test_variations_apply_track_assignments(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}}),
+        )
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.0], "transposes": [0]}),
+        )
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        variation_midi = mido.MidiFile(file=io.BytesIO(archive.read("fixture_x1_p0.mid")))
+        program_change = next(m for m in variation_midi.tracks[0] if m.type == "program_change")
+        self.assertEqual(program_change.program, 30)
+
+    def test_variations_do_not_change_session_speed_and_transpose(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/transform",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speed": 1.5, "transpose": 3}),
+        )
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.2, 0.8], "transposes": [-2, -1, 0, 1, 2]}),
+        )
+        session_payload = self.client.get("/api/session", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(session_payload["speed"], 1.5)
+        self.assertEqual(session_payload["transpose"], 3)
+        # /api/downloadのMIDIもセッションの値(1.5/3)を反映したままである
+        # （バッチが固定名miditrack_edited.midを上書きしていないことのガード）。
+        download = self.client.get("/api/download", headers=AUTH_HEADERS)
+        downloaded_midi = mido.MidiFile(file=io.BytesIO(download.data))
+        tempos = [
+            m.tempo for track in downloaded_midi.tracks for m in track if m.type == "set_tempo"
+        ]
+        self.assertEqual(tempos, [round(500000 / 1.5)])
+        note_on = next(m for m in downloaded_midi.tracks[0] if m.type == "note_on")
+        self.assertEqual(note_on.note, 63)  # 60 + 3
+
+    def test_variations_preserve_existing_audition_render(self) -> None:
+        self._upload()
         self.client.post("/api/render", headers=AUTH_HEADERS)
-        response = self.client.get("/api/download/pitch-shift", headers=AUTH_HEADERS)
+        before = self.client.get(f"/api/audio?v=1&token={TOKEN}").data
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.2, 0.8], "transposes": [-2, -1, 0, 1, 2]}),
+        )
+        after = self.client.get(f"/api/audio?v=1&token={TOKEN}").data
+        self.assertEqual(before, after)
+        session_payload = self.client.get("/api/session", headers=AUTH_HEADERS).get_json()
+        self.assertTrue(session_payload["hasRender"])
+
+    def test_download_variations_requires_prior_generation(self) -> None:
+        self._upload()
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 400)
+
+    def test_download_variations_invalidated_by_track_change(self) -> None:
+        self._upload()
+        self.client.post("/api/variations", headers=AUTH_HEADERS)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}}),
+        )
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_variations_work_dir_is_cleaned_up(self) -> None:
+        self._upload()
+        self.client.post("/api/variations", headers=AUTH_HEADERS)
+        session = self.app.config["MIDITRACK_SESSION"]
+        self.assertFalse((session.root / "variations_work").exists())
+        self.assertTrue((session.root / "variations.zip").exists())
+
+    def test_variations_leave_no_render_temp_files(self) -> None:
+        self._upload()
+        self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.2, 0.8], "transposes": [-1, 0, 1]}),
+        )
+        session = self.app.config["MIDITRACK_SESSION"]
+        self.assertEqual(list(session.root.glob("render-*.part*.wav")), [])
+        self.assertEqual(list(session.root.glob("render-*.dry.mid")), [])
+        self.assertEqual(list(session.root.glob("render-*.game.mid")), [])
+        self.assertEqual(list(session.root.glob("render-*.gm.mid")), [])
+        self.assertEqual(list(session.root.glob("render-*.stemsync")), [])
 
     # --- SoundFont選択 ---
 
@@ -1087,40 +1246,90 @@ class TestWebAppChipStem(unittest.TestCase):
         self.assertFalse(response.get_json()["hasChipStem"])
         self.assertIsNone(session.chip_stem_path)
 
-    def test_download_wav_and_pitch_shift_receive_mixed_audio(self) -> None:
+    def test_download_wav_receives_mixed_audio(self) -> None:
         self._upload_source_with_chip_noise()
 
         response = self.client.get("/api/download/wav", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, b"M" * 300)
 
-        session = self.app.config["MIDITRACK_SESSION"]
-        pitch_shifter_calls: list[Path] = []
+    def test_variations_sync_stem_per_combination(self) -> None:
+        # バッチの各組み合わせは自分自身のspeed/transposeでのみステム同期を判定する
+        # （セッション値でも「バッチだから常に同期」でもない）。speed=1.0/transpose=0の
+        # 組み合わせでは同期が走らないことが、この判定が正しく個別に行われている証拠。
+        pitch_shift_calls: list[tuple[float, float]] = []
 
         def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
-            pitch_shifter_calls.append(wav_path)
-            out = work_dir / "variant.wav"
-            out.write_bytes(b"0" * 100)
+            pitch_shift_calls.append((speeds[0], pitches[0]))
+            out = work_dir / "synced.wav"
+            out.write_bytes(b"S" * 120)
             return [out]
 
-        # pitch-shiftはensure_render()経由でaudio_path（合成後）を受け取ることを
-        # 確認する: 別appを新規に立てず、同じセッションに対して直接呼び出す。
-        # pitch_shift_endpoint()はaudio_pathをwork_dir内へコピーしてから渡すため
-        # （web.py参照）、パスそのものではなくコピーされた内容で検証する。
-        app2 = create_app(
+        app = create_app(
             token=TOKEN,
-            session=session,
+            session=WebSession(),
             renderer=self.fake_renderer,
             list_songs=self.fake_list_songs,
             converter=self.fake_converter_with_stem,
             mixer=self.fake_mixer,
             pitch_shifter=fake_pitch_shifter,
         )
-        client2 = app2.test_client()
-        response = client2.post("/api/pitch-shift", headers=AUTH_HEADERS)
+        client = app.test_client()
+        data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
+        client.post(
+            "/api/source", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
+        )
+        client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 0, "chipNoise": True}),
+        )
+        response = client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.0, 1.2], "transposes": [0]}),
+        )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(pitch_shifter_calls), 1)
-        self.assertEqual(pitch_shifter_calls[0].read_bytes(), b"M" * 300)
+        # speed=1.0/transpose=0の組み合わせは既定値なので同期しない。
+        # speed=1.2/transpose=0の組み合わせだけが同期される。
+        self.assertEqual(pitch_shift_calls, [(1.2, 0.0)])
+        app.config["MIDITRACK_SESSION"].clear()
+
+    def test_variations_mix_each_combination(self) -> None:
+        # 一部の組み合わせは非既定のspeed/transposeとなりステム同期が必要になるため、
+        # setUp()の既定app（pitch_shifter未注入）ではなくfakeを注入したappを使う。
+        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
+            out = work_dir / "synced.wav"
+            out.write_bytes(b"S" * 120)
+            return [out]
+
+        app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            renderer=self.fake_renderer,
+            list_songs=self.fake_list_songs,
+            converter=self.fake_converter_with_stem,
+            mixer=self.fake_mixer,
+            pitch_shifter=fake_pitch_shifter,
+        )
+        client = app.test_client()
+        data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
+        client.post(
+            "/api/source", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
+        )
+        client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 0, "chipNoise": True}),
+        )
+        response = client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.0, 1.2], "transposes": [0, 1]}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.mix_calls), 4)
+        app.config["MIDITRACK_SESSION"].clear()
 
     def test_transform_syncs_stem_before_mixing(self) -> None:
         pitch_shift_calls: list[tuple[Path, Path, list[float], list[float]]] = []
@@ -1835,6 +2044,194 @@ class TestWebAppNsfChipTrackSource(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["tracks"][0]["source"], "game")
+
+
+class TestWebAppPreferences(unittest.TestCase):
+    """楽器選択の「よく使う」設定（GET/PATCH /api/preferences）の挙動。
+
+    ユーザーの実際の設定ファイル(~/Library/Application Support/miditrack/
+    preferences.json)を汚染しないよう、MIDITRACK_PREFERENCES_PATHを
+    一時ディレクトリへ差し替える。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._env_backup = os.environ.get("MIDITRACK_PREFERENCES_PATH")
+        os.environ["MIDITRACK_PREFERENCES_PATH"] = str(
+            Path(self.tmp.name) / "preferences.json"
+        )
+        self.addCleanup(self._restore_env)
+        self.app = create_app(token=TOKEN, session=WebSession())
+        self.client = self.app.test_client()
+
+    def _restore_env(self) -> None:
+        if self._env_backup is None:
+            os.environ.pop("MIDITRACK_PREFERENCES_PATH", None)
+        else:
+            os.environ["MIDITRACK_PREFERENCES_PATH"] = self._env_backup
+
+    def test_get_preferences_defaults_to_empty(self) -> None:
+        response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {"pinnedPrograms": [], "usageCounts": {}, "selectedSoundfont": None},
+        )
+
+    def test_patch_updates_pinned_programs(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pinnedPrograms": [80, 40]}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["pinnedPrograms"], [80, 40])
+
+    def test_patch_persists_across_requests(self) -> None:
+        self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pinnedPrograms": [80], "usageCounts": {"80": 3}}),
+        )
+        response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
+        payload = response.get_json()
+        self.assertEqual(payload["pinnedPrograms"], [80])
+        self.assertEqual(payload["usageCounts"], {"80": 3})
+
+    def test_patch_partial_update_preserves_other_field(self) -> None:
+        self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pinnedPrograms": [80], "usageCounts": {"80": 1}}),
+        )
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"usageCounts": {"80": 2}}),
+        )
+        payload = response.get_json()
+        self.assertEqual(payload["pinnedPrograms"], [80])
+        self.assertEqual(payload["usageCounts"], {"80": 2})
+
+    def test_patch_requires_at_least_one_field(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_rejects_invalid_program(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pinnedPrograms": [128]}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_preferences_survive_across_separate_apps(self) -> None:
+        # 別ポート（≒別create_app()インスタンス）でも同じファイルを読み書きする
+        # ことの回帰ガード ― ブラウザのlocalStorageと違い、プロセスの
+        # 起動ごとに変わるポートに依存しないことがこの機能の目的そのもの。
+        self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pinnedPrograms": [81]}),
+        )
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        response = other_client.get("/api/preferences", headers=AUTH_HEADERS)
+        self.assertEqual(response.get_json()["pinnedPrograms"], [81])
+
+    def _make_soundfont_file(self) -> Path:
+        path = Path(self.tmp.name) / "dummy.sf2"
+        path.write_bytes(b"0" * 16)
+        return path
+
+    def test_setting_soundfont_persists_selected_soundfont(self) -> None:
+        soundfont_path = self._make_soundfont_file()
+        response = self.client.post(
+            "/api/soundfont",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"path": str(soundfont_path)}),
+        )
+        self.assertEqual(response.status_code, 200)
+        preferences_response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
+        self.assertEqual(
+            preferences_response.get_json()["selectedSoundfont"], str(soundfont_path)
+        )
+
+    def test_clearing_soundfont_clears_selected_soundfont(self) -> None:
+        soundfont_path = self._make_soundfont_file()
+        self.client.post(
+            "/api/soundfont",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"path": str(soundfont_path)}),
+        )
+        self.client.post(
+            "/api/soundfont",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"path": None}),
+        )
+        preferences_response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
+        self.assertIsNone(preferences_response.get_json()["selectedSoundfont"])
+
+    def test_selected_soundfont_survives_across_separate_apps(self) -> None:
+        soundfont_path = self._make_soundfont_file()
+        self.client.post(
+            "/api/soundfont",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"path": str(soundfont_path)}),
+        )
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        response = other_client.get("/api/preferences", headers=AUTH_HEADERS)
+        self.assertEqual(response.get_json()["selectedSoundfont"], str(soundfont_path))
+
+
+class TestResolveStartupSoundfontOverride(unittest.TestCase):
+    """web.resolve_startup_soundfont_override() — run_server()の起動時復元ロジック。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._env_backup = os.environ.get("MIDITRACK_PREFERENCES_PATH")
+        os.environ["MIDITRACK_PREFERENCES_PATH"] = str(
+            Path(self.tmp.name) / "preferences.json"
+        )
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self) -> None:
+        if self._env_backup is None:
+            os.environ.pop("MIDITRACK_PREFERENCES_PATH", None)
+        else:
+            os.environ["MIDITRACK_PREFERENCES_PATH"] = self._env_backup
+
+    def _make_soundfont_file(self, name: str = "dummy.sf2") -> Path:
+        path = Path(self.tmp.name) / name
+        path.write_bytes(b"0" * 16)
+        return path
+
+    def test_explicit_soundfont_always_wins_returns_none(self) -> None:
+        saved = self._make_soundfont_file()
+        preferences.save_preferences({"selectedSoundfont": str(saved)})
+        explicit = self._make_soundfont_file("explicit.sf2")
+        self.assertIsNone(resolve_startup_soundfont_override(explicit))
+
+    def test_no_explicit_soundfont_restores_saved_one(self) -> None:
+        saved = self._make_soundfont_file()
+        preferences.save_preferences({"selectedSoundfont": str(saved)})
+        self.assertEqual(resolve_startup_soundfont_override(None), saved)
+
+    def test_no_saved_soundfont_returns_none(self) -> None:
+        self.assertIsNone(resolve_startup_soundfont_override(None))
+
+    def test_saved_soundfont_no_longer_existing_returns_none(self) -> None:
+        preferences.save_preferences(
+            {"selectedSoundfont": str(Path(self.tmp.name) / "deleted.sf2")}
+        )
+        self.assertIsNone(resolve_startup_soundfont_override(None))
 
 
 if __name__ == "__main__":

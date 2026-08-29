@@ -49,7 +49,7 @@ Everything runs locally on your machine; no file is ever uploaded anywhere else.
 | **spc2midi** | Converts SNES `.spc`/`.spc2`/`.rsn` files to MIDI (plus a matching SoundFont) | Bundled inside miditrack, or the terminal directly |
 | **vgm2midi** | Converts VGM/VGZ command-log files (Genesis, arcade, PC-88, and more) to MIDI | Bundled inside miditrack, or the terminal directly |
 | **midi2wav.sh** | Renders any `.mid` file to a listenable `.wav` using fluidsynth | Called automatically by all four tools above, or run directly |
-| **pitch_shift.sh** | Generates speed/pitch variations of an audio file as WAVs | Called automatically by miditrack's ZIP-export feature, or run directly |
+| **pitch_shift.sh** | Generates speed/pitch variations of an audio file as WAVs | Called by miditrack to keep a `chipNoise` stem in sync with a MIDI-layer speed/pitch transform, or run directly |
 
 Most people only ever need `miditrack` — the three converters and two scripts exist as its building blocks, but each also works standalone if you'd rather script a conversion pipeline than click through a browser.
 

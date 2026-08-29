@@ -29,12 +29,16 @@ src/miditrack/
   render.py                midi2wav.sh resolution + safe subprocess invocation
   convert.py               nsf2midi/spc2midi/vgm2midi resolution, -l parsing, safe invocation,
                             ZIP extraction (zip-slip guarded), gme-format m3u playlist parsing
-  pitch_shift.py           pitch_shift.sh resolution + safe subprocess invocation, speed/pitch
-                            option validation
+  pitch_shift.py           pitch_shift.sh resolution + safe subprocess invocation, used only
+                            to keep a chipNoise stem in sync with a MIDI-layer transform
+                            (speed/pitch option validation itself lives in midi.py)
   mix.py                   ffmpeg resolution + safe subprocess invocation, mixes an NSF/VGM
                             hardware-noise stem into the fluidsynth render
   libvgm.py                validates VGM track/channel sidecars and invokes the pinned native
                             helper for a selected physical-channel mix
+  preferences.py           favorite-instrument shortlist (pinned/usage) and the last-selected
+                            SoundFont, persisted to ~/Library/Application Support/miditrack/
+                            preferences.json
   web.py                   create_app() / run_server() (tools/pixelart_web.py shape)
   web_assets/               index.html / app.css / app.js
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
@@ -141,41 +145,25 @@ directories up from `src/miditrack/render.py` to the repo root) → a bare
 `"midi2wav"` on `PATH` (letting `subprocess.run()`'s own PATH search
 resolve it, still without invoking a shell).
 
-## Why "speed/pitch variations" reuses `pitch_shift.sh` instead of a new pipeline
+## Why `pitch_shift.py` still exists — only for chip-stem sync, not for batch variations
 
-`pitch_shift.sh` already does exactly this job — generate every combination
-of speed factor × pitch (semitones) as separate WAVs via `rubberband` — for
-an arbitrary input file. Before this feature, getting pitch-shifted
-variants of a `miditrack` render meant downloading the WAV, then running
-`pitch_shift.sh` by hand in a terminal against the project root's absolute
-path. `POST /api/pitch-shift` folds that manual step back into the same
-page the render happened on, the same "callers converge on one place"
-reasoning `midi2wav.sh` documents above — a fifth caller (`pitch_shift.sh`
-here) of an existing script beats a new from-scratch pitch-shifting
-implementation.
+`src/miditrack/pitch_shift.py` originally implemented the entire "batch
+variations" feature: generate every combination of speed × pitch as
+separate WAVs via `rubberband`, by running `pitch_shift.sh` against the
+rendered WAV. That feature has since been replaced by the MIDI-layer batch
+described below — the module now survives purely to let
+`web._synced_stem()` keep a `chipNoise` stem (real recorded audio, not
+MIDI) in sync with a non-default speed/transpose. Do not delete this
+module: `_synced_stem()` has no MIDI-layer substitute, since scaling a
+tempo meta or shifting a note number does nothing to a `.wav`.
 
-`src/miditrack/pitch_shift.py` mirrors `render.py`'s own shape exactly:
-`resolve_pitch_shift_bin()` uses the identical resolution order
-(`PITCH_SHIFT_BIN` env var, fatal if set but not executable → the script
-found relative to this package's own resolved repo root → a bare
-`"pitch_shift.sh"` on `PATH`), and `run_pitch_shift()` calls
-`subprocess.run(argv, shell=False, cwd=work_dir, ...)` with an explicit
-`list[str]` argv, for the same reason `render.py` never shells out: this
-repository's own path contains a space and an `&`.
-
-**Why the input WAV is copied into a fresh work directory first, under a
-name derived from `original_name`**: `pitch_shift.sh` writes its outputs to
-the current directory using the *input's own filename stem* — e.g.
-`song_x1.2_p-2.wav`. The actual render lives at a path named after the
-internal render counter (`render-0001.wav`), which would produce
-meaningless output filenames. `pitch_shift_endpoint()` in `web.py` copies
-the current render to `work_dir / f"{original_name}.wav"` before invoking
-`run_pitch_shift()`, so the generated files are named after the song, not
-the render counter. `work_dir` (`pitch_shift_work/` under the session
-root) is wiped and recreated on every call rather than being made unique
-per attempt — there is no reason to keep more than the most recent
-generation around, and a fixed name avoids letting a session's temp
-directory grow unbounded across repeated clicks.
+`resolve_pitch_shift_bin()` uses the same resolution order every other
+`resolve_*_bin()` in this package follows (`PITCH_SHIFT_BIN` env var, fatal
+if set but not executable → the script found relative to this package's
+own resolved repo root → a bare `"pitch_shift.sh"` on `PATH`), and
+`run_pitch_shift()` calls `subprocess.run(argv, shell=False, cwd=work_dir,
+...)` with an explicit `list[str]` argv, for the same reason `render.py`
+never shells out: this repository's own path contains a space and an `&`.
 
 **Why `run_pitch_shift()` diffs `work_dir`'s `*.wav` files before/after the
 subprocess call, rather than constructing the expected output filenames
@@ -185,59 +173,114 @@ in its own shell arithmetic (awk formatting only affects the internal tempo
 ratio, not the filename). Reconstructing that exact string formatting in
 Python to predict filenames would be a second, drift-prone implementation
 of `pitch_shift.sh`'s own naming logic. Listing what's actually on disk
-after the run is both simpler and correct by construction; the one thing
-it must guard against — mistaking a leftover file from a previous attempt
-for freshly generated output — is why `work_dir` is always wiped before
-each run rather than reused.
+after the run is both simpler and correct by construction. This matters
+less now than it did for the old batch feature — `_synced_stem()` always
+calls with a single-element `[speed]`/`[transpose]` list, so the diff
+always yields exactly one file — but the guard against mistaking a
+leftover `.wav` for freshly generated output is still worth keeping, since
+`work_dir` here is a fresh `render-NNNN.stemsync/` directory rather than a
+long-lived one.
 
-**Why validation re-happens server-side (`validate_pitch_shift_options()`)
-and caps combination count**: the same "never trust client-side disabling
-alone" posture `convert.validate_convert_options()` documents below. A
-speed/pitch list is user-editable free text in the browser, and `pitch_shift.sh`
-launches one `rubberband` process per combination — an unbounded count from
-a hostile or fat-fingered request is both a resource-exhaustion risk and,
-for the common case of a slightly-too-enthusiastic list, a good place to
-fail fast with a clear message rather than let dozens of `rubberband`
-processes crawl along and time out. `MAX_SPEED_COUNT`/`MAX_PITCH_COUNT`/
-`MAX_COMBINATION_COUNT` in `pitch_shift.py` are practical caps sized well
-above `pitch_shift.sh`'s own default (2 speeds × 5 pitches = 10 files), not
-an attempt to model any real limit of `rubberband` itself.
+## Speed/pitch is a MIDI-layer edit — one control, one batch, sharing one render path
 
-**Why `pitch_shift_zip_path` shares `audio_path`'s invalidation lifecycle**:
-the generated ZIP is a derivative of the current render, not of the
-original MIDI — regenerating the render (a new "Apply & Audition" click, a
-SoundFont change, or a track re-assignment) makes any existing ZIP stale.
-`WebSession.invalidate_render()` and `reset_midi_state()` therefore clear
-`pitch_shift_zip_path` at the exact same points they already clear
-`audio_path`, so "has a valid render" and "has a valid pitch-shift ZIP for
-the current render" can never silently diverge. Like `audio_path`,
-`invalidate_render()` only nulls the pointer (actual file cleanup happens
-on the next generation or on `WebSession.clear()`); `reset_midi_state()`
-does the actual `unlink()` since that path fully tears down the session.
+`miditrack` has the actual MIDI, so a speed change is "divide every tempo
+meta by the ratio" and a pitch change is "add semitones to note numbers" —
+no time-stretch DSP, no artifacts, and the result is reflected in the
+downloadable `.mid` too, which is useful for taking the transposed/retimed
+arrangement into a DAW. `WebSession` carries one `speed_ratio`/
+`transpose_semitones` pair per session (not per track, unlike instrument/
+volume) and `PATCH /api/session/transform` sets them, independent of
+`PATCH /api/session/tracks` for the same reason `POST /api/soundfont` is
+its own endpoint: it is an orthogonal axis, not a per-track edit.
 
-## Added: speed/pitch also exists at the MIDI layer, not only via `pitch_shift.sh`
+`POST /api/variations` generates every combination of a speed list × a
+transpose list the same way — by writing each combination's own MIDI and
+rendering it — rather than post-processing the previewed WAV with
+`rubberband` (the feature's original implementation, described in the
+section above). This eliminates the DSP artifacts and audio-only output of
+the old approach, and lets one control (`_apply_to()` + rendering) serve
+both the single-value control and the batch, instead of maintaining two
+separate mechanisms with two separate UIs.
 
-The `pitch_shift.sh`-based feature above is the only way to get a
-speed/pitch variant if the audio has already left MIDI form — but
-`miditrack` is not starting from audio in the first place. It has the
-actual MIDI, so a speed change is "divide every tempo meta by the ratio"
-and a pitch change is "add semitones to note numbers" — no time-stretch
-DSP, no artifacts, and (unlike the WAV-only `pitch_shift.sh` path) the
-result is reflected in the downloadable `.mid` too, which is useful for
-taking the transposed/retimed arrangement into a DAW. `WebSession` carries
-one `speed_ratio`/`transpose_semitones` pair per session (not per track,
-unlike instrument/volume) and `PATCH /api/session/transform` sets them,
-independent of `PATCH /api/session/tracks` for the same reason
-`POST /api/soundfont` is its own endpoint: it is an orthogonal axis, not a
-per-track edit. `ensure_applied()` passes both into
-`midi.apply_assignments(..., speed=..., transpose=...)`, so every one of
-`/api/audio`, `/api/download/wav`, and `/api/download` picks it up through
-the same choke point instrument/volume already go through. The two
-speed/pitch features are deliberately kept side by side rather than one
-replacing the other: this one is for "audition the whole song faster/
-transposed and keep the edited MIDI," the ZIP button above is for "batch-
-produce several WAV variants to compare," and the batch feature's output
-is real audio a DAW can drop in directly without a MIDI player.
+**Why `ensure_render()` was split into a locked wrapper and an unlocked
+body (`_render_applied_midi()`)**: the batch endpoint needs to render N
+combinations without going through `ensure_render()` itself, for three
+concrete reasons, each of which was a real blocker during design:
+`WebSession.render_lock` is not reentrant, so calling `ensure_render()`
+from inside a loop that already holds it would deadlock; `ensure_render()`
+has an early-return that reuses the existing `audio_path` once rendered
+once, which would make every iteration after the first a no-op; and
+`ensure_render()` unlinks the *previous* `audio_path` after rendering a new
+one, which would delete the previous iteration's own output from under it.
+`_render_applied_midi(applied_path, wav_path, *, render_id, speed,
+transpose, chip_render_stem=None)` is the actual rendering body (job
+planning, stem sync, mixing) with no opinion about locking, the current
+session's `audio_path`, or `render_id` bookkeeping — those three concerns
+now live solely in the thin `ensure_render()` wrapper, which the batch
+endpoint never calls. The batch instead takes `render_lock` itself, once,
+for the whole loop, and calls `_render_applied_midi()` directly per
+combination with its own dedicated output path — never touching
+`audio_path`, so the existing audition render survives a batch run intact.
+
+**Why `_apply_to()`/`_has_transform()`/`_synced_stem()` take speed/transpose
+as arguments instead of temporarily writing them onto `WebSession`**: the
+server runs `make_server(..., threaded=True)`, so a batch request that
+temporarily overwrote `web_session.speed_ratio`/`transpose_semitones`
+while iterating would let a concurrent `GET /api/session` observe a value
+that was never actually the session's own setting — a real, user-visible
+bug, not just a style preference. A `try`/`finally` restore would paper
+over the read-observability problem while adding "restore path must never
+be skipped by any exception" as a new invariant to maintain. Passing both
+values as plain arguments through `_apply_to()` → `_render_applied_midi()`
+→ `_has_transform()`/`_synced_stem()` means the batch never mutates session
+state at all, so there is nothing to restore and no window where a
+concurrent reader could observe a wrong value.
+
+**Why each variation's MIDI is written to its own path, never
+`miditrack_edited.mid`**: that fixed name is `ensure_applied()`'s own
+output — the one `/api/download` returns — and is keyed to the *session's*
+speed/transpose, not any one batch combination's. `_apply_to()` takes an
+explicit `output_path`, so the batch writes each combination to
+`variations_work/{name}_x{speed}_p{transpose}.mid` and leaves
+`applied_path`/`apply_summary` completely untouched. This is what makes
+`test_variations_do_not_change_session_speed_and_transpose` pass: `/api/
+download` keeps returning the session's own transform after a batch run,
+never the last combination's.
+
+**Why the chip-hardware render is generated once per batch, not once per
+combination**: `_render_chip_hardware()` (VGM `libvgm`/NSF `nsf2midi
+--chip-render`) depends only on which channels are selected for hardware
+playback — never on speed/transpose, which only affects `_synced_stem()`'s
+post-processing of that same stem afterward. `POST /api/variations` calls
+it exactly once before the loop and passes the result into
+`_render_applied_midi(..., chip_render_stem=shared)` for every
+combination; `_render_applied_midi()` only owns (and cleans up) the stem
+it generated itself, so passing one in makes the caller responsible for it
+instead. This avoids re-running an emulation pass (a cost comparable to
+the fluidsynth render itself) N times for output that would be byte-
+identical each time.
+
+**Why the combination cap dropped from 40 to `MAX_VARIATION_COUNT = 12`**:
+the old cap modeled "how many `rubberband` subprocesses is reasonable to
+launch from one WAV," where the default (2×5=10) left headroom to spare.
+One combination is now a full `apply_assignments()` + fluidsynth render (and
+possibly an `ffmpeg` mix and a `rubberband` stem sync), each costing
+roughly what a single "Apply & Audition" click costs — and the whole batch
+holds `render_lock` for its entire duration, blocking any concurrent
+render. 12 was chosen to sit just above the shipped default of 10, not as
+a measurement of any hard resource limit.
+
+**Why `variations_zip_path` shares `audio_path`'s invalidation
+lifecycle, but for a different reason than before**: the field (renamed
+from `pitch_shift_zip_path`) is still cleared at the same two points —
+`invalidate_render()` and `reset_midi_state()` — but no longer because it
+is a derivative of `audio_path`; the batch never touches `audio_path` at
+all. It shares the lifecycle because it is a derivative of the *same
+inputs* `ensure_render()` itself depends on (assignments, volumes,
+track_sources, the effective SoundFont) — any edit that would invalidate a
+fresh audition render equally invalidates a previously-generated
+variations ZIP, since re-running the batch against those same inputs would
+produce different files.
 
 **Why tempo is scaled, not replaced**: `apply_assignments()` divides every
 existing `set_tempo` meta message's `tempo` (microseconds/quarter note) by
@@ -276,29 +319,31 @@ right before mixing, only when a transform is active**: `chip_stem_path`/
 audio, not MIDI — scaling the MIDI's tempo and transposing its notes does
 nothing to those WAVs, so leaving them untouched while the MIDI half speeds
 up/transposes would put the stem out of sync and out of tune with the rest
-of the mix the moment either control moves off its default. `ensure_render()`
-detects a non-default speed/transpose and, only then, copies each present
+of the mix the moment either control moves off its default.
+`_render_applied_midi()` detects a non-default speed/transpose (via the
+now-argument-taking `_has_transform()`) and, only then, copies each present
 stem into a fresh `render-NNNN.stemsync/` directory and calls the same
-injected `run_pitch_shift()` used by the ZIP feature with a single-element
-`[speed]`/`[transpose]` list — reusing `pitch_shift.sh` here instead of
-writing a second time-stretch implementation, and reusing the ZIP feature's
-own "diff `work_dir`'s `*.wav` files before/after, never predict the
-filename" trick since the combination count is always exactly one, so the
-result is always the sole newly-created file. The synced copies, not the
-original stem paths, are what get passed to `mix.mix_wav()`. At default
-speed/transpose, `run_pitch_shift()` is never called at all — this keeps
-the ordinary (untransformed) render path exactly as fast and dependency-free
-as before this feature, matching the project's existing "don't add ffmpeg/
-rubberband to the common case" posture for `mix.py`/`pitch_shift.py`.
+injected `run_pitch_shift()` with a single-element `[speed]`/`[transpose]`
+list — reusing `pitch_shift.sh` here instead of writing a second
+time-stretch implementation. The synced copies, not the original stem
+paths, are what get passed to `mix.mix_wav()`. At default speed/transpose,
+`run_pitch_shift()` is never called at all — this keeps the ordinary
+(untransformed) render path exactly as fast and dependency-free as before
+this feature, matching the project's existing "don't add ffmpeg/rubberband
+to the common case" posture for `mix.py`/`pitch_shift.py`.
 `render-NNNN.stemsync/` is removed in the same `finally` block that already
-cleans up `.partN.wav`/split-MIDI temp files.
+cleans up `.partN.wav`/split-MIDI temp files. **This is the sole remaining
+reason `pitch_shift.py` is still part of this codebase** — see the section
+above.
 
 **Why this and `gameSoundfont`'s track-subset split don't interact**: the
-MIDI split in `_plan_render_jobs()` happens against `applied_path`, which
-`ensure_applied()` already produced *with* the speed/transpose transform
-baked in — so both the game-SoundFont half and the GM half are rendered
-from already-transformed MIDI, and only the real-audio stems need the
-separate `pitch_shift.sh` pass described above.
+MIDI split in `_plan_render_jobs()` happens against whichever applied MIDI
+path it's given (the session's `applied_path` for `ensure_render()`, or a
+batch combination's own path for `POST /api/variations`), which already has
+that combination's speed/transpose baked in by `_apply_to()` — so both the
+game-SoundFont half and the GM half are always rendered from
+already-transformed MIDI, and only the real-audio stems need the separate
+`pitch_shift.sh` pass described above.
 
 ## Why source-file conversion lives in `miditrack`, not in each CLI
 
@@ -801,16 +846,19 @@ whichever stems it produces *before* `convert_source()` calls
 conversion just produced. The files themselves are only ever removed by
 `WebSession.clear()` tearing down the whole session root.
 
-**Why mixing happens inside `ensure_render()`, not as a separate step**:
-`ensure_render()` is already the single choke point `/api/audio`,
-`/api/download/wav`, and `/api/pitch-shift` all go through (see "Why WAV
-became a real download" above). Adding the mix there — fluidsynth renders
-to a temporary `render-NNNN.partN.wav`, `mix.mix_wav()` combines it with
-whichever of `chip_stem_path`/`dac_stem_path` actually exist into the real
-`render-NNNN.wav`, and the temporary part file is deleted in a `finally` —
-means every one of those three endpoints picks up the mixed audio
-automatically, with no changes needed at any of their call sites. When
-neither stem is present, `render_wav()` writes directly to the final path
+**Why mixing happens inside `_render_applied_midi()`, not as a separate
+step**: `/api/audio` and `/api/download/wav` both go through
+`ensure_render()`, which delegates its actual rendering to
+`_render_applied_midi()` (see "Speed/pitch is a MIDI-layer edit" above for
+why that split exists); `POST /api/variations` calls the same
+`_render_applied_midi()` directly, once per combination. Putting the mix
+logic in that one shared body — fluidsynth renders to a temporary
+`render-NNNN.partN.wav`, `mix.mix_wav()` combines it with whichever of
+`chip_stem_path`/`dac_stem_path` actually exist into the real
+`render-NNNN.wav` (or a batch combination's own output path), and the
+temporary part file is deleted in a `finally` — means every caller picks up
+the mixed audio automatically, with no changes needed at any call site.
+When neither stem is present, `render_wav()` writes directly to the final path
 exactly as before, so `mix.py`/`ffmpeg` are never invoked for an ordinary
 MIDI session — this tool does not gain a hard `ffmpeg` dependency for the
 common case, only for `chipNoise` conversions. `mix_wav()`'s inputs are a
@@ -1282,6 +1330,107 @@ theme-independent `--toast-bg`, both of which keep a dark surface in either
 theme, so white text there is correct regardless of the OS setting and was
 deliberately left as-is.
 
+## Added: favorite instrument shortlist and SoundFont selection, persisted server-side
+
+Each track row's instrument `<select>` gained a pin button (☆/★) and a
+"よく使う" `<optgroup>` at the top, built from whichever GM programs are
+either manually pinned or ranked by selection frequency (`app.js`'s
+`buildFavoriteProgramsOptgroup()`, capped at `MAX_FAVORITE_PROGRAMS = 8`,
+pinned entries first). This is purely a frontend convenience — the server's
+GM catalog (`gm.py`) is untouched; the favorites group is just a
+client-side reordering of programs that already exist in the full list.
+
+**Why this is persisted server-side (`GET`/`PATCH /api/preferences`,
+`src/miditrack/preferences.py`) instead of the browser's `localStorage`,
+which every other piece of frontend-only state in this app already uses**:
+`run_server()` starts `make_server("127.0.0.1", 0, app, ...)` — port `0`
+means the OS picks a free port fresh on every launch (see "Why WAV became a
+real download" section's discussion of `render_id` for the token/URL
+implications of this same fact). `localStorage` is scoped per *origin*
+(`scheme://host:port`), so a value saved under `http://127.0.0.1:57774`
+is invisible to the next launch's `http://127.0.0.1:57861` — the favorite
+list would silently reset on every single restart, which defeats the
+entire point of a persistent "recently/frequently used" shortlist. This
+was caught by the user directly observing that the port changes across
+launches and asking whether the favorites would survive it — they don't,
+under `localStorage`, which is why this feature is the one piece of UI
+state in this app that talks to a server endpoint instead of browser
+storage.
+
+`preferences.py` mirrors the shape of every other settings-like piece of
+state in this package (`render.py`'s SoundFont resolution, `WebSession`'s
+`soundfont_override`): `preferences_path()` resolves to `~/Library/
+Application Support/miditrack/preferences.json` by default, with a
+`MIDITRACK_PREFERENCES_PATH` env var override — not for runtime
+flexibility (unlike `MIDI2WAV_BIN`/`PITCH_SHIFT_BIN`, no ordinary user is
+expected to set this), but purely so tests can point it at a temp
+directory instead of writing into the real user's home directory (see
+`tests/test_preferences.py`, `TestWebAppPreferences` in `test_web.py`).
+`load_preferences()` treats a missing file, invalid JSON, or a JSON value
+that isn't an object as equally "no preferences yet" rather than an
+error — this file is optional, ephemeral-loss-tolerant state, not
+something whose absence should ever block the app from starting.
+`save_preferences()` follows the same "partial update" contract
+`PATCH /api/session/transform` already established: only the keys present
+in the request body are validated and replaced, the other field is carried
+over from the current file untouched. Validation reuses `gm.py`'s
+`GM_PROGRAM_NAMES` length (128) as the valid program range, so this module
+never hardcodes "0–127" independently of the single source of truth for
+the GM table.
+
+This setting is process-wide, not per-`WebSession` — the favorites list
+(and, as of the addition below, the selected SoundFont) is explicitly
+meant to survive across MIDI uploads, resets, and even full process
+restarts, so it was never a candidate for `WebSession` fields in the
+first place.
+
+**SoundFont selection was folded into the same file** once the same
+port-changes-every-launch problem was pointed out for it too:
+`POST /api/soundfont` (the endpoint the "試聴" card's SoundFont dropdown
+calls) now also calls `preferences.save_preferences({"selectedSoundfont":
+...})` right after updating `web_session.soundfont_override`, using the
+same string-or-`None` shape `pinnedPrograms`/`usageCounts` already
+established. `WebSession.soundfont_override` itself is unchanged — it's
+still the runtime source of truth `render_endpoint()`/`ensure_render()`
+read every time (`web_session.soundfont_override or soundfont`, see
+"Added: in-browser SoundFont selection" above) — `preferences.json` is
+purely *where that same value gets remembered* for the next launch, not
+a second place the app reads from during a running session.
+
+`resolve_startup_soundfont_override(explicit_soundfont)` is the one new
+function that bridges the two: called from `run_server()` before
+`create_app()`, it returns the saved path only when `explicit_soundfont`
+(the CLI's own `--soundfont`) is `None` and that saved path still points
+at a real `.sf2`/`.sf3` file (`render.is_soundfont_file()` — a SoundFont
+deleted or moved since the last launch is silently treated as "nothing
+saved," not an error) — otherwise it returns `None`, keeping the existing
+"CLI argument beats everything else when explicitly given" precedence
+`soundfont_override or soundfont` already encodes. Deliberately kept out of
+`create_app()` itself (unlike `preferences.load_preferences()` for
+favorites, which *is* read by an endpoint handler inside `create_app()`):
+`create_app()` is called directly by every test in `test_web.py` with a
+fresh `WebSession()`, and letting `create_app()` silently reach into the
+real user's `preferences.json` on every one of those calls would make
+test isolation depend on nobody's real `~/Library/Application Support/
+miditrack/preferences.json` ever containing a `selectedSoundfont` — a
+fragile assumption `test_web.py`'s `setUpModule()`/`tearDownModule()`
+already have to work around for the `POST /api/soundfont` tests, which
+now write into a module-wide temp `MIDITRACK_PREFERENCES_PATH` for
+exactly this reason. `resolve_startup_soundfont_override()` is instead
+called exactly once, by `run_server()`, which is the one caller that
+represents an actual `miditrack` launch.
+
+`app.js`'s `state.pinnedPrograms`/`state.usageCounts` start empty and are
+populated by `loadPreferences()`, called once from `init()` before
+`loadSoundfonts()`/the initial `/api/session` fetch — so the first
+`buildTrackRow()` render already has the favorites data available and
+never needs a second pass. `savePinnedPrograms()`/`saveUsageCounts()` are
+fire-and-forget `PATCH` calls: the visible UI update (the pin button's ★/☆,
+the `<optgroup>` contents) always happens synchronously in the same
+function that mutates `state`, so a slow or failed save never desyncs what
+the user sees from what they just clicked — only the next launch's
+favorites list would be missing that one change.
+
 ## Why the venv is package-local, not at the project root
 
 Root `CLAUDE.md` explains that `.venv-align`/`.venv-pixelize` live at the
@@ -1305,9 +1454,32 @@ python -m compileall -q src tests
 bash -n miditrack.sh
 ```
 
-`tests/test_gm.py`, `test_midi.py`, `test_render.py`, `test_convert.py`, and
-`test_pitch_shift.py` need no real MIDI file, fluidsynth, or converter/
-`pitch_shift.sh` subprocess, or Flask test client — `test_midi.py` builds
+`tests/test_gm.py`, `test_midi.py`, `test_render.py`, `test_convert.py`,
+`test_pitch_shift.py`, and `test_preferences.py` need no real MIDI file,
+fluidsynth, or converter/`pitch_shift.sh` subprocess, or Flask test
+client. `test_preferences.py` sets `MIDITRACK_PREFERENCES_PATH` to a temp
+file in `setUp()`/restores it in `tearDown()` so it never reads or writes
+the real user's `~/Library/Application Support/miditrack/preferences.json`;
+it covers the missing-file/corrupt-JSON/non-dict-JSON fallbacks, the
+partial-update contract, every validation rule (program range, `bool`
+rejection, non-integer keys, negative counts), and the same round-trip/
+clear-to-`None`/rejects-non-string/rejects-empty-string coverage for
+`selectedSoundfont`. `test_web.py`'s `TestWebAppPreferences` does the same
+env-var isolation for the `GET`/`PATCH /api/preferences` endpoints (the
+whole module's `setUpModule()`/`tearDownModule()` additionally redirect
+`MIDITRACK_PREFERENCES_PATH` for every test in the file, since
+`POST /api/soundfont` — exercised by several pre-existing `TestWebApp`
+tests — now writes to this file too), and includes
+`test_preferences_survive_across_separate_apps`/
+`test_selected_soundfont_survives_across_separate_apps` — the regression
+guard that two independent `create_app()` instances (standing in for two
+separate `miditrack` launches on two different ports) see the same
+persisted favorites/SoundFont, which is the entire reason this feature
+isn't `localStorage`. `TestResolveStartupSoundfontOverride` covers
+`resolve_startup_soundfont_override()` directly: an explicit `--soundfont`
+always wins (returns `None` regardless of what's saved), a saved SoundFont
+is restored when no explicit one is given, no saved SoundFont or a saved
+path that no longer exists on disk both return `None`. `test_midi.py` builds
 its fixtures with `mido` in-process, `test_render.py` mocks
 `subprocess.run` to assert argv shape (`shell=False`, `-f` present, options
 before positionals, `MIDI2WAV_BIN` never silently falls through), and
@@ -1323,11 +1495,14 @@ needed since `zipfile` itself has no external side effects).
 `test_pitch_shift.py` mirrors `test_render.py`'s approach: it mocks
 `subprocess.run` to assert argv shape (`-s`/`-p` per speed/pitch, `cwd` set
 to the work directory, `shell=False`), covers `resolve_pitch_shift_bin()`'s
-same three-tier resolution order, `validate_pitch_shift_options()`'s
-defaulting/range/count-cap rules, and that `run_pitch_shift()` diffs
+same three-tier resolution order, and that `run_pitch_shift()` diffs
 `work_dir`'s `*.wav` files before/after the call rather than trusting a
 predicted filename (including that a pre-existing leftover `.wav` in
-`work_dir` isn't mistaken for freshly generated output). `test_mix.py`
+`work_dir` isn't mistaken for freshly generated output). The speed/pitch
+defaulting/range/count-cap validation this module used to own moved to
+`midi.validate_variation_options()` when the batch-variations feature
+became a MIDI-layer edit — see `TestValidateVariationOptions` in
+`test_midi.py` below. `test_mix.py`
 mirrors `test_render.py` too: it mocks `subprocess.run` to assert
 `shell=False`, that the `-filter_complex` string literally contains
 `normalize=0`/`duration=longest`/`dropout_transition=0`, that `-nostdin` is
@@ -1344,25 +1519,38 @@ demand but reuses an existing render rather than re-rendering, that a
 bundled `.m3u` (uploaded alongside a source file, or found inside a ZIP)
 correctly overrides song labels only for the file it actually names, that
 `POST /api/source/select-file` correctly switches which ZIP member is
-active (re-running song listing) without requiring a fresh upload, that
-`POST /api/pitch-shift` renders on demand when no render exists yet,
-respects custom speed/pitch lists, and rejects an over-large combination
-count before ever calling the injected `pitch_shifter`, and that
-`GET /api/download/pitch-shift` returns a ZIP containing every generated
-variant and is invalidated by a subsequent re-render. A dedicated
-`TestWebAppChipStem` class (its own `create_app()` with an injected
-`mixer=<fake>`, separate from the rest of `test_web.py`'s `TestWebApp`,
-which never injects one) covers the `chipNoise` mixing path: converting
-with `chipNoise: true` sets `hasChipStem` in the session payload,
-`ensure_render()` routes fluidsynth's output to a `.partN.wav` and mixes it
-with the stem rather than rendering straight to the final WAV, the part
-file is deleted afterward, re-assigning an instrument re-mixes against the
-*same* stem, uploading a plain `.mid` clears `chip_stem_path` and
-`hasChipStem`, `GET /api/download/wav` and `POST /api/pitch-shift` both
-receive the mixed audio, a `MixError` from the injected mixer surfaces as
-`502`, and — the regression guard for not adding a hard `ffmpeg`
-dependency to the ordinary case — converting *without* `chipNoise` never
-calls the injected mixer at all. The same class's
+active (re-running song listing) without requiring a fresh upload, and
+that `POST /api/variations` produces the expected number of combinations
+from the default lists, honors custom `speeds`/`transposes`, rejects an
+over-large combination count and a non-integer transpose with `400`
+without ever calling the injected `renderer`, applies the session's
+current track assignments to every combination, never touches the
+injected `pitch_shifter` when no chip stem is present (the headline
+regression guard that the batch path is fully MIDI-layer now, not a
+`rubberband` post-process), leaves the session's own `speed`/`transpose`
+and the existing audition render (`/api/audio`) untouched by a batch run,
+cleans up `variations_work/` and every `render-*.partN.wav`/split-MIDI
+temp file afterward, and that `GET /api/download/variations` returns a ZIP
+containing a `.wav` and a `.mid` per combination (with filenames encoding
+speed/transpose and the `.mid` verified via `mido` to carry the correctly
+scaled tempo and shifted note) and is invalidated by a subsequent track
+change. A dedicated `TestWebAppChipStem` class (its own `create_app()`
+with an injected `mixer=<fake>`, separate from the rest of `test_web.py`'s
+`TestWebApp`, which never injects one) covers the `chipNoise` mixing path:
+converting with `chipNoise: true` sets `hasChipStem` in the session
+payload, `ensure_render()` routes fluidsynth's output to a `.partN.wav` and
+mixes it with the stem rather than rendering straight to the final WAV,
+the part file is deleted afterward, re-assigning an instrument re-mixes
+against the *same* stem, uploading a plain `.mid` clears `chip_stem_path`
+and `hasChipStem`, `GET /api/download/wav` receives the mixed audio, a
+`MixError` from the injected mixer surfaces as `502`, converting *without*
+`chipNoise` never calls the injected mixer at all (the regression guard
+for not adding a hard `ffmpeg` dependency to the ordinary case), and that
+a `POST /api/variations` batch mixes every combination independently while
+only syncing the stem (via the injected `pitch_shifter`) for combinations
+whose own speed/transpose isn't the default — the sharpest guard that this
+decision is made per-combination, not per-session or "always sync because
+it's a batch." The same class's
 `test_ensure_render_mixes_both_noise_and_dac_stems_when_both_present`
 covers the YM2612 DAC extension specifically: a fake converter that returns
 both a chip (noise) stem and a DAC stem sets both `hasChipStem` and
@@ -1457,7 +1645,7 @@ fully non-mocked `create_app()` with the real `fluidsynth`/`ffmpeg`/
 `pitch_shift.sh` all wired in — see the dedicated verification paragraph
 above ("The MIDI-layer speed/pitch feature ... was verified end-to-end").
 
-All 301 tests pass as of this writing (`test_render.py` additionally covers
+All 378 tests pass as of this writing (`test_render.py` additionally covers
 `list_soundfonts()`'s directory-order/file-sort behavior and
 `is_soundfont_file()`'s validation; `test_web.py` covers
 `GET /api/soundfonts`, `POST /api/soundfont`'s accept/reject paths, that
@@ -1502,22 +1690,22 @@ during implementation): `GET /api/soundfonts` correctly discovered all of
 them, selecting a non-default one and rendering confirmed the real
 `fluidsynth` invocation actually received `-s <that path>`.
 
-The "速度・ピッチのバリエーション" feature was verified two ways beyond
-the mocked unit tests. First, `pitch_shift.run_pitch_shift()` was called
-directly (no fakes) against a real 1-second sine-wave WAV at a path
-containing a space and `&` (`song & title.wav`, reproducing this
-repository's own directory-name shape), invoking the real
-`pitch_shift.sh` → real `ffmpeg`/`rubberband`; both requested variants
-were produced and confirmed playable with `afinfo`. Second, a full
-browser round trip was driven through a live, non-mocked `create_app()`
-instance (via `miditrack.cli.main()` against a small real `.mid` fixture
-and a real `.sf2`): clicking "適用して試聴" rendered through real
-`fluidsynth`, and clicking "速度・ピッチ違いをZIPでダウンロード" invoked
-the real `pitch_shift.sh` and downloaded a real ZIP — confirmed via
-`GET /api/download/pitch-shift`'s `Content-Disposition`/`Content-Type`
-headers and `POST /api/pitch-shift`'s JSON `items` list, which reported
-exactly the 10 filenames (`smoke_x0.8_p-1.wav`, ..., `smoke_x1.2_p2.wav`)
-`pitch_shift.sh`'s own default speed/pitch combination produces.
+**Historical**: the original "速度・ピッチのバリエーション" feature (WAV
+post-processed through `pitch_shift.sh`, `POST /api/pitch-shift` /
+`GET /api/download/pitch-shift`) was verified end-to-end via
+`pitch_shift.run_pitch_shift()` called directly against a real WAV and a
+full browser round trip that downloaded a real ZIP of 10 `rubberband`-shifted
+`.wav` files. That endpoint pair no longer exists — see "Speed/pitch is a
+MIDI-layer edit" above for why it was replaced by `POST /api/variations`.
+The batch-variations replacement was verified end-to-end through a live,
+non-mocked `create_app()` (real `fluidsynth`; no `pitch_shift.sh` call at
+all, since this fixture carries no chip stem): a small real `.mid` fixture
+was uploaded, `POST /api/variations` with the default lists produced a real
+`variations.zip` containing 20 files (10 `.wav` + 10 `.mid`, confirmed via
+`unzip -l`), one extracted `.mid` was independently opened with `mido` and
+confirmed to carry the expected scaled tempo and shifted note for its
+filename's speed/transpose, and `GET /api/session` confirmed the session's
+own `speed`/`transpose` were unchanged by the batch run.
 
 The `gameSoundfont` hybrid-rendering feature was verified end-to-end
 against a real, unmodified game rip beyond the mocked unit tests, using a

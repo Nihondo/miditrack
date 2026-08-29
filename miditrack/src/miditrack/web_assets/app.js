@@ -12,9 +12,21 @@ if (queryToken) {
   history.replaceState(null, "", window.location.pathname);
 }
 
+const KEEP_ORIGINAL = "__keep__";
+const DEFAULT_GM_PROGRAM = "80";
+const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
+const MAX_FAVORITE_PROGRAMS = 8;
+
 const state = {
   session: null,          // 直近の /api/session (POST/PATCH/GET) レスポンス
   optionsFragment: null,  // /api/instruments から一度だけ構築したドロップダウンの雛形
+  programNames: {},       // GMプログラム番号(number) -> 表示テキスト（「よく使う」欄の再構築に使う）
+  // pinnedPrograms/usageCountsはinit()のloadPreferences()で読み込むまで空のまま。
+  // サーバー側ファイル（/api/preferences）で永続化する ― 起動のたびにポートが
+  // 変わりlocalStorageのオリジンも変わってしまうため、ブラウザ側には保存しない。
+  pinnedPrograms: new Set(), // 手動ピン留めされたGMプログラム番号のSet
+  usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
+  instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   pendingAssignments: {}, // トラック番号(number) -> GMプログラム番号 | null（未送信分）
   pendingVolumes: {},     // トラック番号(number) -> 音量パーセント（未送信分）
   pendingSources: {},     // トラック番号(number) -> soundfont | game（未送信分）
@@ -26,9 +38,106 @@ const state = {
   soundfontPayload: null, // 直近の /api/soundfonts レスポンス（hasGameSoundfont変化時の再描画用）
 };
 
-const KEEP_ORIGINAL = "__keep__";
-const DEFAULT_GM_PROGRAM = "80";
-const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
+// サーバー側の設定ファイル（/api/preferences）からピン留め・使用回数を読み込み、
+// stateへ反映する。起動時に一度だけinit()から呼ぶ。失敗時は「お気に入り機能が
+// 空の状態から始まるだけ」として、既にセットされている空のstateのまま継続する。
+async function loadPreferences() {
+  try {
+    const response = await apiFetch("/api/preferences");
+    const payload = await response.json();
+    state.pinnedPrograms = new Set(payload.pinnedPrograms || []);
+    state.usageCounts = payload.usageCounts || {};
+  } catch (_error) {
+    // 読み込めなくても機能自体は空の状態で継続する。
+  }
+}
+
+// ピン留め・使用回数の変更をサーバー側の設定ファイルへ書き戻す。UIの見た目自体は
+// 呼び出し元が既にstateを更新して同期的に反映しているため、ここは書き込み失敗を
+// 静かに無視してよい（次回の変更で再送されれば整合する）。
+async function savePinnedPrograms() {
+  try {
+    await apiFetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinnedPrograms: [...state.pinnedPrograms] }),
+    });
+  } catch (_error) {
+    // 保存できなくてもピン留めのUI表示自体は継続する。
+  }
+}
+
+async function saveUsageCounts() {
+  try {
+    await apiFetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usageCounts: state.usageCounts }),
+    });
+  } catch (_error) {
+    // 保存できなくても今回のセッション内での集計自体は継続する。
+  }
+}
+
+// GMプログラムが選択されるたびに使用回数を加算し、「よく使う」欄へ反映する。
+function recordProgramUsage(program) {
+  state.usageCounts[program] = (state.usageCounts[program] || 0) + 1;
+  saveUsageCounts();
+  refreshFavoritePrograms();
+}
+
+function isProgramPinned(program) {
+  return program !== null && state.pinnedPrograms.has(program);
+}
+
+function toggleProgramPinned(program) {
+  if (state.pinnedPrograms.has(program)) {
+    state.pinnedPrograms.delete(program);
+  } else {
+    state.pinnedPrograms.add(program);
+  }
+  savePinnedPrograms();
+  refreshFavoritePrograms();
+}
+
+// ピン留め済み（優先）とよく使う順（頻度）を合わせて、最大MAX_FAVORITE_PROGRAMS件の
+// <optgroup>を構築する。候補が無ければnullを返す（空のoptgroupは作らない）。
+function buildFavoriteProgramsOptgroup() {
+  const usageRanked = Object.keys(state.usageCounts)
+    .map(Number)
+    .filter((program) => !state.pinnedPrograms.has(program))
+    .sort((a, b) => state.usageCounts[b] - state.usageCounts[a]);
+  const ordered = [...state.pinnedPrograms, ...usageRanked].slice(0, MAX_FAVORITE_PROGRAMS);
+  if (ordered.length === 0) return null;
+
+  const optgroup = document.createElement("optgroup");
+  optgroup.label = "よく使う";
+  optgroup.dataset.favorites = "true";
+  for (const program of ordered) {
+    const option = document.createElement("option");
+    option.value = String(program);
+    const label = state.programNames[program] || String(program + 1);
+    option.textContent = state.pinnedPrograms.has(program) ? `★ ${label}` : label;
+    optgroup.appendChild(option);
+  }
+  return optgroup;
+}
+
+// ピン留め/使用回数が変わるたびに、描画中の全楽器セレクトの「よく使う」欄と
+// ピン留めボタンの見た目を最新化する。
+function refreshFavoritePrograms() {
+  for (const row of state.instrumentRows) {
+    const previousValue = row.select.value;
+    const existing = row.select.querySelector('optgroup[data-favorites="true"]');
+    if (existing) existing.remove();
+    const favoritesGroup = buildFavoriteProgramsOptgroup();
+    if (favoritesGroup) {
+      row.select.insertBefore(favoritesGroup, row.select.firstChild.nextSibling);
+    }
+    row.select.value = previousValue;
+    row.updatePinButton();
+  }
+}
 
 function isMidiFilename(name) {
   return MIDI_EXTENSION_RE.test(name);
@@ -84,6 +193,7 @@ async function loadInstrumentOptions() {
       option.value = String(item.program);
       // GM番号は表示上1始まり、送信値（value）は0始まり。
       option.textContent = `${item.program + 1}. ${item.name}`;
+      state.programNames[item.program] = option.textContent;
       optgroup.appendChild(option);
     }
     fragment.appendChild(optgroup);
@@ -153,7 +263,6 @@ async function handleSoundfontChange() {
     resetPlayer();
     if (state.session) {
       state.session.hasRender = false;
-      state.session.hasPitchShift = false;
     }
     updateSectionsReadiness();
     showStatus("SoundFontを変更しました。もう一度「適用して試聴」を押してください。");
@@ -200,6 +309,9 @@ async function buildTrackRow(track) {
   const row = document.createElement("tr");
   row.className = "track-row";
   if (!track.editable) row.classList.add("is-locked");
+  // 曲中で楽器が変わる警告用の別行（後述）。is-hardwareの背景色をrowと
+  // 揃えるため、sourceSelectのchangeハンドラからも参照できるようにしておく。
+  let warningRow = null;
 
   const nameCell = document.createElement("td");
   const nameLabel = document.createElement("div");
@@ -239,6 +351,7 @@ async function buildTrackRow(track) {
     sourceSelect.addEventListener("change", () => {
       const isHardware = sourceSelect.value === "game" && isChipHardwareFormat();
       row.classList.toggle("is-hardware", isHardware);
+      warningRow?.classList.toggle("is-hardware", isHardware);
       const programSelect = row.querySelector(".program-select");
       if (programSelect) {
         programSelect.disabled = sourceSelect.value !== "soundfont";
@@ -263,10 +376,11 @@ async function buildTrackRow(track) {
   row.appendChild(sourceCell);
 
   const instrumentCell = document.createElement("td");
+  let warningText = null;
   if (track.editable) {
     const fragment = await loadInstrumentOptions();
     const select = document.createElement("select");
-    select.className = "program-select";
+    select.className = "program-select instrument-select";
     select.dataset.trackIndex = String(track.index);
 
     const keepOption = document.createElement("option");
@@ -277,6 +391,8 @@ async function buildTrackRow(track) {
       : `変更しない（現在: ${formatCurrentProgram(track)}）`;
     keepOption.disabled = hasGameSource;
     select.appendChild(keepOption);
+    const favoritesGroup = buildFavoriteProgramsOptgroup();
+    if (favoritesGroup) select.appendChild(favoritesGroup);
     select.appendChild(fragment.cloneNode(true));
 
     select.value =
@@ -285,14 +401,38 @@ async function buildTrackRow(track) {
         : KEEP_ORIGINAL;
     select.disabled = track.source !== "soundfont";
 
-    select.addEventListener("change", () => onProgramChange(track.index, select.value));
-    instrumentCell.appendChild(select);
+    const pinButton = document.createElement("button");
+    pinButton.type = "button";
+    pinButton.className = "pin-button";
+    pinButton.setAttribute("aria-label", "よく使う楽器としてピン留め");
+    const updatePinButton = () => {
+      const program = select.value === KEEP_ORIGINAL ? null : Number(select.value);
+      const pinned = isProgramPinned(program);
+      pinButton.textContent = pinned ? "★" : "☆";
+      pinButton.title = pinned ? "ピン留めを解除" : "よく使う楽器としてピン留め";
+      pinButton.classList.toggle("is-pinned", pinned);
+      pinButton.disabled = program === null;
+    };
+    updatePinButton();
+
+    select.addEventListener("change", () => {
+      onProgramChange(track.index, select.value);
+      updatePinButton();
+    });
+    pinButton.addEventListener("click", () => {
+      if (select.value === KEEP_ORIGINAL) return;
+      toggleProgramPinned(Number(select.value));
+    });
+    state.instrumentRows.push({ select, updatePinButton });
+
+    const selectRow = document.createElement("div");
+    selectRow.className = "instrument-select-row";
+    selectRow.appendChild(select);
+    selectRow.appendChild(pinButton);
+    instrumentCell.appendChild(selectRow);
 
     if (track.programChangeCount > 1) {
-      const warning = document.createElement("p");
-      warning.className = "pc-warning";
-      warning.textContent = "曲中で楽器が変わります。適用するとすべて上書きされます";
-      instrumentCell.appendChild(warning);
+      warningText = "曲中で楽器が変わります。適用するとすべて上書きされます";
     }
   } else {
     const reason = document.createElement("span");
@@ -345,11 +485,36 @@ async function buildTrackRow(track) {
   }
   row.appendChild(volumeCell);
 
-  return row;
+  if (!warningText) return row;
+
+  // 警告文をメイン行のtd内に置くと、tdの縦方向中央揃え（vertical-align: middle）が
+  // 「セレクト+警告文をまとめたブロック」ごと中央に置いてしまい、セレクト自体の
+  // 高さが警告文の無い他の行とズレて見える。警告文だけを次のtr（楽器列の位置に
+  // colspanで表示）へ切り出すことで、メイン行の高さは警告文の有無に関わらず揃い、
+  // セレクトの垂直位置も全行で一致する。
+  row.classList.add("has-warning");
+  const fragment = document.createDocumentFragment();
+  fragment.appendChild(row);
+
+  warningRow = document.createElement("tr");
+  warningRow.className = "track-row-warning";
+  warningRow.classList.toggle("is-hardware", row.classList.contains("is-hardware"));
+  warningRow.appendChild(document.createElement("td")).colSpan = 4;
+  const warningCell = document.createElement("td");
+  const warning = document.createElement("p");
+  warning.className = "pc-warning";
+  warning.textContent = warningText;
+  warningCell.appendChild(warning);
+  warningRow.appendChild(warningCell);
+  warningRow.appendChild(document.createElement("td"));
+  fragment.appendChild(warningRow);
+
+  return fragment;
 }
 
 function onProgramChange(trackIndex, value) {
   state.pendingAssignments[trackIndex] = value === KEEP_ORIGINAL ? null : Number(value);
+  if (value !== KEEP_ORIGINAL) recordProgramUsage(Number(value));
   clearTimeout(state.patchTimer);
   state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
 }
@@ -408,6 +573,7 @@ async function flushPendingTrackSettings() {
 async function renderTrackList() {
   const tbody = $("#track-list");
   tbody.innerHTML = "";
+  state.instrumentRows = [];
   const tracks = state.session ? state.session.tracks : [];
   $("#tracks-empty").hidden = tracks.length > 0;
   for (const track of tracks) {
@@ -422,7 +588,9 @@ function updateSectionsReadiness() {
   $("#render-button").disabled = !ready;
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-wav-button").disabled = !(state.session && state.session.hasDownload);
-  $("#pitch-shift-button").disabled = !(state.session && state.session.hasRender);
+  // バリエーション一括生成はensure_render()を経由しないため事前の試聴レンダリングは
+  // 不要（hasRenderではなくhasDownload = MIDIアップロード済みかどうかで活性化する）。
+  $("#variation-button").disabled = !(state.session && state.session.hasDownload);
   $("#upload-filename").textContent = state.session && state.session.filename
     ? state.session.filename
     : "";
@@ -773,8 +941,6 @@ async function handleRender() {
       state.session.hasRender = true;
       state.session.renderId = payload.renderId;
       state.session.hasDownload = true;
-      // サーバー側もinvalidate_render()で古いピッチシフトZIPを無効化している。
-      state.session.hasPitchShift = false;
     }
     updateSectionsReadiness();
     showStatus("試聴の準備ができました。", "success");
@@ -828,28 +994,32 @@ function parseNumberList(text) {
   return values;
 }
 
-async function handlePitchShift() {
-  const speeds = parseNumberList($("#pitch-shift-speeds").value);
-  const pitches = parseNumberList($("#pitch-shift-pitches").value);
-  if (speeds === null || pitches === null) {
+// 速度・ピッチのバリエーションをまとめて生成する（POST /api/variations）。
+// 上の「全体の速度・ピッチ」と同じMIDI書き換え+再レンダリングを組み合わせの
+// 数だけ実行するサーバー側処理を待つだけなので、クライアント側で整数チェック等は
+// 行わない（サーバーのvalidate_variation_options()のエラーメッセージに委ねる）。
+async function handleVariations() {
+  const speeds = parseNumberList($("#variation-speeds").value);
+  const transposes = parseNumberList($("#variation-transposes").value);
+  if (speeds === null || transposes === null) {
     showStatus("速度・ピッチには数値をカンマ区切りで入力してください", "error");
     return;
   }
-  setBusy(true, "速度・ピッチのバリエーションを生成中…");
+  const comboCount = (speeds.length || 2) * (transposes.length || 5);
+  setBusy(true, `バリエーションを生成中…（${comboCount}回レンダリングします）`);
   try {
-    const response = await apiFetch("/api/pitch-shift", {
+    const response = await apiFetch("/api/variations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         speeds: speeds.length > 0 ? speeds : undefined,
-        pitches: pitches.length > 0 ? pitches : undefined,
+        transposes: transposes.length > 0 ? transposes : undefined,
       }),
     });
     const payload = await response.json();
-    if (state.session) state.session.hasPitchShift = true;
-    showStatus(`${payload.items.length}件のバリエーションを生成しました。ダウンロードします…`);
-    const filename = `${(state.session && state.session.filename) || "miditrack"}_pitch_shift.zip`;
-    await downloadFrom("/api/download/pitch-shift", filename);
+    showStatus(`${payload.items.length}件のバリエーション（WAV+MIDI）を生成しました。ダウンロードします…`);
+    const filename = `${(state.session && state.session.filename) || "miditrack"}_variations.zip`;
+    await downloadFrom("/api/download/variations", filename);
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -872,7 +1042,6 @@ async function handleReset() {
       hasRender: false,
       renderId: 0,
       hasDownload: false,
-      hasPitchShift: false,
       source: null,
     });
     $("#midi-input").value = "";
@@ -912,13 +1081,14 @@ async function init() {
   $("#render-button").addEventListener("click", handleRender);
   $("#download-button").addEventListener("click", handleDownload);
   $("#download-wav-button").addEventListener("click", handleDownloadWav);
-  $("#pitch-shift-button").addEventListener("click", handlePitchShift);
+  $("#variation-button").addEventListener("click", handleVariations);
   $("#convert-button").addEventListener("click", handleConvert);
   $("#convert-file-select").addEventListener("change", handleSelectFile);
   $("#soundfont-select").addEventListener("change", handleSoundfontChange);
   $("#transform-speed").addEventListener("input", onTransformChange);
   $("#transform-transpose").addEventListener("input", onTransformChange);
 
+  await loadPreferences();
   await loadSoundfonts();
   try {
     const response = await apiFetch("/api/session");

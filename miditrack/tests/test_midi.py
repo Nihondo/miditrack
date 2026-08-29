@@ -479,6 +479,71 @@ class TestValidateTransposeSemitones(unittest.TestCase):
                 midi.validate_transpose_semitones(value)
 
 
+class TestValidateVariationOptions(unittest.TestCase):
+    def test_none_uses_defaults(self) -> None:
+        speeds, transposes = midi.validate_variation_options(None, None)
+        self.assertEqual(speeds, midi.DEFAULT_VARIATION_SPEEDS)
+        self.assertEqual(transposes, midi.DEFAULT_VARIATION_TRANSPOSES)
+
+    def test_custom_values_are_parsed(self) -> None:
+        speeds, transposes = midi.validate_variation_options([1.5, 2], [-3, 0, 3])
+        self.assertEqual(speeds, [1.5, 2.0])
+        self.assertEqual(transposes, [-3, 0, 3])
+
+    def test_empty_list_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options([], None)
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(None, [])
+
+    def test_non_list_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(1.2, None)
+
+    def test_non_numeric_speed_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(["fast"], None)
+
+    def test_bool_speed_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options([True], None)
+
+    def test_out_of_range_speed_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options([0.0], None)
+
+    def test_non_integer_transpose_is_rejected(self) -> None:
+        # 旧pitch_shift.sh方式のpitchesはfloatを許していたが、MIDIレイヤーは
+        # 半音（整数）しか表現できないため、ここでは明示的に拒否する。
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(None, [1.5])
+
+    def test_out_of_range_transpose_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(None, [midi.MAX_TRANSPOSE_SEMITONES + 1])
+
+    def test_too_many_speeds_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(list(range(1, midi.MAX_VARIATION_SPEED_COUNT + 2)), None)
+
+    def test_too_many_transposes_is_rejected(self) -> None:
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(
+                None, list(range(0, midi.MAX_VARIATION_TRANSPOSE_COUNT + 2))
+            )
+
+    def test_too_many_combinations_is_rejected(self) -> None:
+        speeds = [1.0 + i * 0.01 for i in range(midi.MAX_VARIATION_SPEED_COUNT)]
+        transposes = list(range(midi.MAX_VARIATION_TRANSPOSE_COUNT))
+        with self.assertRaises(WebValidationError):
+            midi.validate_variation_options(speeds, transposes)
+
+    def test_duplicate_values_are_removed_preserving_order(self) -> None:
+        speeds, transposes = midi.validate_variation_options([1.2, 0.8, 1.2], [0, 1, 0])
+        self.assertEqual(speeds, [1.2, 0.8])
+        self.assertEqual(transposes, [0, 1])
+
+
 def build_bank_select_fixture(path: Path) -> None:
     """バンクセレクト(CC0/CC32)とCC7(音量、除去対象外)を持つ1トラックのフィクスチャ。"""
     mf = mido.MidiFile(ticks_per_beat=480)

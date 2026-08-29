@@ -8,6 +8,7 @@ tools/pixelart_web.py と同型の単一セッション・ローカルFlaskツ�
 
 from __future__ import annotations
 
+import itertools
 import re
 import secrets
 import shutil
@@ -28,7 +29,7 @@ try:
 except ImportError as import_error:  # pragma: no cover - exercised via cli.py's own guard
     raise ImportError("miditrack requires Flask") from import_error
 
-from . import convert, libvgm, midi, mix, nsf_chip, pitch_shift, render
+from . import convert, libvgm, midi, mix, nsf_chip, pitch_shift, preferences, render
 from .convert import SourceFormat
 from .errors import (
     ConvertError,
@@ -96,10 +97,12 @@ class WebSession:
     # clear()をまたいでもサーバープロセス中は単調増加させ、同じ/api/audio?v=Nを
     # 別内容へ再利用しない。プロセス再起動時は認証tokenも変わるため0開始で安全。
     render_id: int = 0
-    # 「速度・ピッチのバリエーション」で生成したZIP。試聴WAV（audio_path）に依存する
-    # 派生物なので、audio_pathと同じタイミング（reset_midi_state/invalidate_render）
-    # で無効化する。
-    pitch_shift_zip_path: Path | None = None
+    # 「速度・ピッチのバリエーション」で生成したZIP（WAV+MIDI）。ensure_render()と
+    # 同じ入力（assignments/volumes/track_sources/soundfont等）から作られる派生物
+    # なので、audio_pathと同じタイミング（reset_midi_state/invalidate_render）で
+    # 無効化する。ただし生成自体はensure_render()を経由しない
+    # （_apply_to()/_render_applied_midi()を直接、組み合わせの数だけ呼ぶ）。
+    variations_zip_path: Path | None = None
     render_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     # 音源変換時（convert_source）に chipNoise オプションで生成された実機ノイズ/DPCM
     # ステムWAV。ensure_render() がこれを検出すると、fluidsynthの出力とffmpegで
@@ -155,8 +158,8 @@ class WebSession:
         """
         if self.audio_path is not None:
             self.audio_path.unlink(missing_ok=True)
-        if self.pitch_shift_zip_path is not None:
-            self.pitch_shift_zip_path.unlink(missing_ok=True)
+        if self.variations_zip_path is not None:
+            self.variations_zip_path.unlink(missing_ok=True)
         self.original_path = None
         self.original_name = ""
         self.ticks_per_beat = None
@@ -170,7 +173,7 @@ class WebSession:
         self.applied_path = None
         self.apply_summary = None
         self.audio_path = None
-        self.pitch_shift_zip_path = None
+        self.variations_zip_path = None
         # unlink しない理由は上のフィールド定義コメントを参照。
         self.chip_stem_path = None
         self.dac_stem_path = None
@@ -226,14 +229,15 @@ class WebSession:
     def invalidate_render(self) -> None:
         """割り当て変更後にレンダリング結果だけを無効化する（原本・トラック解析は残す）。
 
-        pitch_shift_zip_pathはaudio_path由来の派生物なので同時に無効化する。
+        variations_zip_pathはensure_render()と同じ入力（assignments/volumes/
+        track_sources/soundfont等）から作られる派生物なので同時に無効化する。
         ポインタをNoneにするだけで実ファイルの削除は次回生成時に行う
         （audio_path自身の扱いと同じ）。
         """
         self.applied_path = None
         self.apply_summary = None
         self.audio_path = None
-        self.pitch_shift_zip_path = None
+        self.variations_zip_path = None
 
     def require_tracks(self) -> list[TrackInfo]:
         if not self.tracks:
@@ -428,12 +432,23 @@ def session_payload(session: WebSession) -> dict[str, Any]:
         "hasRender": session.audio_path is not None,
         "renderId": session.render_id,
         "hasDownload": session.original_path is not None,
-        "hasPitchShift": session.pitch_shift_zip_path is not None,
         "hasChipStem": session.chip_stem_path is not None,
         "hasDacStem": session.dac_stem_path is not None,
         "hasGameSoundfont": session.game_soundfont_path is not None,
         "source": source_payload(session),
     }
+
+
+def _variation_label(speed: float, transpose: int) -> str:
+    """バリエーション1件分のファイル名ラベルを作る（例: "x1.2_p-2", "x1_p0"）。
+
+    pitch_shift.py._format_number()は再利用しない — あちらはpitch_shift.sh
+    CLIの-s/-pへ渡す文字列を作る別の契約であり、ここは「ファイルシステム安全で
+    人間可読なラベルを作る」という別の目的のため、向きを揃えると将来の
+    ドリフトリスクになる。整数値は"1.0"ではなく"1"と素直な表記にする。
+    """
+    speed_text = str(int(speed)) if float(speed).is_integer() else str(speed)
+    return f"x{speed_text}_p{transpose}"
 
 
 def create_app(
@@ -523,6 +538,24 @@ def create_app(
     def get_instruments() -> Response:
         return jsonify(families=instrument_catalog())
 
+    @app.get("/api/preferences")
+    def get_preferences() -> Response:
+        return jsonify(**preferences.load_preferences())
+
+    @app.patch("/api/preferences")
+    def update_preferences() -> Response:
+        """楽器選択の「よく使う」設定（ピン留め・使用回数）を部分更新する。
+
+        ブラウザセッションではなくプロセス全体で共有する設定なので、
+        WebSessionではなくユーザーホーム配下のファイルへ直接読み書きする
+        （preferences.py参照。起動のたびにポートが変わりlocalStorageの
+        オリジンが変わってしまう問題を回避するため）。
+        """
+        body = request.get_json(silent=True) or {}
+        if "pinnedPrograms" not in body and "usageCounts" not in body:
+            raise WebValidationError("pinnedProgramsまたはusageCountsを指定してください")
+        return jsonify(**preferences.save_preferences(body))
+
     @app.get("/api/soundfonts")
     def get_soundfonts() -> Response:
         return jsonify(**soundfont_payload(web_session, soundfont))
@@ -541,6 +574,10 @@ def create_app(
                 raise WebValidationError(f"SoundFontファイルが見つかりません: {raw_path}")
             web_session.soundfont_override = candidate
         web_session.invalidate_render()
+        # ブラウザでの選択を次回起動でも復元できるよう永続化する
+        # （run_server()の--soundfont未指定時の復元ロジックと対）。
+        selected = web_session.soundfont_override
+        preferences.save_preferences({"selectedSoundfont": str(selected) if selected else None})
         return jsonify(**soundfont_payload(web_session, soundfont))
 
     @app.get("/api/session")
@@ -684,6 +721,30 @@ def create_app(
         web_session.invalidate_render()
         return jsonify(**session_payload(web_session))
 
+    def _apply_to(output_path: Path, speed: float, transpose: int) -> dict[str, int]:
+        """assignments・volumesを適用したMIDIをoutput_pathへ書き、summaryを返す。
+
+        常にoriginal_pathを読み直すので冪等（apply_assignments()自身の契約）。
+        speed/transposeを引数で受けるのは、バリエーション一括生成
+        （POST /api/variations）がweb_session.speed_ratio/transpose_semitonesを
+        一切書き換えずに任意の組み合わせを適用できるようにするため — サーバーは
+        threaded=Trueで動くため、一括生成中にセッションの値を一時的に書き換えると
+        並行するGET /api/sessionに偽の値を見せてしまう（miditrack/CLAUDE.md参照）。
+        """
+        active_assignments = {
+            index: program
+            for index, program in web_session.assignments.items()
+            if _selected_track_source(web_session, web_session.tracks[index]) == "soundfont"
+        }
+        return midi.apply_assignments(
+            web_session.original_path,
+            active_assignments,
+            output_path,
+            web_session.volumes,
+            speed=speed,
+            transpose=transpose,
+        )
+
     def ensure_applied() -> Path:
         """assignments適用済みのMIDIパスを返す。未適用ならその場で適用する。
 
@@ -694,18 +755,8 @@ def create_app(
             raise WebValidationError("MIDIファイルがアップロードされていません")
         if web_session.applied_path is None:
             applied_path = web_session.root / "miditrack_edited.mid"
-            active_assignments = {
-                index: program
-                for index, program in web_session.assignments.items()
-                if _selected_track_source(web_session, web_session.tracks[index]) == "soundfont"
-            }
-            web_session.apply_summary = midi.apply_assignments(
-                web_session.original_path,
-                active_assignments,
-                applied_path,
-                web_session.volumes,
-                speed=web_session.speed_ratio,
-                transpose=web_session.transpose_semitones,
+            web_session.apply_summary = _apply_to(
+                applied_path, web_session.speed_ratio, web_session.transpose_semitones
             )
             web_session.applied_path = applied_path
         return web_session.applied_path
@@ -768,45 +819,180 @@ def create_app(
             return [(gm_mid, gm_soundfont)]
         return [(game_mid, game_sf)]
 
-    def _has_transform() -> bool:
-        return (
-            web_session.speed_ratio != midi.DEFAULT_SPEED_RATIO
-            or web_session.transpose_semitones != midi.DEFAULT_TRANSPOSE_SEMITONES
-        )
+    def _has_transform(speed: float, transpose: int) -> bool:
+        return speed != midi.DEFAULT_SPEED_RATIO or transpose != midi.DEFAULT_TRANSPOSE_SEMITONES
 
-    def _synced_stem(stem_path: Path, label: str, work_dir: Path) -> Path:
-        """実機ステムをMIDI側と同じ速度・移調へpitch_shift.shで揃える。
+    def _synced_stem(
+        stem_path: Path, label: str, work_dir: Path, speed: float, transpose: int
+    ) -> Path:
+        """実機ステムを指定の速度・移調へpitch_shift.shで揃える。
 
         MIDI側のテンポ・ノート番号は既にapply_assignments()で変換済みだが、
         chip_stem_path/dac_stem_pathは実音声なのでMIDI側だけ変換すると
         再生時間・ピッチがずれる。組み合わせを常に1つ（[speed]×[transpose]）に
         限定して呼ぶため、run_pitch_shift()の戻り値は必ず1件で、
         pitch_shift.sh自身のファイル名生成規則を再実装する必要がない。
+        speed/transposeを引数で受ける理由は_apply_to()と同じ
+        （バリエーション一括生成がセッションの値を書き換えずに済むようにするため）。
         """
         stem_copy = work_dir / f"{label}.wav"
         shutil.copyfile(stem_path, stem_copy)
-        outputs = run_pitch_shift(
-            stem_copy,
-            work_dir,
-            [web_session.speed_ratio],
-            [float(web_session.transpose_semitones)],
-        )
+        outputs = run_pitch_shift(stem_copy, work_dir, [speed], [float(transpose)])
         return outputs[0]
+
+    def _render_chip_hardware(output_path: Path) -> Path | None:
+        """VGM/NSFの実機チャンネルレンダリング選択に従い、選択チャンネルの
+        合成音声をoutput_pathへ書く。選択が無ければ何もせずNoneを返す。
+        speed/transposeに依存しないため、バリエーション一括生成
+        （POST /api/variations）は全組み合わせでこの結果を1回だけ生成して使い回す。
+        """
+        selected_chip_indices = (
+            [
+                index for index, source in web_session.track_sources.items()
+                if source == "game"
+            ]
+            if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
+            else []
+        )
+        if not selected_chip_indices or not web_session.chip_metadata:
+            return None
+        if web_session.source_path is None:
+            raise RenderError("原曲の音源の元ファイルがありません")
+        if web_session.source_format == "vgm":
+            assert isinstance(web_session.chip_metadata, libvgm.LibvgmMetadata)
+            libvgm_targets = [
+                web_session.chip_metadata.targets[index]
+                for index in sorted(selected_chip_indices)
+            ]
+            render_libvgm(
+                web_session.source_path,
+                output_path,
+                web_session.chip_metadata.sample_count,
+                libvgm_targets,
+            )
+        else:  # nsf
+            assert isinstance(web_session.chip_metadata, nsf_chip.NsfChipMetadata)
+            if web_session.source_song_index is None:
+                raise RenderError("原曲の音源に対応する曲番号がありません")
+            nsf_targets = [
+                web_session.chip_metadata.targets[index]
+                for index in sorted(selected_chip_indices)
+            ]
+            render_nsf_chip(
+                web_session.source_path,
+                output_path,
+                web_session.chip_metadata.sample_count,
+                nsf_targets,
+                web_session.source_song_index,
+            )
+        return output_path
+
+    def _render_applied_midi(
+        applied_path: Path,
+        wav_path: Path,
+        *,
+        render_id: int,
+        speed: float,
+        transpose: int,
+        chip_render_stem: Path | None = None,
+    ) -> None:
+        """適用済みMIDI(applied_path)をwav_pathへレンダリングする。
+
+        呼び出し元がweb_session.render_lockを保持していることが前提
+        （render_id基点の一時ファイル名が同時実行と衝突しうるため、非再入の
+        render_lockを1回だけ取ってから呼ぶ設計になっている）。
+
+        _plan_render_jobs() が決めたジョブが1つだけ、かつ実機ノイズ/DPCM/DAC
+        ステム（chip_stem_path・dac_stem_path・chip_render_stem）も無く、
+        speed/transposeも既定値なら、従来どおりfluidsynthの出力を直接
+        wav_pathへ書く。ジョブが2つ（ゲーム由来SoundFont側と手動指定した
+        GM SoundFont側への分割）になった場合やステムがある場合は、各ジョブを
+        一時的なrender-NNNN.partN.wavへレンダリングしてからmix_wav()で合成する。
+        speed/transposeが既定値でなければ、ミックス前にステムだけを
+        pitch_shift.shで同じ量だけ変換して同期を保つ（既定値のままなら通常
+        ケースにrubberbandの依存を増やさないため一切呼ばない）。
+
+        chip_render_stemを渡さなければ、この関数自身が_render_chip_hardware()を
+        呼んで一時ファイルとして扱う（終了時に削除）。渡された場合は呼び出し元が
+        所有するものとして削除しない — バリエーション一括生成
+        （POST /api/variations）が、speed/transposeに依存しないこの結果を
+        全組み合わせで1回だけ生成して使い回すため。
+        """
+        owns_chip_render_stem = chip_render_stem is None
+        if owns_chip_render_stem:
+            chip_render_stem = _render_chip_hardware(
+                web_session.root / f"render-{render_id:04d}.chiprender.wav"
+            )
+
+        effective_soundfont = web_session.soundfont_override or soundfont
+        jobs = _plan_render_jobs(applied_path, effective_soundfont, render_id)
+
+        stem = web_session.chip_stem_path
+        if stem is not None and not stem.exists():
+            stem = None
+        dac_stem = web_session.dac_stem_path
+        if dac_stem is not None and not dac_stem.exists():
+            dac_stem = None
+        has_stem = stem is not None or dac_stem is not None or chip_render_stem is not None
+        has_transform = _has_transform(speed, transpose)
+
+        # applied_pathは分割MIDIではなく渡された適用済みMIDIなので、レンダリング後に
+        # 消してはいけない（/api/downloadや後続の組み合わせが引き続き参照しうる）。
+        # 分割で新規に書いたgame.mid/gm.midだけをここに集め、パートWAVは下の
+        # ループで追加する。
+        temp_paths = [job_path for job_path, _sf in jobs if job_path != applied_path]
+        if owns_chip_render_stem and chip_render_stem is not None:
+            temp_paths.append(chip_render_stem)
+        stem_sync_dir: Path | None = None
+        try:
+            if has_stem and has_transform:
+                stem_sync_dir = web_session.root / f"render-{render_id:04d}.stemsync"
+                stem_sync_dir.mkdir()
+                if stem is not None:
+                    stem = _synced_stem(stem, "noise", stem_sync_dir, speed, transpose)
+                if dac_stem is not None:
+                    dac_stem = _synced_stem(dac_stem, "dac", stem_sync_dir, speed, transpose)
+                if chip_render_stem is not None:
+                    chip_render_stem = _synced_stem(
+                        chip_render_stem, "chiprender", stem_sync_dir, speed, transpose
+                    )
+
+            if len(jobs) == 1 and not has_stem:
+                render_wav(jobs[0][0], wav_path, jobs[0][1])
+            else:
+                # 実機チップステム（ノイズ・DAC、どちらか片方または両方）と合成する
+                # 場合だけヘッドルームを取る（mix.DRY_GAIN）。ゲームSF2側とGM側の
+                # 2分割だけの場合は「1つの編曲を互いに素なトラック集合へ分割した
+                # もの」を単純加算で復元するだけなのでヘッドルームは取らない
+                # （mix.SPLIT_GAIN = 1.0）。
+                fluid_gain = mix.DRY_GAIN if has_stem else mix.SPLIT_GAIN
+                inputs: list[tuple[Path, float]] = []
+                for index, (job_mid, job_soundfont) in enumerate(jobs):
+                    part_path = web_session.root / f"render-{render_id:04d}.part{index}.wav"
+                    temp_paths.append(part_path)
+                    render_wav(job_mid, part_path, job_soundfont)
+                    inputs.append((part_path, fluid_gain))
+                if stem is not None:
+                    inputs.append((stem, mix.STEM_GAIN))
+                if dac_stem is not None:
+                    inputs.append((dac_stem, mix.STEM_GAIN))
+                if chip_render_stem is not None:
+                    inputs.append((chip_render_stem, mix.STEM_GAIN))
+                if len(inputs) == 1:
+                    shutil.copyfile(inputs[0][0], wav_path)
+                else:
+                    mix_wav(inputs, wav_path)
+        finally:
+            for temp_path in temp_paths:
+                temp_path.unlink(missing_ok=True)
+            if stem_sync_dir is not None:
+                shutil.rmtree(stem_sync_dir, ignore_errors=True)
 
     def ensure_render() -> Path:
         """試聴用WAVのパスを返す。未レンダリングならその場でレンダリングする。
 
-        _plan_render_jobs() が決めたジョブが1つだけ、かつ実機ノイズ/DPCM/DAC
-        ステム（chip_stem_path・dac_stem_path）も無く、速度・移調も既定値なら、
-        従来どおりfluidsynthの出力を直接最終的な render-NNNN.wav に書く。
-        ジョブが2つ（ゲーム由来SoundFont側と手動指定したGM SoundFont側への分割）
-        になった場合やステムがある場合は、各ジョブを一時的な
-        render-NNNN.partN.wav へレンダリングしてから mix_wav() で合成する。
-        これにより /api/audio・/api/download/wav・/api/pitch-shift のいずれも
-        この合成後の音声を自動的に受け取る。速度・移調が既定値でなければ、
-        ミックス前にステムだけをpitch_shift.shでMIDI側と同じ量だけ変換して
-        同期を保つ（既定値のままなら通常ケースにrubberbandの依存を増やさない
-        ため一切呼ばない）。
+        実処理は_render_applied_midi()に委ね、ここではロック取得・世代管理
+        （render_id採番・古いWAVの破棄）だけを担う。
         """
         with web_session.render_lock:
             applied_path = ensure_applied()
@@ -818,106 +1004,13 @@ def create_app(
             wav_path = web_session.root / f"render-{render_id:04d}.wav"
             previous_audio = web_session.audio_path
 
-            effective_soundfont = web_session.soundfont_override or soundfont
-            jobs = _plan_render_jobs(applied_path, effective_soundfont, render_id)
-
-            stem = web_session.chip_stem_path
-            if stem is not None and not stem.exists():
-                stem = None
-            dac_stem = web_session.dac_stem_path
-            if dac_stem is not None and not dac_stem.exists():
-                dac_stem = None
-            chip_render_stem: Path | None = None
-            selected_chip_indices = (
-                [
-                    index for index, source in web_session.track_sources.items()
-                    if source == "game"
-                ]
-                if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
-                else []
+            _render_applied_midi(
+                applied_path,
+                wav_path,
+                render_id=render_id,
+                speed=web_session.speed_ratio,
+                transpose=web_session.transpose_semitones,
             )
-            if selected_chip_indices and web_session.chip_metadata:
-                if web_session.source_path is None:
-                    raise RenderError("原曲の音源の元ファイルがありません")
-                chip_render_stem = web_session.root / f"render-{render_id:04d}.chiprender.wav"
-                if web_session.source_format == "vgm":
-                    assert isinstance(web_session.chip_metadata, libvgm.LibvgmMetadata)
-                    libvgm_targets = [
-                        web_session.chip_metadata.targets[index]
-                        for index in sorted(selected_chip_indices)
-                    ]
-                    render_libvgm(
-                        web_session.source_path,
-                        chip_render_stem,
-                        web_session.chip_metadata.sample_count,
-                        libvgm_targets,
-                    )
-                else:  # nsf
-                    assert isinstance(web_session.chip_metadata, nsf_chip.NsfChipMetadata)
-                    if web_session.source_song_index is None:
-                        raise RenderError("原曲の音源に対応する曲番号がありません")
-                    nsf_targets = [
-                        web_session.chip_metadata.targets[index]
-                        for index in sorted(selected_chip_indices)
-                    ]
-                    render_nsf_chip(
-                        web_session.source_path,
-                        chip_render_stem,
-                        web_session.chip_metadata.sample_count,
-                        nsf_targets,
-                        web_session.source_song_index,
-                    )
-            has_stem = stem is not None or dac_stem is not None or chip_render_stem is not None
-            has_transform = _has_transform()
-
-            # applied_pathは分割MIDIではなく原本の適用済みMIDIなので、レンダリング後に
-            # 消してはいけない（/api/downloadが引き続き参照する）。分割で新規に書いた
-            # game.mid/gm.midだけをここに集め、パートWAVは下のループで追加する。
-            temp_paths = [job_path for job_path, _sf in jobs if job_path != applied_path]
-            if chip_render_stem is not None:
-                temp_paths.append(chip_render_stem)
-            stem_sync_dir: Path | None = None
-            try:
-                if has_stem and has_transform:
-                    stem_sync_dir = web_session.root / f"render-{render_id:04d}.stemsync"
-                    stem_sync_dir.mkdir()
-                    if stem is not None:
-                        stem = _synced_stem(stem, "noise", stem_sync_dir)
-                    if dac_stem is not None:
-                        dac_stem = _synced_stem(dac_stem, "dac", stem_sync_dir)
-                    if chip_render_stem is not None:
-                        chip_render_stem = _synced_stem(chip_render_stem, "chiprender", stem_sync_dir)
-
-                if len(jobs) == 1 and not has_stem:
-                    render_wav(jobs[0][0], wav_path, jobs[0][1])
-                else:
-                    # 実機チップステム（ノイズ・DAC、どちらか片方または両方）と合成する
-                    # 場合だけヘッドルームを取る（mix.DRY_GAIN）。ゲームSF2側とGM側の
-                    # 2分割だけの場合は「1つの編曲を互いに素なトラック集合へ分割した
-                    # もの」を単純加算で復元するだけなのでヘッドルームは取らない
-                    # （mix.SPLIT_GAIN = 1.0）。
-                    fluid_gain = mix.DRY_GAIN if has_stem else mix.SPLIT_GAIN
-                    inputs: list[tuple[Path, float]] = []
-                    for index, (job_mid, job_soundfont) in enumerate(jobs):
-                        part_path = web_session.root / f"render-{render_id:04d}.part{index}.wav"
-                        temp_paths.append(part_path)
-                        render_wav(job_mid, part_path, job_soundfont)
-                        inputs.append((part_path, fluid_gain))
-                    if stem is not None:
-                        inputs.append((stem, mix.STEM_GAIN))
-                    if dac_stem is not None:
-                        inputs.append((dac_stem, mix.STEM_GAIN))
-                    if chip_render_stem is not None:
-                        inputs.append((chip_render_stem, mix.STEM_GAIN))
-                    if len(inputs) == 1:
-                        shutil.copyfile(inputs[0][0], wav_path)
-                    else:
-                        mix_wav(inputs, wav_path)
-            finally:
-                for temp_path in temp_paths:
-                    temp_path.unlink(missing_ok=True)
-                if stem_sync_dir is not None:
-                    shutil.rmtree(stem_sync_dir, ignore_errors=True)
 
             if previous_audio is not None and previous_audio != wav_path:
                 previous_audio.unlink(missing_ok=True)
@@ -976,51 +1069,87 @@ def create_app(
             download_name=download_name,
         )
 
-    @app.post("/api/pitch-shift")
-    def pitch_shift_endpoint() -> Response:
-        """試聴WAVを起点に、速度×ピッチの全組み合わせを生成しZIPにまとめる。
+    @app.post("/api/variations")
+    def variations_endpoint() -> Response:
+        """速度×ピッチの全組み合わせをMIDIレイヤーで生成し、WAV+MIDIのZIPにまとめる。
 
-        pitch_shift.shの既定値と同じ「未指定なら既定の速度/ピッチ一覧」に加え、
-        クライアントの無効化に頼らずここでも組み合わせ数の上限を検証する
-        （validate_pitch_shift_options()）。
+        単体変換（PATCH /api/session/transform）と同じ_apply_to()/
+        _render_applied_midi()を組み合わせの数だけ呼ぶ — rubberbandによるWAV
+        後処理（旧実装）ではなく、組み合わせごとにMIDIのテンポ・ノート番号を
+        書き換えて再レンダリングするため、音質劣化が無く生成物にMIDIも含まれる。
+        ensure_render()を経由しないので事前の試聴レンダリングは不要で、既存の
+        試聴WAV（audio_path）・セッションのspeed/transposeにも一切影響しない
+        （threaded=Trueのサーバーで一括生成中にセッションを書き換えると並行する
+        GET /api/sessionに偽の値を見せてしまうため、意図的にこの形にしている）。
         """
-        wav_path = ensure_render()
-        assert web_session.root is not None  # ensure_render()が通れば必ず存在する
+        web_session.require_tracks()
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("MIDIファイルがアップロードされていません")
 
         body = request.get_json(silent=True) or {}
-        speeds, pitches = pitch_shift.validate_pitch_shift_options(
-            body.get("speeds"), body.get("pitches")
+        speeds, transposes = midi.validate_variation_options(
+            body.get("speeds"), body.get("transposes")
         )
 
-        work_dir = web_session.root / "pitch_shift_work"
+        work_dir = web_session.root / "variations_work"
         shutil.rmtree(work_dir, ignore_errors=True)
         work_dir.mkdir()
+        items: list[dict[str, Any]] = []
+        pairs: list[tuple[Path, Path]] = []
+        try:
+            with web_session.render_lock:
+                # 実機チップ/DACレンダリングはspeed/transposeに依存しないため、
+                # バッチ全体で1回だけ生成し全組み合わせで使い回す
+                # （_render_applied_midi()のchip_render_stem引数）。
+                shared_chip = _render_chip_hardware(work_dir / "_chiprender.wav")
+                for speed, transpose in itertools.product(speeds, transposes):
+                    label = _variation_label(speed, transpose)
+                    mid_out = work_dir / f"{web_session.original_name}_{label}.mid"
+                    wav_out = work_dir / f"{web_session.original_name}_{label}.wav"
+                    _apply_to(mid_out, speed, transpose)
+                    web_session.render_id += 1
+                    _render_applied_midi(
+                        mid_out,
+                        wav_out,
+                        render_id=web_session.render_id,
+                        speed=speed,
+                        transpose=transpose,
+                        chip_render_stem=shared_chip,
+                    )
+                    items.append(
+                        {
+                            "speed": speed,
+                            "transpose": transpose,
+                            "wav": wav_out.name,
+                            "mid": mid_out.name,
+                        }
+                    )
+                    pairs.append((mid_out, wav_out))
 
-        input_copy = work_dir / f"{web_session.original_name}.wav"
-        shutil.copyfile(wav_path, input_copy)
+            zip_path = web_session.root / "variations.zip"
+            if web_session.variations_zip_path is not None:
+                web_session.variations_zip_path.unlink(missing_ok=True)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                for mid_out, wav_out in pairs:
+                    archive.write(mid_out, arcname=mid_out.name)
+                    archive.write(wav_out, arcname=wav_out.name)
+            web_session.variations_zip_path = zip_path
+        finally:
+            # ZIPへ書き出した後は、個々の一時MIDI/WAVを持ち続ける理由がない。
+            shutil.rmtree(work_dir, ignore_errors=True)
 
-        outputs = run_pitch_shift(input_copy, work_dir, speeds, pitches)
+        return jsonify(items=items, downloadUrl="/api/download/variations")
 
-        zip_path = web_session.root / "pitch_shift.zip"
-        if web_session.pitch_shift_zip_path is not None:
-            web_session.pitch_shift_zip_path.unlink(missing_ok=True)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for output in outputs:
-                archive.write(output, arcname=output.name)
-        web_session.pitch_shift_zip_path = zip_path
-
-        return jsonify(
-            items=[output.name for output in outputs],
-            downloadUrl="/api/download/pitch-shift",
-        )
-
-    @app.get("/api/download/pitch-shift")
-    def get_download_pitch_shift() -> Response:
-        if web_session.pitch_shift_zip_path is None or not web_session.pitch_shift_zip_path.exists():
-            raise WebValidationError("先に「速度・ピッチのバリエーション」を生成してください")
-        download_name = f"{web_session.original_name}_pitch_shift.zip"
+    @app.get("/api/download/variations")
+    def get_download_variations() -> Response:
+        if (
+            web_session.variations_zip_path is None
+            or not web_session.variations_zip_path.exists()
+        ):
+            raise WebValidationError("先に「バリエーションをまとめて生成」を実行してください")
+        download_name = f"{web_session.original_name}_variations.zip"
         return send_file(
-            web_session.pitch_shift_zip_path,
+            web_session.variations_zip_path,
             mimetype="application/zip",
             as_attachment=True,
             download_name=download_name,
@@ -1193,6 +1322,23 @@ def create_app(
     return app
 
 
+def resolve_startup_soundfont_override(explicit_soundfont: Path | None) -> Path | None:
+    """起動時のsoundfont_override初期値を決める。
+
+    --soundfontが明示指定されなければ、前回ブラウザで選択したSoundFontを
+    settings.jsonから復元する（miditrack/CLAUDE.md「Added: favorite
+    instrument shortlist」参照）。明示指定があれば常にNoneを返す
+    （soundfont_override or soundfontという既存の優先順位を変えないため、
+    ランタイム選択が無い状態＝CLI指定がそのまま使われる状態にする）。
+    """
+    if explicit_soundfont is not None:
+        return None
+    saved_soundfont = preferences.load_preferences().get("selectedSoundfont")
+    if saved_soundfont and render.is_soundfont_file(Path(saved_soundfont)):
+        return Path(saved_soundfont)
+    return None
+
+
 def run_server(
     midi_path: Path | None = None,
     soundfont: Path | None = None,
@@ -1201,6 +1347,7 @@ def run_server(
     """127.0.0.1の空きポートでWeb UIを起動し、終了時に一時データを消す。"""
     token = secrets.token_urlsafe(32)
     session = WebSession()
+    session.soundfont_override = resolve_startup_soundfont_override(soundfont)
     app = create_app(token=token, session=session, soundfont=soundfont)
 
     if midi_path is not None:

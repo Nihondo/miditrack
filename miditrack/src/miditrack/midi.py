@@ -30,6 +30,15 @@ DEFAULT_TRANSPOSE_SEMITONES = 0
 MIN_TRANSPOSE_SEMITONES = -24
 MAX_TRANSPOSE_SEMITONES = 24
 
+# 速度・ピッチの「バリエーション一括生成」（web.py の POST /api/variations）の
+# 既定値・上限。1組み合わせ = MIDI適用+フルレンダリング1回なので、rubberband
+# 1プロセスで済んでいた旧pitch_shift.sh方式（上限40）より大幅に低く抑える。
+DEFAULT_VARIATION_SPEEDS: list[float] = [1.2, 0.8]
+DEFAULT_VARIATION_TRANSPOSES: list[int] = [-2, -1, 0, 1, 2]
+MAX_VARIATION_SPEED_COUNT = 6
+MAX_VARIATION_TRANSPOSE_COUNT = 8
+MAX_VARIATION_COUNT = 12
+
 # SMFの既定テンポ（tempoメタが1つも無いファイルでの4分音符=120BPM相当）。
 DEFAULT_TEMPO_MICROSECONDS = 500_000
 # set_tempoメタはマイクロ秒/4分音符を3バイトで表現するため、この値を超えられない。
@@ -231,6 +240,67 @@ def validate_transpose_semitones(value: Any) -> int:
             f"ピッチ（半音）は{MIN_TRANSPOSE_SEMITONES}〜{MAX_TRANSPOSE_SEMITONES}の"
             f"範囲で指定してください: {value}"
         )
+    return value
+
+
+def _validate_variation_axis(
+    values: list[Any] | None,
+    default: list[Any],
+    *,
+    label: str,
+    max_count: int,
+    validate_one: Any,
+) -> list[Any]:
+    """バリエーション軸（速度またはピッチ）1本ぶんのリストを検証する。
+
+    要素ごとの検証はvalidate_speed_ratio()/validate_transpose_semitones()に
+    委ね、ここでは「リストとしての」形式・件数・重複を扱う。
+    """
+    if values is None:
+        return list(default)
+    if not isinstance(values, list) or len(values) == 0:
+        raise WebValidationError(f"{label}は空でないリストで指定してください")
+    if len(values) > max_count:
+        raise WebValidationError(f"{label}は最大{max_count}個までです")
+    ordered: list[Any] = []
+    for value in values:
+        validated = validate_one(value)
+        # 同じ値の重複は無駄なレンダリング・ZIP内の重複ファイル名を生むため、
+        # 最初の出現順を保ったまま除く。
+        if validated not in ordered:
+            ordered.append(validated)
+    return ordered
+
+
+def validate_variation_options(
+    speeds: list[Any] | None, transposes: list[Any] | None
+) -> tuple[list[float], list[int]]:
+    """バリエーション一括生成（POST /api/variations）の速度・ピッチ一覧を検証する。
+
+    クライアント側の無効化に頼らず、ここで組み合わせ数の上限も含めて再検証する
+    （convert.validate_convert_options()等と同じ姿勢）。要素ごとの範囲・型検査は
+    単体変換のvalidate_speed_ratio()/validate_transpose_semitones()をそのまま
+    再利用し、検証ルールが2箇所に分岐しないようにする。
+    """
+    parsed_speeds = _validate_variation_axis(
+        speeds,
+        DEFAULT_VARIATION_SPEEDS,
+        label="速度倍率",
+        max_count=MAX_VARIATION_SPEED_COUNT,
+        validate_one=validate_speed_ratio,
+    )
+    parsed_transposes = _validate_variation_axis(
+        transposes,
+        DEFAULT_VARIATION_TRANSPOSES,
+        label="ピッチ",
+        max_count=MAX_VARIATION_TRANSPOSE_COUNT,
+        validate_one=validate_transpose_semitones,
+    )
+    if len(parsed_speeds) * len(parsed_transposes) > MAX_VARIATION_COUNT:
+        raise WebValidationError(
+            f"速度×ピッチの組み合わせ数が多すぎます（最大{MAX_VARIATION_COUNT}件）"
+        )
+    return parsed_speeds, parsed_transposes
     return value
 
 

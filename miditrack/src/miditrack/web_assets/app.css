@@ -231,10 +231,20 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .track-table td {
   padding: 10px;
   border-bottom: 1px solid var(--neutral-20);
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .track-row.is-locked { color: var(--neutral-60); }
+
+/* 曲中で楽器が変わる警告は、メイン行のtd内ではなく専用のtrに切り出してある
+   （app.js参照）。区切り線はこの警告行側に持たせ、メイン行同士の高さは
+   警告の有無に関わらず揃える。 */
+.track-row.has-warning td { border-bottom: none; }
+
+.track-row-warning td {
+  padding: 0 10px 10px;
+  border-bottom: 1px solid var(--neutral-20);
+}
 
 .track-name { color: var(--neutral-100); font-weight: 600; }
 .track-channel { color: var(--neutral-60); font-variant-numeric: tabular-nums; }
@@ -277,6 +287,33 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-radius: 6px;
 }
 
+.instrument-select-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.instrument-select-row .program-select { min-width: 0; }
+
+.pin-button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  color: var(--neutral-60);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.pin-button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-dark); }
+.pin-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.pin-button.is-pinned { color: var(--warning); border-color: var(--warning); }
+
 .source-select {
   min-width: 9.5rem;
   padding: 6px 8px;
@@ -288,8 +325,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 /* VGM/NSFで原曲の音源（実機チップレンダリング）を選んだトラック行。
    SPCの原曲の音色（SoundFontバンク切替）はis-hardwareを付与しない
-   （音量スライダーが引き続き有効なままなので視覚的にも区別する）。 */
-.track-row.is-hardware {
+   （音量スライダーが引き続き有効なままなので視覚的にも区別する）。
+   曲中で楽器が変わる警告行（.track-row-warning）にも同じ背景色を
+   同期させ、1トラックの2つのtrが視覚的に1行として見えるようにする。 */
+.track-row.is-hardware,
+.track-row-warning.is-hardware {
   background: var(--brand-light);
 }
 
@@ -389,8 +429,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   width: 100%;
 }
 
-.transform-panel,
-.pitch-shift-panel {
+.variation-panel {
   margin-top: 16px;
   padding: 16px;
   background: var(--neutral-10);
@@ -398,12 +437,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-radius: 12px;
 }
 
-.transform-panel > .field-label { margin-bottom: 12px; }
-.transform-panel .convert-options { margin-bottom: 4px; }
-
-.pitch-shift-panel > .field-label { margin-bottom: 12px; }
-.pitch-shift-panel .convert-options { margin-bottom: 12px; }
-.pitch-shift-panel .toolbar { margin-bottom: 4px; }
+.variation-panel > .field-label { margin-bottom: 12px; }
+.variation-panel .convert-options { margin-bottom: 4px; }
+.variation-panel .toolbar { margin: 12px 0 4px; }
+.variation-panel .variation-subsection { margin-top: 20px; }
 
 .status-toast {
   position: fixed;

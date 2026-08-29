@@ -134,12 +134,14 @@ collect_available_soundfonts() {
             real_path="$(resolve_real_path "$path")"
 
             is_duplicate=false
-            for seen in "${seen_real_paths[@]}"; do
-                if [[ "$seen" == "$real_path" ]]; then
-                    is_duplicate=true
-                    break
-                fi
-            done
+            if [[ ${#seen_real_paths[@]} -gt 0 ]]; then
+                for seen in "${seen_real_paths[@]}"; do
+                    if [[ "$seen" == "$real_path" ]]; then
+                        is_duplicate=true
+                        break
+                    fi
+                done
+            fi
             [[ "$is_duplicate" == true ]] && continue
 
             seen_real_paths+=("$real_path")
@@ -150,7 +152,15 @@ collect_available_soundfonts() {
 
 # 最初に見つかった SoundFont のパスを返す。
 find_first_soundfont() {
-    collect_available_soundfonts | head -n 1
+    # head -n 1 が1行読んで先に終了すると、上流の collect_available_soundfonts
+    # （ループの途中）は SIGPIPE (128+13=141) で終わる。pipefail 有効下ではこれが
+    # パイプ全体の終了コードになり、この関数の呼び出し元である
+    # `SOUNDFONT="$(find_first_soundfont)"` を set -e が失敗と誤認して
+    # スクリプト全体を止めてしまう。head 側で意図的に打ち切っただけなので
+    # `|| true` で無視する。
+    local first=""
+    first="$(collect_available_soundfonts | head -n 1)" || true
+    printf '%s' "$first"
 }
 
 human_readable_size() {

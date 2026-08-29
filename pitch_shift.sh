@@ -229,7 +229,12 @@ FFMPEG_LOG_OPTS=(-hide_banner -loglevel error)
 if [[ "$VERBOSE" == true ]]; then
     FFMPEG_LOG_OPTS=()
 fi
-ffmpeg "${FFMPEG_LOG_OPTS[@]}" \
+# "${arr[@]+"${arr[@]}"}" は、-v/--verbose指定時にFFMPEG_LOG_OPTSが空配列に
+# なった場合の回避策。macOS標準の/bin/bash（3.2系、set -u下）は空配列を
+# "${arr[@]}"のまま展開すると「unbound variable」で落ちる既知の互換性問題が
+# あるため、この`${arr[@]+...}`イディオムで「配列が設定されていれば展開、
+# 空でも展開結果は空のまま」という安全な形にする。
+ffmpeg "${FFMPEG_LOG_OPTS[@]+"${FFMPEG_LOG_OPTS[@]}"}" \
     -i "$INPUT" \
     -vn \
     -ar "$SAMPLE_RATE" -ac "$CHANNELS" \
@@ -247,7 +252,8 @@ for s in "${SPEEDS[@]}"; do
     for p in "${PITCHES[@]}"; do
         OUTPUT="${STEM}_x${s}_p${p}.wav"
         step_line "速度 ${C_BOLD}${s}x${C_RESET} / ピッチ ${C_BOLD}${p}${C_RESET} → ${C_BOLD}$OUTPUT${C_RESET}"
-        rubberband "${RUBBERBAND_LOG_OPTS[@]}" -t "$TEMPO_RATIO" -p "$p" "$TEMP_WAV" "$OUTPUT" &
+        # 上のffmpeg呼び出しと同じ理由でRUBBERBAND_LOG_OPTSも安全展開する。
+        rubberband "${RUBBERBAND_LOG_OPTS[@]+"${RUBBERBAND_LOG_OPTS[@]}"}" -t "$TEMPO_RATIO" -p "$p" "$TEMP_WAV" "$OUTPUT" &
         ACTIVE_PIDS+=("$!")
         if [[ ${#ACTIVE_PIDS[@]} -ge $PARALLEL_JOBS ]]; then
             if ! wait_for_jobs; then
