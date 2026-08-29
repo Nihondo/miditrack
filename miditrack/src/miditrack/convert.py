@@ -521,11 +521,12 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
             {
                 "name": "chipNoise",
                 "type": "bool",
-                "label": "実機音（原曲の音源）を使う",
+                "label": "原曲の音源（実機）を初期選択",
                 "default": False,
                 "help": (
-                    "音符のある全チャンネルを原曲の音源（チップエミュレーション）で"
-                    "初期選択します。変換後にトラックごとSoundFontへ切り替えることもできます"
+                    "音符のある全チャンネルの音源を原曲の音源（チップエミュレーション）に"
+                    "初期選択します。チェックを外していても、変換後にトラックごとSoundFont"
+                    "や原曲の音源へ自由に切り替えられます"
                 ),
             },
         ]
@@ -543,11 +544,12 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
             {
                 "name": "gameSoundfont",
                 "type": "bool",
-                "label": "ゲーム本来の音色で鳴らす",
+                "label": "原曲の音源（実機）を初期選択",
                 "default": False,
                 "help": (
-                    "SPCのBRRサンプルからSoundFont(.sf2)を生成し、音色を手動指定していない"
-                    "トラックをその音源で鳴らします"
+                    "SPCのBRRサンプルから生成したSoundFontを、音符のある全トラックの音源に"
+                    "初期選択します。チェックを外していても、変換後にトラックごとSoundFont"
+                    "や原曲の音源へ自由に切り替えられます"
                 ),
             },
         ]
@@ -584,12 +586,13 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
             {
                 "name": "chipNoise",
                 "type": "bool",
-                "label": "ノイズ/DAC/リズムを実機音でミックス",
+                "label": "原曲の音源（実機）を初期選択",
                 "default": False,
                 "help": (
-                    "安全に判定できたノイズ/DAC/リズム系トラックの音源を"
-                    "原曲の音源（libvgm）へ自動設定します。曖昧な共有チャンネルは"
-                    "SoundFontのままになります"
+                    "安全に判定できたノイズ/DAC/リズム系トラックの音源を原曲の音源"
+                    "（libvgm）に初期選択します（曖昧な共有チャンネルはSoundFontのまま）。"
+                    "チェックを外していても、変換後にトラックごとSoundFontや原曲の音源へ"
+                    "自由に切り替えられます"
                 ),
             },
             {
@@ -691,16 +694,15 @@ def game_soundfont_path_for(output_path: Path) -> Path:
     return output_path.with_suffix(".sf2")
 
 
-def produced_game_soundfont(output_path: Path, options: dict[str, Any]) -> Path | None:
+def produced_game_soundfont(output_path: Path) -> Path | None:
     """変換後、spc2midiが実際にゲーム由来SoundFontを書き出していればそのパスを返す。
 
-    spc2midiは instrSets() が空のとき警告のみでSF2を書かず、終了コードは0の
-    ままになる（main.cpp のSaveSf2()）。つまり「gameSoundfontオプションが
-    有効でも、この曲にはSF2が生成されなかった」が正常系として起こりうるため、
-    存在とサイズで判定する。
+    --sf2 は gameSoundfont オプションの有無に関わらず常に要求する
+    （_build_argv()参照）ため、ここでの判定はオプション値ではなく生成物の
+    存在だけを見ればよい。spc2midiは instrSets() が空のとき警告のみでSF2を
+    書かず、終了コードは0のままになる（main.cpp のSaveSf2()）ため、
+    「SF2が生成されなかった」が正常系として起こりうる ― 存在とサイズで判定する。
     """
-    if not options.get("gameSoundfont"):
-        return None
     sf2_path = game_soundfont_path_for(output_path)
     if sf2_path.exists() and sf2_path.stat().st_size > _MIN_GAME_SOUNDFONT_BYTES:
         return sf2_path
@@ -723,15 +725,19 @@ def _build_argv(
         return argv
 
     if fmt.key == "spc":
+        # NSF/VGMが --track-metadata を常に要求してトラック単位の"game"選択を
+        # 常時使えるようにしているのと同じ理由で、--sf2 も gameSoundfont の
+        # チェック有無に関わらず常に要求する。gameSoundfont自体は「音符のある
+        # 全トラックを初期選択するかどうか」だけを制御する
+        # （produced_game_soundfont()/convert_source()参照）。
         argv = [
             *argv0,
             "-s",
             str(options["songIndex"]),
             "--loops",
             str(options.get("loops", 1)),
+            "--sf2",
         ]
-        if options.get("gameSoundfont"):
-            argv.append("--sf2")
         argv += [str(source_path), str(output_path)]
         return argv
 

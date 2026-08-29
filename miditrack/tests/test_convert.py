@@ -446,7 +446,7 @@ class TestBuildArgv(unittest.TestCase):
         self.assertNotIn("--ch3-special-percussion", argv)
 
 
-    def test_spc_argv_adds_sf2_when_game_soundfont_enabled(self) -> None:
+    def test_spc_argv_always_adds_sf2_when_game_soundfont_enabled(self) -> None:
         argv = convert._build_argv(
             convert.format_by_key("spc"),
             self.source_path,
@@ -459,14 +459,17 @@ class TestBuildArgv(unittest.TestCase):
         self.assertEqual(argv[-2], str(self.source_path))
         self.assertEqual(argv[-1], str(self.output_path))
 
-    def test_spc_argv_omits_sf2_when_game_soundfont_disabled(self) -> None:
+    def test_spc_argv_always_adds_sf2_even_when_game_soundfont_disabled(self) -> None:
+        # gameSoundfontは「音符のある全トラックを初期選択するか」だけを制御し、
+        # SoundFont自体の生成（--sf2）はNSF/VGMの--track-metadataと同じく常に
+        # 要求する。これにより変換後いつでもトラックごとに"game"を選べる。
         argv = convert._build_argv(
             convert.format_by_key("spc"),
             self.source_path,
             self.output_path,
             {"songIndex": 0, "loops": 1, "gameSoundfont": False},
         )
-        self.assertNotIn("--sf2", argv)
+        self.assertIn("--sf2", argv)
 
 
 class TestChipStemPathFor(unittest.TestCase):
@@ -490,23 +493,18 @@ class TestProducedGameSoundfont(unittest.TestCase):
         self.output_path = Path(self.tmp.name) / "converted.mid"
         self.sf2_path = convert.game_soundfont_path_for(self.output_path)
 
-    def test_returns_none_when_option_disabled_even_if_sf2_exists(self) -> None:
-        self.sf2_path.write_bytes(b"0" * 100)
-        result = convert.produced_game_soundfont(self.output_path, {"gameSoundfont": False})
-        self.assertIsNone(result)
-
     def test_returns_none_when_sf2_not_produced(self) -> None:
-        result = convert.produced_game_soundfont(self.output_path, {"gameSoundfont": True})
+        result = convert.produced_game_soundfont(self.output_path)
         self.assertIsNone(result)
 
     def test_returns_none_when_sf2_too_small(self) -> None:
         self.sf2_path.write_bytes(b"0" * 10)
-        result = convert.produced_game_soundfont(self.output_path, {"gameSoundfont": True})
+        result = convert.produced_game_soundfont(self.output_path)
         self.assertIsNone(result)
 
     def test_returns_path_when_sf2_produced(self) -> None:
         self.sf2_path.write_bytes(b"0" * 100)
-        result = convert.produced_game_soundfont(self.output_path, {"gameSoundfont": True})
+        result = convert.produced_game_soundfont(self.output_path)
         self.assertEqual(result, self.sf2_path)
 
 

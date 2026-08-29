@@ -286,23 +286,19 @@ def _unique_upload_path(directory: Path, original_filename: str) -> Path:
         counter += 1
 
 
-def _default_track_source(track: TrackInfo, has_game_soundfont: bool) -> str:
-    """明示指定が無いトラックの音源を、変換済み資産から決める。"""
-    if has_game_soundfont and track.note_count > 0:
-        return "game"
-    return "soundfont"
-
-
 def _selected_track_source(session: WebSession, track: TrackInfo) -> str:
-    """セッション上の明示指定を加味したトラックの実効音源を返す。"""
-    default = _default_track_source(track, session.game_soundfont_path is not None)
-    return session.track_sources.get(track.index, default)
+    """セッション上の明示指定を加味したトラックの実効音源を返す。
+
+    明示指定が無いトラックは常に"soundfont"がデフォルト（NSF/VGM/SPCいずれも
+    共通）。"game"を初期選択にしたい場合はconvert_source()がtrack_sourcesへ
+    明示的に書き込む（VGM/NSFのsuggested、SPCの音符ありトラック全件）。
+    """
+    return session.track_sources.get(track.index, "soundfont")
 
 
 def _set_track_source(session: WebSession, track: TrackInfo, source: str) -> None:
-    """既定音源との差分だけをWebSessionへ保存する。"""
-    default = _default_track_source(track, session.game_soundfont_path is not None)
-    if source == default:
+    """既定音源（"soundfont"）との差分だけをWebSessionへ保存する。"""
+    if source == "soundfont":
         session.track_sources.pop(track.index, None)
     else:
         session.track_sources[track.index] = source
@@ -355,14 +351,14 @@ def track_payload(
     metadata: libvgm.LibvgmMetadata | nsf_chip.NsfChipMetadata | None,
     has_game_soundfont: bool,
 ) -> dict[str, Any]:
+    # "game"の実体はフォーマットごとに異なる: VGM/NSFはmetadataのtargetが
+    # トラックごとに実機レンダリング対象かどうかを表し、SPCにはそのような
+    # 「共有チャンネルで曖昧」という概念が無いためgame_soundfont_path（SoundFont
+    # が実際に生成できたか）だけで音符のある全トラックが等しく選べる。
     target = metadata.targets.get(track.index) if metadata else None
-    has_game_source = has_game_soundfont and track.note_count > 0
-    default_source = _default_track_source(track, has_game_soundfont)
-    available_sources = (
-        ["soundfont", "game"] if target
-        else ["game", "soundfont"] if has_game_source
-        else ["soundfont"]
-    )
+    has_game_source = target is not None or (has_game_soundfont and track.note_count > 0)
+    is_suggested = target.suggested if target else has_game_source
+    available_sources = ["soundfont", "game"] if has_game_source else ["soundfont"]
     return {
         "index": track.index,
         "name": track.name,
@@ -375,9 +371,9 @@ def track_payload(
         "volumeEditable": track.note_count > 0,
         "editable": track.editable,
         "reason": track.reason,
-        "source": sources.get(track.index, default_source),
+        "source": sources.get(track.index, "soundfont"),
         "availableSources": available_sources,
-        "sourceSuggested": target.suggested if target else False,
+        "sourceSuggested": is_suggested,
         "sourceGroupSize": len(metadata.group_indices(target.group_id)) if metadata and target else 1,
     }
 
@@ -1368,7 +1364,19 @@ def create_app(
         else:
             web_session.chip_stem_path = chip_stem_path
             web_session.dac_stem_path = dac_stem_path
-        web_session.game_soundfont_path = convert.produced_game_soundfont(output_path, options)
+        web_session.game_soundfont_path = convert.produced_game_soundfont(output_path)
+        if (
+            fmt.key == "spc"
+            and options.get("gameSoundfont")
+            and web_session.game_soundfont_path is not None
+        ):
+            # VGM/NSFのchipNoiseと同じ「サジェスト対象を初期選択する」役割。
+            # SPCには共有チャンネルで曖昧なケースが無く、音符のあるトラックは
+            # 等しく原曲の音源へ切り替えられるため、対象は「音符のある全
+            # トラック」になる（VGM/NSFのtarget.suggestedサブセットに相当）。
+            web_session.track_sources = {
+                track.index: "game" for track in tracks if track.note_count > 0
+            }
         return jsonify(**session_payload(web_session))
 
     return app

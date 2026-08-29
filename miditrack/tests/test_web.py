@@ -1570,11 +1570,13 @@ class TestWebAppGameSoundfont(unittest.TestCase):
         def fake_converter_with_sf2(
             fmt: SourceFormat, source_path: Path, output_path: Path, options: dict
         ) -> tuple[Path | None, Path | None]:
+            # 実際のspc2midiは --sf2 をgameSoundfontの有無に関わらず常に要求する
+            # （convert.py _build_argv()参照）ため、このフェイクもオプション値に
+            # 関わらず常にSF2を書き出す。
             self.convert_calls.append((fmt, source_path, output_path, options))
             output_path.write_bytes(build_fixture_bytes())
-            if options.get("gameSoundfont"):
-                sf2_path = output_path.with_suffix(".sf2")
-                sf2_path.write_bytes(b"S" * 150)
+            sf2_path = output_path.with_suffix(".sf2")
+            sf2_path.write_bytes(b"S" * 150)
             return None, None
 
         self.fake_renderer = fake_renderer
@@ -1631,7 +1633,7 @@ class TestWebAppGameSoundfont(unittest.TestCase):
         )
         self.assertEqual(
             [track["availableSources"] for track in payload["tracks"]],
-            [["game", "soundfont"], ["game", "soundfont"]],
+            [["soundfont", "game"], ["soundfont", "game"]],
         )
         self.assertTrue(all(track["volumeEditable"] for track in payload["tracks"]))
 
@@ -1698,7 +1700,11 @@ class TestWebAppGameSoundfont(unittest.TestCase):
         self.assertEqual(program_changes, [80])
         self.assertEqual(note_velocities, [127])
 
-    def test_conversion_without_option_leaves_has_game_soundfont_false(self) -> None:
+    def test_conversion_without_option_still_offers_game_but_defaults_to_soundfont(self) -> None:
+        # gameSoundfontは「音符のある全トラックを初期選択するか」だけを制御する
+        # サジェストであり、SoundFont自体の生成（--sf2）はNSF/VGMの
+        # --track-metadataと同じく常に行われる。チェックを外しても"game"は
+        # 選択肢として残り、ただし初期選択（source）は"soundfont"のままになる。
         data = {"source": (io.BytesIO(b"fake source bytes"), "song.spc")}
         self.client.post(
             "/api/source", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
@@ -1708,7 +1714,14 @@ class TestWebAppGameSoundfont(unittest.TestCase):
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
             data=json.dumps({"songIndex": 0, "gameSoundfont": False}),
         )
-        self.assertFalse(response.get_json()["hasGameSoundfont"])
+        payload = response.get_json()
+        self.assertTrue(payload["hasGameSoundfont"])
+        self.assertEqual([track["source"] for track in payload["tracks"]], ["soundfont", "soundfont"])
+        self.assertEqual(
+            [track["availableSources"] for track in payload["tracks"]],
+            [["soundfont", "game"], ["soundfont", "game"]],
+        )
+        self.assertTrue(all(track["sourceSuggested"] for track in payload["tracks"]))
 
     def test_render_with_no_assignments_uses_game_soundfont_once(self) -> None:
         self._upload_source_with_game_soundfont()

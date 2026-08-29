@@ -709,16 +709,25 @@ async function buildTrackRow(track, rowState = state) {
   return row;
 }
 
-// ソロ試聴中に音色・音量・音源のいずれかを直接操作した場合、ソロ開始時に
-// 保存した「戻し先」の音量スナップショットが今の意図とズレてしまう。
-// PATCHは送らずクライアント側の状態だけ静かに解除し、今操作した値を
-// そのまま新しい基準として扱う（ボタンのハイライトは次のrenderTrackList()
-// またはupdateSoloButton()の再評価で外れる）。
+// ソロ試聴中に音色・音量・音源のいずれかを直接操作した場合、ソロを解除する。
+// スナップショットを捨てるだけだと、ソロ中にミュート（音量0）されていた
+// 他トラックがそのまま音量0でサーバー側に残ってしまい、次に同じ🎧を押した
+// ときに「今の（既にミュート済みの）音量」を新しい戻し先として上書き保存
+// してしまい、元の音量が永久に失われる。そこで、他トラックの音量を
+// pendingVolumesへスナップショットの値で積んでおき、今回の操作（PATCH）に
+// 相乗りする形で元に戻す。今操作しているトラック自身の値は呼び出し元が
+// この直後に上書きするので、既にpendingVolumesにある値は上書きしない。
 function clearSoloStateIfActive() {
+  const snapshot = state.soloVolumeSnapshot;
   state.soloTrackIndex = null;
   state.soloVolumeSnapshot = null;
   for (const row of state.trackRows) {
     row.updateSoloButton?.();
+  }
+  if (!snapshot) return;
+  for (const [trackIndexKey, volumePercent] of Object.entries(snapshot)) {
+    const trackIndex = Number(trackIndexKey);
+    if (!(trackIndex in state.pendingVolumes)) state.pendingVolumes[trackIndex] = volumePercent;
   }
 }
 
@@ -1463,7 +1472,7 @@ function renderConvertPanel(source) {
   // 同じ理由で、秒数・PALタイミング・chipNoise等の各オプションの値も
   // 再構築前に読み取って保持しておく（フィールド名 -> 値）。これが無いと
   // 変換のたびにチェックボックスが field.default（常に false）へ戻ってしまい、
-  // 「PALタイミングを使用」「実機音（原曲の音源）を使う」のチェックが
+  // 「PALタイミングを使用」「原曲の音源（実機）を初期選択」のチェックが
   // 変換後に外れて見える。
   const previousFieldValues = {};
   for (const entry of state.convertFields) {
