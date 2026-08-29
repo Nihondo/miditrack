@@ -40,6 +40,8 @@ const state = {
   statusTimer: null,
   convertFields: [], // 変換パネルに描画中のオプションフィールド { name, type, input, conflicts }
   soundfontPayload: null, // 直近の /api/soundfonts レスポンス（hasGameSoundfont変化時の再描画用）
+  soloTrackIndex: null,     // ソロ試聴中のトラック番号（無ければnull）
+  soloVolumeSnapshot: null, // ソロ開始直前の全トラック音量 { トラック番号: パーセント }。解除時に戻す。
 };
 
 // サーバー側の設定ファイル（/api/preferences）からピン留め・使用回数を読み込み、
@@ -385,6 +387,7 @@ async function buildTrackRow(track) {
     programSelect: null,
     volumeSlider: null,
     muteButton: null,
+    soloButton: null,
   };
   state.trackRows.push(trackRowRef);
 
@@ -611,11 +614,34 @@ async function buildTrackRow(track) {
       }
     });
 
+    // 他の全トラックを一時的に音量0へ落として即レンダリング・再生する
+    // 「ソロ試聴」ボタン。他のトラックをミュートしてから「適用して試聴」を
+    // 押す操作をワンクリックにまとめたもので、サーバー側の状態やAPIは
+    // 既存のPATCH /api/session/tracks・POST /api/renderをそのまま使う
+    // （新しいエンドポイントは追加しない）。
+    const soloButton = document.createElement("button");
+    soloButton.type = "button";
+    soloButton.className = "solo-button";
+    const updateSoloButton = () => {
+      const isSolo = state.soloTrackIndex === track.index;
+      soloButton.textContent = "🎧";
+      soloButton.title = isSolo ? "ソロ試聴を解除" : "このトラックだけを試聴";
+      soloButton.setAttribute("aria-label", `${track.name}を${isSolo ? "ソロ試聴解除" : "ソロ試聴"}`);
+      soloButton.classList.toggle("is-solo", isSolo);
+    };
+    updateSoloButton();
+    soloButton.addEventListener("click", () => {
+      toggleTrackSolo(track.index);
+    });
+
     trackRowRef.volumeSlider = slider;
     trackRowRef.muteButton = muteButton;
+    trackRowRef.soloButton = soloButton;
+    trackRowRef.updateSoloButton = updateSoloButton;
 
     control.appendChild(label);
     control.appendChild(muteButton);
+    control.appendChild(soloButton);
     control.appendChild(slider);
     control.appendChild(value);
     volumeCell.appendChild(control);
@@ -651,7 +677,21 @@ async function buildTrackRow(track) {
   return fragment;
 }
 
+// ソロ試聴中に音色・音量・音源のいずれかを直接操作した場合、ソロ開始時に
+// 保存した「戻し先」の音量スナップショットが今の意図とズレてしまう。
+// PATCHは送らずクライアント側の状態だけ静かに解除し、今操作した値を
+// そのまま新しい基準として扱う（ボタンのハイライトは次のrenderTrackList()
+// またはupdateSoloButton()の再評価で外れる）。
+function clearSoloStateIfActive() {
+  state.soloTrackIndex = null;
+  state.soloVolumeSnapshot = null;
+  for (const row of state.trackRows) {
+    row.updateSoloButton?.();
+  }
+}
+
 function onProgramChange(trackIndex, value) {
+  clearSoloStateIfActive();
   state.pendingAssignments[trackIndex] = value === KEEP_ORIGINAL ? null : Number(value);
   if (value !== KEEP_ORIGINAL) recordProgramUsage(Number(value));
   clearTimeout(state.patchTimer);
@@ -659,15 +699,104 @@ function onProgramChange(trackIndex, value) {
 }
 
 function onVolumeChange(trackIndex, volumePercent) {
+  clearSoloStateIfActive();
   state.pendingVolumes[trackIndex] = volumePercent;
   clearTimeout(state.patchTimer);
   state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
 }
 
 function onSourceChange(trackIndex, source) {
+  clearSoloStateIfActive();
   state.pendingSources[trackIndex] = source;
   clearTimeout(state.patchTimer);
   state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
+}
+
+// 指定トラック以外を音量0にしてレンダリング・再生する「ソロ試聴」を
+// 開始／解除する。もう一度同じボタンを押すと解除に切り替わる。
+async function toggleTrackSolo(trackIndex) {
+  if (state.soloTrackIndex === trackIndex) {
+    await exitSolo();
+  } else {
+    await enterSolo(trackIndex);
+  }
+}
+
+function collectCurrentVolumes() {
+  const volumes = {};
+  for (const row of state.trackRows) {
+    if (!row.volumeSlider) continue;
+    volumes[row.index] = Number(row.volumeSlider.value);
+  }
+  return volumes;
+}
+
+async function enterSolo(trackIndex) {
+  clearTimeout(state.patchTimer);
+  if (!(await flushPendingTrackSettings())) return;
+
+  // 既にソロ中の別トラックへ切り替える場合は、最初にソロへ入る前の
+  // スナップショットを保持し続ける（切り替えるたびに上書きしない）。
+  if (state.soloVolumeSnapshot === null) {
+    state.soloVolumeSnapshot = collectCurrentVolumes();
+  }
+
+  const volumes = {};
+  for (const row of state.trackRows) {
+    if (!row.volumeSlider) continue;
+    if (row.index === trackIndex) {
+      const original = state.soloVolumeSnapshot[row.index] ?? 100;
+      volumes[row.index] = original === 0 ? 100 : original;
+    } else {
+      volumes[row.index] = 0;
+    }
+  }
+
+  setBusy(true, "ソロ試聴の準備中…");
+  try {
+    const response = await apiFetch("/api/session/tracks", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ volumes }),
+    });
+    state.session = await response.json();
+    state.soloTrackIndex = trackIndex;
+    await renderTrackList();
+    updateSectionsReadiness();
+    const player = await renderAndLoadPlayer();
+    player.play().catch(() => {});
+    showStatus("ソロ試聴中です。もう一度🎧を押すと解除します。", "success");
+  } catch (error) {
+    state.soloTrackIndex = null;
+    showStatus(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function exitSolo() {
+  const snapshot = state.soloVolumeSnapshot;
+  state.soloTrackIndex = null;
+  state.soloVolumeSnapshot = null;
+  if (!snapshot) return;
+
+  setBusy(true, "音量を元に戻しています…");
+  try {
+    const response = await apiFetch("/api/session/tracks", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ volumes: snapshot }),
+    });
+    state.session = await response.json();
+    await renderTrackList();
+    updateSectionsReadiness();
+    resetPlayer();
+    showStatus("ソロ試聴を解除しました。もう一度「適用して試聴」を押してください。");
+  } catch (error) {
+    showStatus(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function flushPendingTrackSettings() {
@@ -752,6 +881,10 @@ function renderTransformFields(payload) {
 }
 
 async function refreshFromSession(payload) {
+  // 新しいMIDI/音源の読み込みでトラック構成自体が変わりうるため、
+  // 古いセッションのトラック番号を指したソロ試聴状態は持ち越さない。
+  state.soloTrackIndex = null;
+  state.soloVolumeSnapshot = null;
   state.session = payload;
   await renderTrackList();
   updateSectionsReadiness();
@@ -1067,22 +1200,30 @@ async function handleConvert() {
   }
 }
 
+// POST /api/renderを呼び、結果を<audio>プレイヤーへセットする。
+// 「適用して試聴」ボタンとトラック行のソロ試聴ボタンの両方が使う共通処理。
+// 呼び出し元がsetBusy()/エラー表示を担うため、ここでは行わない。
+async function renderAndLoadPlayer() {
+  const response = await apiFetch("/api/render", { method: "POST" });
+  const payload = await response.json();
+  const player = $("#player");
+  player.src = audioUrl(payload.renderId);
+  player.load();
+  if (state.session) {
+    state.session.hasRender = true;
+    state.session.renderId = payload.renderId;
+    state.session.hasDownload = true;
+  }
+  updateSectionsReadiness();
+  return player;
+}
+
 async function handleRender() {
   clearTimeout(state.patchTimer);
   if (!(await flushPendingTrackSettings())) return;
   setBusy(true, "レンダリング中…");
   try {
-    const response = await apiFetch("/api/render", { method: "POST" });
-    const payload = await response.json();
-    const player = $("#player");
-    player.src = audioUrl(payload.renderId);
-    player.load();
-    if (state.session) {
-      state.session.hasRender = true;
-      state.session.renderId = payload.renderId;
-      state.session.hasDownload = true;
-    }
-    updateSectionsReadiness();
+    await renderAndLoadPlayer();
     showStatus("試聴の準備ができました。", "success");
   } catch (error) {
     showStatus(error.message, "error");

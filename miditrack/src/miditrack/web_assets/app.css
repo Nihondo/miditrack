@@ -255,9 +255,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .track-volume-control {
-  min-width: 130px;
+  min-width: 160px;
   display: grid;
-  grid-template-columns: 32px minmax(50px, 80px) 44px;
+  grid-template-columns: 32px 32px minmax(50px, 80px) 44px;
   gap: 8px;
   align-items: center;
 }
@@ -301,7 +301,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .instrument-select-row .program-select { min-width: 0; }
 
 .pin-button,
-.mute-button {
+.mute-button,
+.solo-button {
   width: 32px;
   height: 32px;
   flex: 0 0 auto;
@@ -317,11 +318,14 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .pin-button:hover:not(:disabled),
-.mute-button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-dark); }
+.mute-button:hover:not(:disabled),
+.solo-button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-dark); }
 .pin-button:disabled,
-.mute-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.mute-button:disabled,
+.solo-button:disabled { opacity: 0.4; cursor: not-allowed; }
 .pin-button.is-pinned { color: var(--warning); border-color: var(--warning); }
 .mute-button.is-muted { color: var(--danger); border-color: var(--danger); }
+.solo-button.is-solo { color: var(--brand-dark); border-color: var(--brand); background: var(--brand-light); }
 
 .source-select {
   min-width: 9.5rem;
