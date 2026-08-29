@@ -309,8 +309,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: var(--track-color);
   border-radius: 999px;
 }
-.track-channel,
-.track-note-count {
+.track-channel {
   color: var(--neutral-60);
   font-variant-numeric: tabular-nums;
   text-align: right;

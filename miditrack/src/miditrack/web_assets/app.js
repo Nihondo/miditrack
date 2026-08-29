@@ -461,11 +461,6 @@ async function buildTrackRow(track, rowState = state) {
     : "—";
   row.appendChild(channelCell);
 
-  const noteCell = document.createElement("td");
-  noteCell.className = "track-note-count";
-  noteCell.textContent = String(track.noteCount);
-  row.appendChild(noteCell);
-
   const sourceCell = document.createElement("td");
   if (track.availableSources.length > 1) {
     const sourceSelect = document.createElement("select");
@@ -883,7 +878,6 @@ async function flushPendingTrackSettings() {
 function trackSortValue(track, key) {
   if (key === "index") return track.index;
   if (key === "channel") return track.channels[0] ?? null;
-  if (key === "noteCount") return track.noteCount;
   if (key === "source") return track.source || "";
   if (key === "instrument") return track.assignedProgram ?? track.currentProgram ?? -1;
   if (key === "volume") return track.volumePercent;
@@ -1642,13 +1636,63 @@ async function handleRender() {
   if (!(await flushPendingTrackSettings())) return;
   setBusy(true, "レンダリング中…");
   try {
-    await renderAndLoadPlayer();
+    const player = await renderAndLoadPlayer();
+    player.play().catch(() => {});
     showStatus("試聴の準備ができました。", "success");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
     setBusy(false);
   }
+}
+
+// スペースキーでの再生・一時停止トグルを素通しすべき要素か判定する。
+// フォーム部品・ボタン・リンクはスペースキーに独自の既定動作（クリック・チェック
+// 切り替え等）を持つため、そちらを優先してグローバルショートカットは発火させない。
+// <audio>自体も除外する（ネイティブの再生ボタンにフォーカスがある間はブラウザ標準の
+// トグルに任せ、二重トグルを防ぐ）。
+function isPlaybackShortcutBlocked(target) {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  return ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A", "AUDIO"].includes(target.tagName);
+}
+
+// スペースキー1回分の再生・一時停止トグル。未レンダリング（またはトラック設定変更後で
+// 再レンダリングが必要）な状態で再生しようとした場合は、「適用して試聴」ボタンと同じ
+// handleRender()を呼んでレンダリングしてから再生する。
+async function togglePlayback() {
+  if ($("#render-button").disabled || document.body.classList.contains("busy")) return;
+  const player = $("#player");
+  if (!player.paused) {
+    player.pause();
+    return;
+  }
+  if (!state.session.hasRender) {
+    await handleRender();
+    return;
+  }
+  player.play().catch(() => {});
+}
+
+// マウスでボタンをクリックすると、クリック後もそのボタンにフォーカスが残り続け、
+// 以降のスペースキー入力がブラウザの既定動作（ボタンの再クリック）に奪われて
+// グローバルの再生トグルへ届かなくなる。event.detailが0の場合はEnter/Spaceキーに
+// よる合成クリックなので対象外とし（Tabキーでのフォーカス移動＋キーボード操作は
+// 損なわない）、実際にマウスでクリックされたボタンだけクリック直後にblur()する。
+function blurMouseActivatedButton(event) {
+  if (event.detail === 0) return;
+  const target = event.target.closest("button");
+  if (target) target.blur();
+}
+
+function setupPlaybackShortcut() {
+  document.addEventListener("click", blurMouseActivatedButton);
+  document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space" || event.repeat) return;
+    if (isPlaybackShortcutBlocked(event.target)) return;
+    event.preventDefault();
+    togglePlayback();
+  });
 }
 
 async function downloadFrom(path, fallbackName, busyMessage) {
@@ -1786,6 +1830,7 @@ async function init() {
     renderTrackList();
   });
   setupPianoroll();
+  setupPlaybackShortcut();
   $("#reset-button").addEventListener("click", handleReset);
   $("#render-button").addEventListener("click", handleRender);
   $("#download-button").addEventListener("click", handleDownload);

@@ -867,6 +867,14 @@ class TestTryDetectFormatAndPredicates(unittest.TestCase):
         self.assertTrue(convert.is_m3u_filename("playlist.M3U8"))
         self.assertFalse(convert.is_m3u_filename("song.nsf"))
 
+    def test_is_hidden_member_name(self) -> None:
+        self.assertTrue(convert.is_hidden_member_name(".DS_Store"))
+        # __MACOSX/._foo.nsfのようなAppleDoubleリソースフォークは拡張子だけ本体と
+        # 一致するため、ベースネームのドット判定でしか弾けない。
+        self.assertTrue(convert.is_hidden_member_name("__MACOSX/._chip.nsf"))
+        self.assertFalse(convert.is_hidden_member_name("chip.nsf"))
+        self.assertFalse(convert.is_hidden_member_name("sub/chip.nsf"))
+
 
 M3U_SAMPLE = """#EXTM3U
 # Game: Castlevania

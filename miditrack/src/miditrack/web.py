@@ -1253,11 +1253,15 @@ def create_app(
                     zip_path = uploads_dir / f"upload_{index}.zip"
                     upload.save(zip_path)
                     for member in convert.extract_zip_members(zip_path, archive_dir):
-                        if convert.is_m3u_filename(member.name):
+                        if convert.is_hidden_member_name(member.name):
+                            pass  # __MACOSX/._foo.spcや.DS_Store等の隠しファイルは無視する。
+                        elif convert.is_m3u_filename(member.name):
                             m3u_texts.append(member.read_text(encoding="utf-8", errors="replace"))
                         elif convert.try_detect_format(member.name) is not None:
                             candidates.append(member)
                         # それ以外（readme・カバー画像等）はZIP同梱の付随ファイルとして無視する。
+                elif convert.is_hidden_member_name(original_name):
+                    pass  # 隠しファイルは無視する（ZIP同梱時と同じ扱い）。
                 elif convert.is_m3u_filename(original_name):
                     saved = _unique_upload_path(uploads_dir, original_name)
                     upload.save(saved)

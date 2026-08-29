@@ -117,6 +117,16 @@ def is_m3u_filename(filename: str) -> bool:
     return Path(filename).suffix.lower() in _M3U_EXTENSIONS
 
 
+def is_hidden_member_name(name: str) -> bool:
+    """ファイル名（ZIPメンバー名・アップロードされたファイル名）のベースネームがドット（.）で始まるか判定する。
+
+    macOSでZIPを作成すると付随する`__MACOSX/._foo.spc`（AppleDoubleリソースフォーク、
+    実データを持たず拡張子だけは本体と一致するため`try_detect_format()`をすり抜けて
+    しまう）や`.DS_Store`のような隠しファイルを候補一覧から除外するために使う。
+    """
+    return Path(name).name.startswith(".")
+
+
 def _safe_member_path(dest_dir: Path, member_name: str) -> Path:
     """ZIPエントリ名をdest_dir配下の安全な実パスへ変換する（zip-slip対策）。
 

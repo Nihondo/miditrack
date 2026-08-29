@@ -1060,6 +1060,16 @@ class TestWebApp(unittest.TestCase):
         # 変換候補は音源1つだけなのでファイル選択UIは不要（要素数1）。
         self.assertEqual(len(payload["source"]["files"]), 1)
 
+    def test_loose_upload_ignores_hidden_files(self) -> None:
+        response = self._upload_files([
+            (b"fake nsf bytes", "chip.nsf"),
+            (b"apple double resource fork", "._chip.nsf"),
+            (b"finder metadata", ".DS_Store"),
+        ])
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual([f["name"] for f in payload["source"]["files"]], ["chip.nsf"])
+
     def test_m3u_for_unrelated_file_does_not_apply(self) -> None:
         m3u = b"othergame.nsf,1,Unrelated Title\n"
         response = self._upload_files([(b"fake nsf bytes", "chip.nsf"), (m3u, "chip.m3u")])
@@ -1134,6 +1144,19 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         payload = response.get_json()
         self.assertEqual(len(payload["source"]["files"]), 1)
+
+    def test_zip_ignores_macos_hidden_members(self) -> None:
+        # macOSでZIPを作成すると__MACOSX/._foo.nsf（AppleDoubleリソースフォーク。
+        # 拡張子だけは本体と一致するのでtry_detect_format()単体では弾けない）や
+        # .DS_Storeが同梱されがちだが、いずれも候補一覧に出してはいけない。
+        response = self._upload_zip({
+            "chip.nsf": b"fake nsf",
+            "__MACOSX/._chip.nsf": b"apple double resource fork",
+            ".DS_Store": b"finder metadata",
+        })
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual([f["name"] for f in payload["source"]["files"]], ["chip.nsf"])
 
     def test_zip_with_playlist_member_applies_titles(self) -> None:
         m3u = b"chip.nsf,1,From Zip A\nchip.nsf,2,From Zip B\n"
