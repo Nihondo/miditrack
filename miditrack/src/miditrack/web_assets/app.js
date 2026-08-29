@@ -27,6 +27,10 @@ const state = {
   pinnedPrograms: new Set(), // 手動ピン留めされたGMプログラム番号のSet
   usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
+  // 現在描画中の全トラック行のコントロール参照
+  // { sourceSelect, programSelect, volumeSlider, muteButton }（無いものはnull）。
+  // Cmd/Ctrlキーを押しながらの操作で「全トラックに同じ設定を適用」する際に使う。
+  trackRows: [],
   pendingAssignments: {}, // トラック番号(number) -> GMプログラム番号 | null（未送信分）
   pendingVolumes: {},     // トラック番号(number) -> 音量パーセント（未送信分）
   pendingSources: {},     // トラック番号(number) -> soundfont | game（未送信分）
@@ -305,6 +309,66 @@ function reasonLabel(reason) {
   }
 }
 
+// ネイティブ<select>のポップアップが開いている間はOSネイティブUIがキー入力を
+// 奪うため、「ドロップダウンを開いた後でCmd/Ctrlを押す」操作をJS側で検知する
+// 確実な方法が無い。またchangeイベント自体も、選んだ値が変更前と同じ場合は
+// 発火しない。そのため<select>ではmousedown時点でこの判定を行い、真なら
+// event.preventDefault()でポップアップ自体を開かせず、その場で現在の値を
+// 全トラックへ適用する（つまりCmd/Ctrl+クリックは「値を変える」操作ではなく
+// 「今の値を揃える」操作になる。値を変えてから揃えたい場合は、まず普通に
+// クリックして値を変え、その後もう一度Cmd/Ctrl+クリックする）。
+// ボタン（ミュートボタン）はポップアップを持たないため、通常のclickイベントで
+// そのままこの判定を使える。
+function isBulkApplyEvent(event) {
+  return event.metaKey || event.ctrlKey;
+}
+
+// Cmd/Ctrlを押しながらの音源選択で、他の全トラックの音源セレクトも同じ値に
+// 揃える。選択肢が無い（その値を持たない）行や、既に同じ値の行はスキップする。
+function applySourceToAllTracks(value, originIndex) {
+  let appliedCount = 0;
+  for (const row of state.trackRows) {
+    if (!row.sourceSelect || row.index === originIndex) continue;
+    if (row.sourceSelect.value === value) continue;
+    if (!Array.from(row.sourceSelect.options).some((option) => option.value === value)) continue;
+    row.sourceSelect.value = value;
+    row.sourceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    appliedCount += 1;
+  }
+  if (appliedCount > 0) showStatus(`他${appliedCount}トラックの音源も揃えました。`);
+}
+
+// Cmd/Ctrlを押しながらの楽器選択で、編集可能な他の全トラックの楽器も同じ
+// GMプログラムに揃える。
+function applyProgramToAllTracks(value, originIndex) {
+  let appliedCount = 0;
+  for (const row of state.trackRows) {
+    if (!row.programSelect || row.programSelect.disabled || row.index === originIndex) continue;
+    if (row.programSelect.value === value) continue;
+    row.programSelect.value = value;
+    row.programSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    appliedCount += 1;
+  }
+  if (appliedCount > 0) showStatus(`他${appliedCount}トラックの楽器も揃えました。`);
+}
+
+// Cmd/Ctrlを押しながらのミュート切り替えで、他の全トラックも同じミュート
+// 状態（ミュート／解除）に揃える。解除時は各トラックが個別に覚えている
+// 直前の音量へそれぞれ戻る（一律の音量に揃えるわけではない）。
+function applyMuteToAllTracks(shouldMute, originIndex) {
+  let appliedCount = 0;
+  for (const row of state.trackRows) {
+    if (!row.muteButton || !row.volumeSlider || row.index === originIndex) continue;
+    const isMuted = Number(row.volumeSlider.value) === 0;
+    if (isMuted === shouldMute) continue;
+    row.muteButton.click();
+    appliedCount += 1;
+  }
+  if (appliedCount > 0) {
+    showStatus(`他${appliedCount}トラックも${shouldMute ? "ミュート" : "ミュート解除"}しました。`);
+  }
+}
+
 async function buildTrackRow(track) {
   const row = document.createElement("tr");
   row.className = "track-row";
@@ -312,6 +376,17 @@ async function buildTrackRow(track) {
   // 曲中で楽器が変わる警告用の別行（後述）。is-hardwareの背景色をrowと
   // 揃えるため、sourceSelectのchangeハンドラからも参照できるようにしておく。
   let warningRow = null;
+
+  // Cmd/Ctrl+操作での「全トラックに同じ設定を適用」用に、この行のコントロール
+  // 参照をstate.trackRowsへ集める（renderTrackList()が描画のたびにリセットする）。
+  const trackRowRef = {
+    index: track.index,
+    sourceSelect: null,
+    programSelect: null,
+    volumeSlider: null,
+    muteButton: null,
+  };
+  state.trackRows.push(trackRowRef);
 
   const nameCell = document.createElement("td");
   const nameLabel = document.createElement("div");
@@ -367,6 +442,18 @@ async function buildTrackRow(track) {
       }
       onSourceChange(track.index, sourceSelect.value);
     });
+    // Cmd/Ctrlを押しながらのクリックはドロップダウンを開かせず、その場で
+    // 現在の値を全トラックへ適用する（isBulkApplyEvent()参照: ポップアップが
+    // 開いている間はOSネイティブUIがキー操作を奪うため、開いた後のキー入力を
+    // 確実に検知する手段が無い。値を変えてから揃えたい場合は、まず普通に
+    // クリックして値を変え、その後もう一度Cmd/Ctrl+クリックする）。
+    sourceSelect.addEventListener("mousedown", (event) => {
+      if (isBulkApplyEvent(event)) {
+        event.preventDefault();
+        applySourceToAllTracks(sourceSelect.value, track.index);
+      }
+    });
+    trackRowRef.sourceSelect = sourceSelect;
     sourceCell.appendChild(sourceSelect);
   } else {
     sourceCell.textContent = track.source === "game" ? "原曲の音源" : "SoundFont";
@@ -418,11 +505,21 @@ async function buildTrackRow(track) {
       onProgramChange(track.index, select.value);
       updatePinButton();
     });
+    // sourceSelectと同じ理由でmousedown+preventDefault方式にする
+    // （isBulkApplyEvent()参照）。KEEP_ORIGINALのまま揃えても意味が無いので
+    // スキップする。
+    select.addEventListener("mousedown", (event) => {
+      if (isBulkApplyEvent(event) && select.value !== KEEP_ORIGINAL) {
+        event.preventDefault();
+        applyProgramToAllTracks(select.value, track.index);
+      }
+    });
     pinButton.addEventListener("click", () => {
       if (select.value === KEEP_ORIGINAL) return;
       toggleProgramPinned(Number(select.value));
     });
     state.instrumentRows.push({ select, updatePinButton });
+    trackRowRef.programSelect = select;
 
     const selectRow = document.createElement("div");
     selectRow.className = "instrument-select-row";
@@ -487,18 +584,35 @@ async function buildTrackRow(track) {
     };
     updateMuteButton();
 
+    // inputはドラッグ中に連続発火するので表示更新のみ行い、サーバーへの反映
+    // （onVolumeChange、ひいてはPATCH成功後のrenderTrackList()）はchange
+    // （ドラッグ確定＝mouseup、またはキーボード操作の確定）にのみ委ねる。
+    // input発火のたびにonVolumeChangeを呼ぶと、ドラッグ中に200msデバウンスが
+    // 満了してflushPendingTrackSettings()が走り、renderTrackList()がtbody
+    // 全体を作り直してしまう ― ドラッグ対象のslider要素自体がDOMから消え、
+    // ブラウザのポインタキャプチャが失われてドラッグが強制終了してしまうため。
     slider.addEventListener("input", () => {
       value.value = `${slider.value}%`;
       value.textContent = value.value;
       slider.setAttribute("aria-valuetext", value.value);
       if (Number(slider.value) > 0) volumeBeforeMute = Number(slider.value);
       updateMuteButton();
+    });
+    slider.addEventListener("change", () => {
       onVolumeChange(track.index, Number(slider.value));
     });
-    muteButton.addEventListener("click", () => {
-      slider.value = Number(slider.value) === 0 ? String(volumeBeforeMute) : "0";
+    muteButton.addEventListener("click", (event) => {
+      const willMute = Number(slider.value) !== 0;
+      slider.value = willMute ? "0" : String(volumeBeforeMute);
       slider.dispatchEvent(new Event("input", { bubbles: true }));
+      onVolumeChange(track.index, Number(slider.value));
+      if (isBulkApplyEvent(event)) {
+        applyMuteToAllTracks(willMute, track.index);
+      }
     });
+
+    trackRowRef.volumeSlider = slider;
+    trackRowRef.muteButton = muteButton;
 
     control.appendChild(label);
     control.appendChild(muteButton);
@@ -599,6 +713,7 @@ async function renderTrackList() {
   const tbody = $("#track-list");
   tbody.innerHTML = "";
   state.instrumentRows = [];
+  state.trackRows = [];
   const tracks = state.session ? state.session.tracks : [];
   $("#tracks-empty").hidden = tracks.length > 0;
   for (const track of tracks) {
