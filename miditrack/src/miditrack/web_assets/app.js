@@ -44,6 +44,7 @@ const state = {
   soloTrackIndex: null,     // ソロ試聴中のトラック番号（無ければnull）
   soloVolumeSnapshot: null, // ソロ開始直前の全トラック音量 { トラック番号: パーセント }。解除時に戻す。
   trackSort: { key: "index", direction: "asc" },
+  hideEmptyTracks: true, // ノート数0のトラックを一覧から隠すか（#hide-empty-tracksチェックボックスの状態）
   trackRenderId: 0,
   pianoroll: null,
   pianorollBase: document.createElement("canvas"),
@@ -916,7 +917,10 @@ function updateSortHeaders() {
 
 async function renderTrackList() {
   const renderId = ++state.trackRenderId;
-  const tracks = state.session ? sortedTracks(state.session.tracks) : [];
+  const visibleTracks = state.session
+    ? state.session.tracks.filter((track) => !state.hideEmptyTracks || track.noteCount > 0)
+    : [];
+  const tracks = sortedTracks(visibleTracks);
   const fragment = document.createDocumentFragment();
   const rowState = { instrumentRows: [], trackRows: [] };
   for (const track of tracks) fragment.appendChild(await buildTrackRow(track, rowState));
@@ -1744,6 +1748,10 @@ async function init() {
   }
   setupDropZone();
   setupTrackSorting();
+  $("#hide-empty-tracks").addEventListener("change", (event) => {
+    state.hideEmptyTracks = event.target.checked;
+    renderTrackList();
+  });
   setupPianoroll();
   $("#reset-button").addEventListener("click", handleReset);
   $("#render-button").addEventListener("click", handleRender);

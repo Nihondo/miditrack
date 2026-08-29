@@ -246,6 +246,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
   border-bottom: 1px solid var(--neutral-30);
 }
 
@@ -505,6 +506,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .convert-field.is-checkbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .convert-field.is-checkbox label { margin-bottom: 0; }
 .convert-field.is-checkbox .field-help { flex-basis: 100%; }
+
+.convert-field.track-filter { margin-bottom: 12px; }
 
 .convert-field.is-disabled { opacity: 0.5; }
 .convert-field .field-help { margin: 4px 0 0; }
