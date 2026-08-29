@@ -70,8 +70,16 @@ Left/Right, return-to-start matches Home or Command+Left, and play/pause matches
 Space. Playback events (`play`, `pause`, `ended`, and media reset/load events)
 must update the toggle icon and disabled states, regardless of whether the
 action came from a button, shortcut, piano-roll seek, or native audio control.
-The MIDI/WAV download buttons belong immediately below the piano roll; the
-native `<audio>` control stays below them for scrubbing and volume.
+Present those buttons as two segmented pairs — back/forward and
+return-to-start/play-pause — using the same height, border, separators,
+background, and focus treatment as `.compact-stepper`. The start icon must use
+a filled vertical bar so it remains visibly `|◀` with fill-only SVG styling.
+The native `<audio>` control stays below the piano roll for scrubbing and
+volume, and the MIDI/WAV download buttons belong immediately below that player.
+
+The SoundFont select and adjacent Apply & Audition button retain their standard
+`.program-select` and `.button` heights. Center them vertically; do not stretch
+either control to make their outer boxes equal.
 
 Track colors have one browser-side source of truth: `getTrackColor(track.index,
 trackCount, opacity)`. Both the note rectangles and the color marker preceding

@@ -566,43 +566,20 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  align-items: stretch;
+  align-items: center;
 }
 
 .soundfont-row .program-select { min-width: 0; }
-.soundfont-row .button { min-height: 48px; white-space: nowrap; }
+.soundfont-row .button { white-space: nowrap; }
 
 .playback-controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
-.playback-controls button {
-  width: 48px;
-  min-height: 48px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  color: var(--neutral-80);
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.playback-controls button:hover:not(:disabled) {
-  color: var(--brand-dark);
-  background: var(--brand-light);
-}
-
-.playback-controls button:disabled {
-  color: var(--neutral-40);
-  cursor: not-allowed;
-}
-
-.playback-controls svg {
-  width: 28px;
+.playback-segment svg {
+  width: 20px;
   height: 28px;
   fill: currentColor;
 }
@@ -668,7 +645,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .pianoroll-zoom,
-.compact-stepper {
+.compact-stepper,
+.playback-segment {
   display: grid;
   min-height: 32px;
   overflow: hidden;
@@ -682,7 +660,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   grid-template-columns: 32px minmax(48px, auto) 32px;
 }
 
-:is(.pianoroll-zoom, .compact-stepper) button,
+.playback-segment { grid-template-columns: 32px 32px; }
+
+:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button,
 .pianoroll-zoom span,
 .transform-value {
   min-width: 0;
@@ -696,29 +676,31 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-:is(.pianoroll-zoom, .compact-stepper) button {
+:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button {
   min-height: 32px;
   cursor: pointer;
 }
 
-:is(.pianoroll-zoom, .compact-stepper) button:hover:not(:disabled) {
+:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button:hover:not(:disabled) {
   color: var(--brand-dark);
   background: var(--brand-light);
 }
 
-:is(.pianoroll-zoom, .compact-stepper) button:focus-visible {
+:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button:focus-visible {
   position: relative;
   z-index: 1;
   outline: 2px solid var(--brand-dark);
   outline-offset: -2px;
 }
 
-:is(.pianoroll-zoom, .compact-stepper) button:disabled {
+:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button:disabled {
   color: var(--neutral-50);
   cursor: default;
 }
 
-:is(.pianoroll-zoom, .compact-stepper) > * + * { border-left: 1px solid var(--neutral-30); }
+:is(.pianoroll-zoom, .compact-stepper, .playback-segment) > * + * {
+  border-left: 1px solid var(--neutral-30);
+}
 
 .transform-value {
   grid-template-columns: minmax(2.5ch, auto) auto;

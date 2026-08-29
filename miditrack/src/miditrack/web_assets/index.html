@@ -108,19 +108,23 @@
       </div>
       <div class="toolbar audition-toolbar">
         <div class="playback-controls" role="group" aria-label="再生コントロール">
-          <button type="button" id="playback-backward" aria-label="1秒戻る" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7l-6 5 6 5V7zm8 0l-6 5 6 5V7z" /></svg>
-          </button>
-          <button type="button" id="playback-forward" aria-label="1秒進む" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7l6 5-6 5V7zm8 0l6 5-6 5V7z" /></svg>
-          </button>
-          <button type="button" id="playback-start" aria-label="先頭へ戻る" disabled>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6v12M18 7l-8 5 8 5V7z" /></svg>
-          </button>
-          <button type="button" id="playback-toggle" aria-label="再生・一時停止" aria-pressed="false" disabled>
-            <svg class="playback-play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l10 6-10 6V6z" /></svg>
-            <svg class="playback-pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6h4v12H7V6zm6 0h4v12h-4V6z" /></svg>
-          </button>
+          <div class="playback-segment" role="group" aria-label="1秒シーク">
+            <button type="button" id="playback-backward" aria-label="1秒戻る" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7l-6 5 6 5V7zm8 0l-6 5 6 5V7z" /></svg>
+            </button>
+            <button type="button" id="playback-forward" aria-label="1秒進む" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7l6 5-6 5V7zm8 0l6 5-6 5V7z" /></svg>
+            </button>
+          </div>
+          <div class="playback-segment" role="group" aria-label="再生位置と再生状態">
+            <button type="button" id="playback-start" aria-label="先頭へ戻る" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h2v12H5V6zm13 1l-8 5 8 5V7z" /></svg>
+            </button>
+            <button type="button" id="playback-toggle" aria-label="再生・一時停止" aria-pressed="false" disabled>
+              <svg class="playback-play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l10 6-10 6V6z" /></svg>
+              <svg class="playback-pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6h4v12H7V6zm6 0h4v12h-4V6z" /></svg>
+            </button>
+          </div>
         </div>
         <div class="transform-controls" role="group" aria-label="全体の速度とピッチ">
           <div class="transform-control">
@@ -172,12 +176,12 @@
         </div>
       </div>
       <p class="field-help" id="pianoroll-status"></p>
+      <div class="player-card">
+        <audio id="player" controls preload="metadata"></audio>
+      </div>
       <div class="toolbar download-toolbar" aria-label="ダウンロード">
         <button type="button" class="button secondary" id="download-button">MIDIをダウンロード</button>
         <button type="button" class="button secondary" id="download-wav-button">WAVをダウンロード</button>
-      </div>
-      <div class="player-card">
-        <audio id="player" controls preload="metadata"></audio>
       </div>
 
       <details class="variation-panel">
