@@ -462,7 +462,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 /* 音源変換オプションは説明文の長いチェックボックスを1行ずつ表示する。
-   timingグループがあるVGMだけ、テンポ・ループ回数・秒数を3列へまとめる。 */
+   NSF/SPC/VGMいずれもループ回数・秒数の2項目をtimingグループとして持ち
+   （指定できない方はdisabledのまま同じ位置に表示する）、この2つだけを
+   横2列にまとめる。 */
 #convert-options {
   display: flex;
   flex-direction: column;
@@ -470,7 +472,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 #convert-options.has-timing-group {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
 }
 
@@ -511,6 +513,17 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .convert-field.is-disabled { opacity: 0.5; }
 .convert-field .field-help { margin: 4px 0 0; }
+
+/* 動的な排他（is-disabled、updateConvertFieldConflicts()が付け外しする）と
+   違い、こちらは「このフォーマットでは指定できない」ことを恒久的に示す。
+   wrapper全体を薄めるとすぐ下の理由文（.field-help）まで読みにくくなり
+   本末転倒なので、ラベルと入力欄だけを落とす。 */
+.convert-field.is-unavailable > label { opacity: 0.55; }
+.convert-field.is-unavailable input:disabled {
+  color: var(--neutral-60);
+  background: var(--neutral-10);
+  cursor: not-allowed;
+}
 
 .playlist-note { color: var(--brand-dark); font-weight: 600; }
 .playlist-note[hidden] { display: none; }

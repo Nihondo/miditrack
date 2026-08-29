@@ -1388,11 +1388,17 @@ function buildConvertField(field, previousValue) {
   label.textContent = field.label;
   label.htmlFor = `convert-field-${field.name}`;
 
+  // unavailableなフィールドはpreviousValueを見ない ―― 別フォーマットの
+  // 同名フィールド（例: VGMのloopsに入力した値）をたまたま引き継いでしまうと、
+  // disabledな数値欄に紛らわしい値が表示され、placeholderの「指定不可」も
+  // 値があるせいで隠れてしまう。常にfield.defaultだけを使う。
+  const restoredValue = field.unavailable ? undefined : previousValue;
+
   let input;
   if (field.type === "bool") {
     input = document.createElement("input");
     input.type = "checkbox";
-    input.checked = previousValue !== undefined ? !!previousValue : !!field.default;
+    input.checked = restoredValue !== undefined ? !!restoredValue : !!field.default;
     wrapper.appendChild(input);
     wrapper.appendChild(label);
   } else {
@@ -1400,7 +1406,8 @@ function buildConvertField(field, previousValue) {
     input.type = "number";
     input.step = "any";
     if (field.min !== undefined && field.min !== null) input.min = String(field.min);
-    const initialValue = previousValue !== undefined ? previousValue : field.default;
+    if (field.placeholder) input.placeholder = field.placeholder;
+    const initialValue = restoredValue !== undefined ? restoredValue : field.default;
     if (initialValue !== undefined && initialValue !== null) {
       input.value = String(initialValue);
     }
@@ -1408,19 +1415,33 @@ function buildConvertField(field, previousValue) {
     wrapper.appendChild(input);
   }
   input.id = `convert-field-${field.name}`;
-  input.addEventListener("input", updateConvertFieldConflicts);
-  input.addEventListener("change", updateConvertFieldConflicts);
 
   if (field.help) {
     const help = document.createElement("p");
     help.className = "field-help";
+    help.id = `convert-field-${field.name}-help`;
     help.textContent = field.help;
     wrapper.appendChild(help);
+    input.setAttribute("aria-describedby", help.id);
   }
+
+  if (field.unavailable) {
+    // このフォーマットでは指定できない項目。state.convertFieldsへは積まない
+    // ―― 積むと updateConvertFieldConflicts() が entry.input.disabled を
+    // 無条件に false へ戻してしまい、gatherConvertOptions() が送信対象に
+    // 加えてしまう。理由は上のfield.helpとして常時表示されるpタグに書かれる。
+    input.disabled = true;
+    wrapper.classList.add("is-unavailable");
+    return wrapper;
+  }
+
+  input.addEventListener("input", updateConvertFieldConflicts);
+  input.addEventListener("change", updateConvertFieldConflicts);
 
   state.convertFields.push({
     name: field.name,
     type: field.type,
+    label: field.label,
     input,
     wrapper,
     conflicts: field.conflicts || [],
@@ -1437,17 +1458,20 @@ function readConvertFieldValue(entry) {
 
 function updateConvertFieldConflicts() {
   const values = {};
+  const labelsByName = {};
   for (const entry of state.convertFields) {
     values[entry.name] = readConvertFieldValue(entry);
+    labelsByName[entry.name] = entry.label;
   }
   for (const entry of state.convertFields) {
-    const blocked = entry.conflicts.some(
+    const blockingNames = entry.conflicts.filter(
       (other) => values[other] !== null && values[other] !== undefined && values[other] !== false
     );
+    const blocked = blockingNames.length > 0;
     entry.input.disabled = blocked;
     entry.wrapper.classList.toggle("is-disabled", blocked);
     entry.wrapper.title = blocked
-      ? `${entry.conflicts.join("・")}と同時に指定できません`
+      ? `${blockingNames.map((name) => labelsByName[name] || name).join("・")}と同時に指定できません`
       : "";
   }
 }

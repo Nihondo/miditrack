@@ -892,6 +892,24 @@ class TestWebApp(unittest.TestCase):
         option_names = {field["name"] for field in payload["source"]["options"]}
         self.assertIn("ch3SpecialPercussion", option_names)
 
+    def test_source_upload_nsf_exposes_unified_timing_options(self) -> None:
+        # NSF/SPC/VGMいずれも「ループ回数」「秒数」を同じ形で公開し、実際に
+        # 指定できない方だけunavailable: Trueが立つ。テンポ(BPM)はどの
+        # フォーマットにも存在しない（VGMのみ許していた変換時テンポ指定を
+        # 廃止したため）。
+        response = self._upload_source("chip.nsf")
+        options = {f["name"]: f for f in response.get_json()["source"]["options"]}
+        self.assertNotIn("tempo", options)
+        self.assertTrue(options["loops"]["unavailable"])
+        self.assertNotIn("unavailable", options["durationSeconds"])
+
+    def test_source_upload_spc_exposes_unified_timing_options(self) -> None:
+        response = self._upload_source("chip.spc")
+        options = {f["name"]: f for f in response.get_json()["source"]["options"]}
+        self.assertNotIn("tempo", options)
+        self.assertTrue(options["durationSeconds"]["unavailable"])
+        self.assertNotIn("unavailable", options["loops"])
+
     def test_source_convert_produces_track_payload(self) -> None:
         self._upload_source("chip.nsf")
         response = self.client.post(
@@ -960,6 +978,31 @@ class TestWebApp(unittest.TestCase):
         fmt, _source_path, _output_path, options = self.convert_calls[0]
         self.assertEqual(fmt.key, "vgm")
         self.assertTrue(options["ch3SpecialPercussion"])
+
+    def test_source_convert_nsf_ignores_client_supplied_loops(self) -> None:
+        # NSFはループ点を検出できないため、クライアントがloopsを送っても
+        # サーバー側で常に無視される（クライアント側disabledだけを信用しない）。
+        self._upload_source("chip.nsf")
+        response = self.client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 0, "loops": 5}),
+        )
+        self.assertEqual(response.status_code, 200)
+        _fmt, _source_path, _output_path, options = self.convert_calls[0]
+        self.assertIsNone(options["loops"])
+
+    def test_source_convert_spc_ignores_client_supplied_duration(self) -> None:
+        self._upload_source("chip.spc")
+        response = self.client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 0, "durationSeconds": 30}),
+        )
+        self.assertEqual(response.status_code, 200)
+        _fmt, _source_path, _output_path, options = self.convert_calls[0]
+        self.assertIsNone(options["durationSeconds"])
+        self.assertEqual(options["loops"], 1)
 
     def test_source_convert_without_upload_is_rejected(self) -> None:
         response = self.client.post(

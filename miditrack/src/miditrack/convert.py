@@ -505,19 +505,45 @@ def list_songs(fmt: SourceFormat, source_path: Path) -> tuple[dict[str, Any], li
 
 
 def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
-    """フォーマット別の変換オプション定義（フロントエンドが動的に描画する）。"""
+    """フォーマット別の変換オプション定義（フロントエンドが動的に描画する）。
+
+    NSF/SPC/VGMいずれも「秒数」「ループ回数」を`layoutGroup: "timing"`付きで
+    同じ順序（loops→durationSeconds）で宣言する。実際に指定できるのはこの
+    うちフォーマットごとに片方（VGMは両方、相互排他）だけで、もう片方には
+    `unavailable: True`を立てて理由を`help`に書く——非表示にするのではなく、
+    disabledのまま理由付きで見せることで3フォーマットのUIを統一する。
+
+    テンポ(BPM)はVGMにも存在しない: 生のレジスタログには拍・テンポの概念が
+    無く、選んだBPM値は実際の再生時間やピッチには一切影響せず、MIDI内の
+    ティック配置の粒度（DAWで見た小節線の細かさ）を変えるだけ。ユーザーが
+    実際に変えたいのは再生速度であり、それは変換後の「全体の速度」機能
+    （本ファイルの「Why tempo is scaled, not replaced」参照）でMIDIの
+    tempoメタごと調整できるため、変換時テンポは`_build_argv()`側で常に
+    120固定にし、オプションとしては公開しない。
+    """
     if fmt.key == "nsf":
         return [
             {"name": "songIndex", "type": "song", "label": "曲", "default": 0},
+            {
+                "name": "loops",
+                "type": "number",
+                "label": "ループ回数",
+                "default": None,
+                "layoutGroup": "timing",
+                "unavailable": True,
+                "placeholder": "指定不可",
+                "help": "実機のループ点を検出できないため、長さは秒数で指定します",
+            },
             {
                 "name": "durationSeconds",
                 "type": "number",
                 "label": "秒数",
                 "default": None,
                 "min": 1,
+                "layoutGroup": "timing",
+                "placeholder": "空欄で自動",
                 "help": "空欄ならNSFEのトラック長、それも無ければ180秒",
             },
-            {"name": "forcePal", "type": "bool", "label": "PALタイミングを使用", "default": False},
             {
                 "name": "chipNoise",
                 "type": "bool",
@@ -529,6 +555,7 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
                     "や原曲の音源へ自由に切り替えられます"
                 ),
             },
+            {"name": "forcePal", "type": "bool", "label": "PALタイミングを使用", "default": False},
         ]
     if fmt.key == "spc":
         return [
@@ -539,7 +566,18 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
                 "label": "ループ回数",
                 "default": 1,
                 "min": 0,
+                "layoutGroup": "timing",
                 "help": "無限ループ区間を展開する回数",
+            },
+            {
+                "name": "durationSeconds",
+                "type": "number",
+                "label": "秒数",
+                "default": None,
+                "layoutGroup": "timing",
+                "unavailable": True,
+                "placeholder": "指定不可",
+                "help": "曲の長さはループ回数で指定します",
             },
             {
                 "name": "gameSoundfont",
@@ -556,14 +594,6 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
     if fmt.key == "vgm":
         return [
             {
-                "name": "tempo",
-                "type": "number",
-                "label": "テンポ (BPM)",
-                "default": 120,
-                "min": 1,
-                "layoutGroup": "timing",
-            },
-            {
                 "name": "loops",
                 "type": "number",
                 "label": "ループ回数",
@@ -571,7 +601,8 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
                 "min": 1,
                 "layoutGroup": "timing",
                 "conflicts": ["durationSeconds"],
-                "help": "durationSecondsと同時指定不可",
+                "placeholder": "自動",
+                "help": "秒数と同時指定不可",
             },
             {
                 "name": "durationSeconds",
@@ -581,7 +612,8 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
                 "min": 0.001,
                 "layoutGroup": "timing",
                 "conflicts": ["loops"],
-                "help": "loopsと同時指定不可",
+                "placeholder": "自動",
+                "help": "ループ回数と同時指定不可",
             },
             {
                 "name": "chipNoise",
@@ -615,6 +647,13 @@ def validate_convert_options(fmt: SourceFormat, songs: list[dict[str, Any]], raw
     result: dict[str, Any] = {}
 
     for name, field in schema.items():
+        if field.get("unavailable"):
+            # クライアント側のdisabledだけを信用しない。この形式では指定
+            # できない項目なので、型が壊れていようが何が送られてきても
+            # 常に既定値へ潰す（意味不明な400を返すより黙って無視する方が
+            # 正しい——そもそも指定できないと案内している項目のため）。
+            result[name] = field.get("default")
+            continue
         if name not in raw or raw[name] is None or raw[name] == "":
             if field["type"] == "song" and songs:
                 result[name] = 0
@@ -742,7 +781,12 @@ def _build_argv(
         return argv
 
     if fmt.key == "vgm":
-        argv = [*argv0, "-o", str(output_path), "-t", str(options.get("tempo", 120))]
+        # テンポ(BPM)は変換オプションとしてユーザーに公開しない
+        # （option_schema()のdocstring参照）: 選んだBPM値は実際の再生時間や
+        # ピッチには一切影響せず、MIDI内のティック配置の粒度を変えるだけ。
+        # ユーザーが実際に変えたい再生速度は変換後の「全体の速度」機能で
+        # MIDIのtempoメタごと調整できるため、変換時は常に120固定でよい。
+        argv = [*argv0, "-o", str(output_path), "-t", "120"]
         argv += ["--track-metadata", str(libvgm_metadata_path_for(output_path))]
         if options.get("loops") is not None:
             argv += ["--loops", str(options["loops"])]

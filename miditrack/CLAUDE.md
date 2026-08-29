@@ -511,12 +511,56 @@ default preserves `vgm2midi`'s four editable OPN Ch3 Special operator tracks
 for YM2203, YM2608, and YM2612. The user-facing label names OPN explicitly so
 the control is not mistaken for a YM2612-only feature.
 
-VGM's `tempo`, `loops`, and `durationSeconds` schema entries share
-`layoutGroup: "timing"`. The generic renderer copies that metadata to each
-field and marks the options container, while CSS lays the group out as three
-equal columns and lets all later options span the full row. At 640px and below
-the group returns to one column. Keep this metadata server-owned: do not add a
-VGM field-name list to `app.js` merely to control layout.
+All three formats' `loops` and `durationSeconds` schema entries share
+`layoutGroup: "timing"` and are always declared in that order, even on a
+format that can't actually use one of them — the unusable one instead
+carries `unavailable: True` plus a `help` string explaining why. The generic
+renderer copies `layoutGroup` to each field and marks the options container,
+while CSS lays the group out as two equal columns (`has-timing-group`) and
+lets all later options span the full row; at 640px and below the group
+returns to one column. `buildConvertField()` renders an `unavailable` field
+disabled and skips both its event listeners and its `state.convertFields`
+entry (`app.js`), so `gatherConvertOptions()` never has a chance to send a
+value for it and the dynamic loops/durationSeconds mutual-exclusion logic
+(`updateConvertFieldConflicts()`) never sees it either.
+`validate_convert_options()` mirrors this server-side, before any type
+checking: an `unavailable` field is forced to its schema `default`
+regardless of what the client sent, the same "never trust client-side
+disabling alone" posture already established for `conflicts`. Keep this
+metadata server-owned: do not add a per-format field-name list to `app.js`
+merely to control which of `loops`/`durationSeconds` is enabled or how the
+layout groups.
+
+**Why NSF can only set `durationSeconds`, SPC can only set `loops`, and
+VGM can set either (mutually exclusive)**: `nsf2midi` observes emulated APU
+register state frame-by-frame and has no way to detect a loop point, so a
+duration in seconds is the only way to bound playback; `spc2midi` (via
+VGMTrans) parses the SNES driver's actual sequence data, which has no
+"total seconds" — only an unrolled-loop-count — but does give an exact,
+often-changing tempo the file itself will carry, so there's nothing for the
+user to set there either; `vgm2midi` reads a register-write log with an
+explicit sample-accurate loop offset in its header, so both a loop count and
+a target duration are meaningful and mutually exclusive (mirroring
+`vgm2midi`'s own `cli.ts:49-51` check).
+
+**Why the "テンポ (BPM)" conversion-time option was removed entirely
+(including from VGM, the one format that used to expose it)**: a VGM
+register-write log carries no notion of beats or tempo at all — `tempo` only
+existed to pick how `vgm2midi`'s `samplesToTicks()` (`quarterNotes = seconds
+* tempo / 60`) converts absolute sample timestamps into MIDI ticks. Changing
+that value changes nothing about the actual audio or its real-time duration,
+only how finely the beat grid is quantized in the resulting `.mid` — the
+same "not a real tempo, just a carrier grid" situation `nsf2midi` is
+already in with its own hardcoded 500000µs (120 BPM, `nsf2midi/src/main.cpp:34,399`).
+Since a user's actual goal ("make it play faster/slower") is already served
+by the existing MIDI-layer speed control (see "Why speed/pitch is a
+MIDI-layer edit" below, which scales the `set_tempo` meta by a ratio after
+conversion), there was no reason to keep a conversion-time BPM picker whose
+value is invisible in the rendered audio. `_build_argv()`'s VGM branch now
+hardcodes `"-t", "120"` unconditionally; `spc2midi` never had a `-t`
+equivalent to begin with, since VGMTrans writes the game's own real tempo
+straight from the sequence data (`SeqTrack::addTempoNoItem()`, can vary
+mid-song) and there's nothing to override.
 
 ## Why converting a source file reuses the same `WebSession.root`
 

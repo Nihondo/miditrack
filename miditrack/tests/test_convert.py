@@ -180,6 +180,7 @@ class TestOptionSchemaAndValidation(unittest.TestCase):
         options = convert.validate_convert_options(convert.format_by_key("nsf"), songs, {})
         self.assertEqual(options["songIndex"], 0)
         self.assertIsNone(options["durationSeconds"])
+        self.assertIsNone(options["loops"])
         self.assertFalse(options["forcePal"])
 
     def test_nsf_out_of_range_song_index_raises(self) -> None:
@@ -207,7 +208,7 @@ class TestOptionSchemaAndValidation(unittest.TestCase):
         options = convert.validate_convert_options(convert.format_by_key("vgm"), [], {"loops": 2})
         self.assertEqual(options["loops"], 2)
         self.assertIsNone(options["durationSeconds"])
-        self.assertEqual(options["tempo"], 120)
+        self.assertNotIn("tempo", options)
 
     def test_chip_noise_appears_in_nsf_and_vgm_schemas(self) -> None:
         nsf_names = {field["name"] for field in convert.option_schema(convert.format_by_key("nsf"))}
@@ -269,19 +270,70 @@ class TestOptionSchemaAndValidation(unittest.TestCase):
         )
         self.assertTrue(options["gameSoundfont"])
 
-    def test_vgm_timing_fields_share_layout_group(self) -> None:
-        schema = convert.option_schema(convert.format_by_key("vgm"))
-        timing_fields = [
-            field["name"] for field in schema if field.get("layoutGroup") == "timing"
-        ]
-        self.assertEqual(timing_fields, ["tempo", "loops", "durationSeconds"])
+    def test_all_formats_declare_same_timing_fields(self) -> None:
+        # NSF/SPC/VGMいずれも「ループ回数」「秒数」を同じ順序・同じ
+        # layoutGroupで宣言する（見た目を3フォーマットで揃えるため）。
+        # 実際に指定できるかどうかはunavailableフラグ側で表現する。
+        for format_key in ("nsf", "spc", "vgm"):
+            schema = convert.option_schema(convert.format_by_key(format_key))
+            timing_fields = [
+                field["name"] for field in schema if field.get("layoutGroup") == "timing"
+            ]
+            self.assertEqual(timing_fields, ["loops", "durationSeconds"], format_key)
 
-        for format_key in ("nsf", "spc"):
-            self.assertFalse(
-                any(
-                    field.get("layoutGroup") == "timing"
-                    for field in convert.option_schema(convert.format_by_key(format_key))
-                )
+    def test_tempo_option_removed_from_all_formats(self) -> None:
+        # VGMのテンポ(BPM)は変換時の実際の音・再生時間に影響しない目盛りに
+        # 過ぎず、変換後の「全体の速度」機能で調整できるため、オプションと
+        # しては公開しない（_build_argv()が常に120をハードコードする）。
+        for format_key in ("nsf", "spc", "vgm"):
+            names = {field["name"] for field in convert.option_schema(convert.format_by_key(format_key))}
+            self.assertNotIn("tempo", names, format_key)
+
+    def test_unavailable_timing_fields_per_format(self) -> None:
+        nsf_schema = {f["name"]: f for f in convert.option_schema(convert.format_by_key("nsf"))}
+        self.assertTrue(nsf_schema["loops"]["unavailable"])
+        self.assertNotIn("unavailable", nsf_schema["durationSeconds"])
+
+        spc_schema = {f["name"]: f for f in convert.option_schema(convert.format_by_key("spc"))}
+        self.assertTrue(spc_schema["durationSeconds"]["unavailable"])
+        self.assertNotIn("unavailable", spc_schema["loops"])
+
+        vgm_schema = {f["name"]: f for f in convert.option_schema(convert.format_by_key("vgm"))}
+        self.assertNotIn("unavailable", vgm_schema["loops"])
+        self.assertNotIn("unavailable", vgm_schema["durationSeconds"])
+
+    def test_unavailable_fields_have_help_reason(self) -> None:
+        for format_key in ("nsf", "spc", "vgm"):
+            for field in convert.option_schema(convert.format_by_key(format_key)):
+                if field.get("unavailable"):
+                    self.assertTrue(field.get("help"), f"{format_key}.{field['name']}")
+
+    def test_unavailable_field_value_from_client_is_forced_to_default(self) -> None:
+        songs = [{"index": 0, "label": "A"}]
+        options = convert.validate_convert_options(
+            convert.format_by_key("nsf"), songs, {"loops": 5}
+        )
+        self.assertIsNone(options["loops"])
+
+        options = convert.validate_convert_options(
+            convert.format_by_key("spc"), songs, {"durationSeconds": 30}
+        )
+        self.assertIsNone(options["durationSeconds"])
+        self.assertEqual(options["loops"], 1)
+
+    def test_unavailable_field_ignores_invalid_type(self) -> None:
+        # 型チェックより前にunavailableを弾くため、意味不明な400にならない。
+        songs = [{"index": 0, "label": "A"}]
+        options = convert.validate_convert_options(
+            convert.format_by_key("nsf"), songs, {"loops": "abc"}
+        )
+        self.assertIsNone(options["loops"])
+
+    def test_nsf_duration_still_validated_after_unification(self) -> None:
+        songs = [{"index": 0, "label": "A"}]
+        with self.assertRaises(WebValidationError):
+            convert.validate_convert_options(
+                convert.format_by_key("nsf"), songs, {"durationSeconds": 0}
             )
 
 
@@ -330,7 +382,7 @@ class TestBuildArgv(unittest.TestCase):
             convert.format_by_key("vgm"),
             self.source_path,
             self.output_path,
-            {"tempo": 140, "loops": 2, "durationSeconds": None},
+            {"loops": 2, "durationSeconds": None},
         )
         self.assertIn("-o", argv)
         self.assertEqual(argv[argv.index("-o") + 1], str(self.output_path))
@@ -343,11 +395,24 @@ class TestBuildArgv(unittest.TestCase):
             convert.format_by_key("vgm"),
             self.source_path,
             self.output_path,
-            {"tempo": 120, "loops": None, "durationSeconds": 45},
+            {"loops": None, "durationSeconds": 45},
         )
         self.assertIn("--duration", argv)
         self.assertEqual(argv[argv.index("--duration") + 1], "45")
         self.assertNotIn("--loops", argv)
+
+    def test_vgm_argv_always_uses_fixed_tempo(self) -> None:
+        # テンポ(BPM)はオプションとして公開しない(option_schema()参照)。
+        # クライアントからtempoキーが送られてこなくても、また任意の値が
+        # 紛れ込んでいても、常に120固定でvgm2midiへ渡す。
+        argv = convert._build_argv(
+            convert.format_by_key("vgm"),
+            self.source_path,
+            self.output_path,
+            {"loops": None, "durationSeconds": None},
+        )
+        self.assertIn("-t", argv)
+        self.assertEqual(argv[argv.index("-t") + 1], "120")
 
     def test_nsf_argv_always_requests_track_metadata_regardless_of_chip_noise(self) -> None:
         # chipNoiseはトラックごとの音源選択(web.py側の"game"プリセレクト)を
@@ -370,7 +435,7 @@ class TestBuildArgv(unittest.TestCase):
             convert.format_by_key("vgm"),
             self.source_path,
             self.output_path,
-            {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": True},
+            {"loops": None, "durationSeconds": None, "chipNoise": True},
         )
         self.assertIn("--noise-wav", argv)
         expected_stem = str(convert.chip_stem_path_for(self.output_path))
@@ -385,7 +450,7 @@ class TestBuildArgv(unittest.TestCase):
             convert.format_by_key("vgm"),
             self.source_path,
             self.output_path,
-            {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": True},
+            {"loops": None, "durationSeconds": None, "chipNoise": True},
         )
         self.assertIn("--dac-wav", argv)
         expected_stem = str(convert.dac_stem_path_for(self.output_path))
@@ -397,7 +462,7 @@ class TestBuildArgv(unittest.TestCase):
             convert.format_by_key("vgm"),
             self.source_path,
             self.output_path,
-            {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": False},
+            {"loops": None, "durationSeconds": None, "chipNoise": False},
         )
         self.assertIn("--track-metadata", argv)
         self.assertEqual(
@@ -410,7 +475,7 @@ class TestBuildArgv(unittest.TestCase):
             convert.format_by_key("vgm"),
             self.source_path,
             self.output_path,
-            {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": False},
+            {"loops": None, "durationSeconds": None, "chipNoise": False},
         )
         self.assertNotIn("--noise-wav", argv)
         self.assertNotIn("--dac-wav", argv)
@@ -421,7 +486,6 @@ class TestBuildArgv(unittest.TestCase):
             self.source_path,
             self.output_path,
             {
-                "tempo": 120,
                 "loops": None,
                 "durationSeconds": None,
                 "ch3SpecialPercussion": True,
@@ -437,7 +501,6 @@ class TestBuildArgv(unittest.TestCase):
             self.source_path,
             self.output_path,
             {
-                "tempo": 120,
                 "loops": None,
                 "durationSeconds": None,
                 "ch3SpecialPercussion": False,
@@ -663,7 +726,7 @@ class TestConvertToMidiChipNoise(unittest.TestCase):
                 convert.format_by_key("vgm"),
                 self.source_path,
                 self.output_path,
-                {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": True},
+                {"loops": None, "durationSeconds": None, "chipNoise": True},
             )
         self.assertEqual(result, (self.stem_path, self.dac_stem_path))
 
@@ -679,7 +742,7 @@ class TestConvertToMidiChipNoise(unittest.TestCase):
                 convert.format_by_key("vgm"),
                 self.source_path,
                 self.output_path,
-                {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": True},
+                {"loops": None, "durationSeconds": None, "chipNoise": True},
             )
         self.assertEqual(result, (self.stem_path, None))
 
@@ -695,7 +758,7 @@ class TestConvertToMidiChipNoise(unittest.TestCase):
                 convert.format_by_key("vgm"),
                 self.source_path,
                 self.output_path,
-                {"tempo": 120, "loops": None, "durationSeconds": None, "chipNoise": True},
+                {"loops": None, "durationSeconds": None, "chipNoise": True},
             )
         self.assertEqual(result, (None, self.dac_stem_path))
 
