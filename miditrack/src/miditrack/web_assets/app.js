@@ -1792,11 +1792,16 @@ function updatePlaybackTime() {
   applyPlaybackClock($("#playback-duration"), getPlaybackDuration());
 }
 
+// <audio>のtimeupdateはブラウザ依存の粗い間隔（数Hz程度）でしか発火せず、
+// これだけを頼りにピアノロールの再生位置バーを描画するとカクついて見える。
+// カウンタの0.1秒表示と同じ滑らかさにするため、再生中はrAFで毎フレーム
+// updatePlaybackProgress()（描画＋カウンタ＋追従スクロール）を呼ぶ。
+// timeupdateリスナー自体は一時停止中のシーク等の同期用に残す。
 function startPlaybackTimeAnimation() {
   if (state.playbackTimeFrameId !== null) return;
   const updateTime = () => {
     state.playbackTimeFrameId = null;
-    updatePlaybackTime();
+    updatePlaybackProgress();
     const player = $("#player");
     if (!player.paused && !player.ended) {
       state.playbackTimeFrameId = requestAnimationFrame(updateTime);
@@ -1809,7 +1814,7 @@ function stopPlaybackTimeAnimation() {
   if (state.playbackTimeFrameId === null) return;
   cancelAnimationFrame(state.playbackTimeFrameId);
   state.playbackTimeFrameId = null;
-  updatePlaybackTime();
+  updatePlaybackProgress();
 }
 
 function updatePlayerVolume() {
