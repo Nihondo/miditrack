@@ -131,6 +131,99 @@ class TestAnalyzeMidiFile(unittest.TestCase):
             midi.analyze_midi_file(empty_path)
 
 
+def build_cc7_fixture(path: Path) -> None:
+    """変換元CC7（音量）検出のためのフィクスチャ。
+
+    Track 0: 単一チャンネル(0)独占、CC7=64（減衰、採用されるはず）。
+    Track 1: 単一チャンネル(1)独占、CC7=110（増幅、採用されないはず＝100のまま）。
+    Track 2/3: チャンネル2を共有する2トラック。それぞれCC7=50/80を持つが、
+               共有チャンネルのため両方とも採用されず100のまま。
+    Track 4: パーカッションチャンネル(9)を単独占有、CC7=64（editable=Falseでも
+             採用されるはず — 音量とプログラムチェンジ編集可否は独立）。
+    Track 5: 単一チャンネル(3)独占、CC7が時間とともに64→32へ変化する
+             （apply_assignments()の再スケールテスト用）。
+    """
+    mf = mido.MidiFile(ticks_per_beat=480)
+
+    t0 = mido.MidiTrack()
+    t0.append(mido.MetaMessage("track_name", name="Quiet", time=0))
+    t0.append(mido.Message("control_change", control=7, value=64, channel=0, time=0))
+    t0.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+    t0.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=480))
+    mf.tracks.append(t0)
+
+    t1 = mido.MidiTrack()
+    t1.append(mido.MetaMessage("track_name", name="Loud", time=0))
+    t1.append(mido.Message("control_change", control=7, value=110, channel=1, time=0))
+    t1.append(mido.Message("note_on", note=60, velocity=100, channel=1, time=0))
+    t1.append(mido.Message("note_off", note=60, velocity=0, channel=1, time=480))
+    mf.tracks.append(t1)
+
+    t2 = mido.MidiTrack()
+    t2.append(mido.MetaMessage("track_name", name="Shared A", time=0))
+    t2.append(mido.Message("control_change", control=7, value=50, channel=2, time=0))
+    t2.append(mido.Message("note_on", note=60, velocity=100, channel=2, time=0))
+    t2.append(mido.Message("note_off", note=60, velocity=0, channel=2, time=480))
+    mf.tracks.append(t2)
+
+    t3 = mido.MidiTrack()
+    t3.append(mido.MetaMessage("track_name", name="Shared B", time=0))
+    t3.append(mido.Message("control_change", control=7, value=80, channel=2, time=0))
+    t3.append(mido.Message("note_on", note=64, velocity=100, channel=2, time=0))
+    t3.append(mido.Message("note_off", note=64, velocity=0, channel=2, time=480))
+    mf.tracks.append(t3)
+
+    t4 = mido.MidiTrack()
+    t4.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    t4.append(mido.Message("control_change", control=7, value=64, channel=9, time=0))
+    t4.append(mido.Message("note_on", note=42, velocity=100, channel=9, time=0))
+    t4.append(mido.Message("note_off", note=42, velocity=0, channel=9, time=240))
+    mf.tracks.append(t4)
+
+    t5 = mido.MidiTrack()
+    t5.append(mido.MetaMessage("track_name", name="Fading", time=0))
+    t5.append(mido.Message("control_change", control=7, value=64, channel=3, time=0))
+    t5.append(mido.Message("note_on", note=60, velocity=100, channel=3, time=0))
+    t5.append(mido.Message("control_change", control=7, value=32, channel=3, time=240))
+    t5.append(mido.Message("note_off", note=60, velocity=0, channel=3, time=240))
+    mf.tracks.append(t5)
+
+    mf.save(path)
+
+
+class TestSourceVolumePercent(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fixture_path = Path(self.tmp.name) / "cc7.mid"
+        build_cc7_fixture(self.fixture_path)
+        _, self.tracks = midi.analyze_midi_file(self.fixture_path)
+
+    def test_attenuating_cc7_on_exclusive_channel_is_adopted(self) -> None:
+        self.assertEqual(self.tracks[0].source_volume_percent, 64)
+
+    def test_amplifying_cc7_is_not_adopted(self) -> None:
+        self.assertEqual(self.tracks[1].source_volume_percent, 100)
+
+    def test_cc7_on_shared_channel_is_not_adopted(self) -> None:
+        self.assertEqual(self.tracks[2].source_volume_percent, 100)
+        self.assertEqual(self.tracks[3].source_volume_percent, 100)
+
+    def test_percussion_channel_cc7_is_still_adopted(self) -> None:
+        # 音量の採用可否はプログラムチェンジの編集可否（editable）とは独立。
+        track = self.tracks[4]
+        self.assertFalse(track.editable)
+        self.assertEqual(track.source_volume_percent, 64)
+
+    def test_no_cc7_defaults_to_100(self) -> None:
+        # 既存フィクスチャ（build_fixture）にはCC7が無く、全トラック既定値のまま。
+        other_path = Path(self.tmp.name) / "plain.mid"
+        build_fixture(other_path)
+        _, tracks = midi.analyze_midi_file(other_path)
+        for track in tracks:
+            self.assertEqual(track.source_volume_percent, 100)
+
+
 class TestValidateAssignments(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -189,6 +282,29 @@ class TestValidateVolumes(unittest.TestCase):
         for value in (-1, 201, 50.5, True):
             with self.subTest(value=value), self.assertRaises(WebValidationError):
                 midi.validate_volumes(self.tracks, {0: value})  # type: ignore[dict-item]
+
+
+class TestValidateVolumesWithSourceBaseline(unittest.TestCase):
+    """source_volume_percentが100でないトラック（変換元CC7=64採用済み）の除外基準。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fixture_path = Path(self.tmp.name) / "cc7.mid"
+        build_cc7_fixture(self.fixture_path)
+        _, self.tracks = midi.analyze_midi_file(self.fixture_path)
+
+    def test_value_matching_baseline_is_excluded(self) -> None:
+        self.assertEqual(self.tracks[0].source_volume_percent, 64)
+        self.assertEqual(midi.validate_volumes(self.tracks, {0: 64}), {})
+
+    def test_value_matching_default_but_not_baseline_is_kept(self) -> None:
+        # baselineが64のトラックへ100を送るのは「ユーザーが明示的に既定値へ戻した」
+        # 指定であり、baseline自体とは異なるので除外されない。
+        self.assertEqual(midi.validate_volumes(self.tracks, {0: 100}), {0: 100})
+
+    def test_value_differing_from_baseline_is_kept(self) -> None:
+        self.assertEqual(midi.validate_volumes(self.tracks, {0: 80}), {0: 80})
 
 
 class TestApplyAssignments(unittest.TestCase):
@@ -293,6 +409,74 @@ def build_transpose_boundary_fixture(path: Path) -> None:
     mf.tracks.append(t1)
 
     mf.save(path)
+
+
+class TestApplyAssignmentsCc7Normalization(unittest.TestCase):
+    """変換元CC7（source_volumes）をbaselineとして正規化するapply_assignments()の挙動。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.fixture_path = Path(self.tmp.name) / "cc7.mid"
+        build_cc7_fixture(self.fixture_path)
+        self.before = absolute_note_events(mido.MidiFile(self.fixture_path))
+
+    def test_untouched_track_keeps_baseline_volume_and_normalizes_cc7(self) -> None:
+        # web.py相当: 未操作トラックでもeffective volume=baseline(64)を渡す。
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi.apply_assignments(
+            self.fixture_path, {}, output_path, {0: 64}, {0: 64},
+        )
+        edited = mido.MidiFile(output_path)
+        cc7_values = [m.value for m in edited.tracks[0] if m.type == "control_change" and m.control == 7]
+        velocities = [m.velocity for m in edited.tracks[0] if m.type == "note_on"]
+        self.assertEqual(cc7_values, [100])
+        self.assertEqual(velocities, [64])
+        self.assertEqual(absolute_note_events(edited), self.before)
+
+    def test_user_adjusted_track_scales_relative_to_baseline(self) -> None:
+        # baseline 64 のトラックをユーザーが80%へ設定した場合、CC7は100へ正規化
+        # されたまま、velocityはoriginal * 80/100（baselineではなく指定値）。
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi.apply_assignments(
+            self.fixture_path, {}, output_path, {0: 80}, {0: 64},
+        )
+        edited = mido.MidiFile(output_path)
+        cc7_values = [m.value for m in edited.tracks[0] if m.type == "control_change" and m.control == 7]
+        velocities = [m.velocity for m in edited.tracks[0] if m.type == "note_on"]
+        self.assertEqual(cc7_values, [100])
+        self.assertEqual(velocities, [80])
+
+    def test_amplifying_baseline_is_never_normalized(self) -> None:
+        # track1のsource_volume_percentは100（analyze_track()が110を採用しない
+        # ため）。source_volumesへ110を渡しても>=100はCC7正規化の対象外。
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi.apply_assignments(
+            self.fixture_path, {}, output_path, {1: 50}, {1: 100},
+        )
+        edited = mido.MidiFile(output_path)
+        cc7_values = [m.value for m in edited.tracks[1] if m.type == "control_change" and m.control == 7]
+        self.assertEqual(cc7_values, [110])  # 変更されない
+
+    def test_time_varying_cc7_is_rescaled_preserving_shape(self) -> None:
+        # track5: CC7が64→32(ノート発音中)。baseline=64でboth値を100/50へ
+        # 再スケールする（比率 100/64 を両方へ適用）。
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi.apply_assignments(
+            self.fixture_path, {}, output_path, {5: 64}, {5: 64},
+        )
+        edited = mido.MidiFile(output_path)
+        cc7_values = [m.value for m in edited.tracks[5] if m.type == "control_change" and m.control == 7]
+        self.assertEqual(cc7_values, [100, 50])
+        self.assertEqual(absolute_note_events(edited), self.before)
+
+    def test_no_baseline_never_touches_cc7(self) -> None:
+        # source_volumesを渡さない（webの旧経路互換）場合、CC7には一切触れない。
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi.apply_assignments(self.fixture_path, {}, output_path, {0: 50})
+        edited = mido.MidiFile(output_path)
+        cc7_values = [m.value for m in edited.tracks[0] if m.type == "control_change" and m.control == 7]
+        self.assertEqual(cc7_values, [64])  # 原本のまま
 
 
 class TestApplyTransform(unittest.TestCase):

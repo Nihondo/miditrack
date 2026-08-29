@@ -106,12 +106,15 @@ export interface VGMData {
     ym2612PcmData?: Buffer;
     /** typeごと・block ID順で保持した全0x67 data block。 */
     dataBlocks?: VGMDataBlock[];
-    /** VGM 1.70 extra header が報告した追加デバイス情報。 */
+    /** VGM 1.70 extra header が報告した追加デバイス情報。volumeはエントリが
+     *  無ければundefined（=「未指定」、clockのみのチップと区別する）。
+     *  isAbsoluteVolumeはvolumeが絶対値指定か既定値からの相対値かを示す。 */
     extraHeader?: Array<{
         chip: string;
         instance: number;
         clock: number;
-        volume: number;
+        volume?: number;
+        isAbsoluteVolume?: boolean;
     }>;
     diagnostics: VGMDiagnostics;
 }

@@ -3257,16 +3257,142 @@ test('parser diagnostics no longer claim that AY/SSG stereo masks are absent', (
   assert.equal('stereoUnavailableChips' in parsed.diagnostics, false);
 });
 
-test('VGM 1.70 extra header retains second-chip clock and volume records', () => {
+test('VGM 1.70 extra header merges clock and volume records for the same chip instance', () => {
   const buffer = Buffer.alloc(0x110);
   buffer.write('Vgm ', 0, 'ascii'); buffer.writeUInt32LE(0x0170, 0x08); buffer.writeUInt32LE(0xDC, 0x34);
   buffer[0x100] = 0x66;
   buffer.writeUInt32LE(4, 0xBC); // extra header starts at $C0
   buffer.writeUInt32LE(8, 0xC4); buffer.writeUInt32LE(20, 0xC8);
-  buffer[0xCC] = 1; buffer[0xCD] = 3; buffer.writeUInt32LE(3579545, 0xCE); // YM2151 #2 clock
+  // Clock list: 1 entry, chip id 3 (YM2151), bit7 clear = primary instance.
+  buffer[0xCC] = 1; buffer[0xCD] = 3; buffer.writeUInt32LE(3579545, 0xCE);
+  // Volume list: 1 entry, same chip id 3 (bit7 clear = same primary instance),
+  // flags bit0 set = absolute volume, volume = 0x2345.
   buffer[0xDC] = 1; buffer[0xDD] = 3; buffer[0xDE] = 1; buffer.writeUInt16LE(0x2345, 0xDF);
   const extra = new VGMParser(buffer).parse().extraHeader;
-  assert.deepEqual(extra, [{ chip: 'YM2151', instance: 1, clock: 3579545, volume: 0x2345 }]);
+  assert.deepEqual(extra, [
+    { chip: 'YM2151', instance: 0, clock: 3579545, volume: 0x2345, isAbsoluteVolume: true },
+  ]);
+});
+
+test('VGM 1.70 extra header chip-ID bit7 selects the second chip instance for both lists', () => {
+  // Regression test: instance used to be hardcoded to 1 for every clock-list
+  // entry, and derived from the (wrong) Flags byte for volume-list entries,
+  // instead of both reading Chip ID bit7 the same way.
+  const buffer = Buffer.alloc(0x110);
+  buffer.write('Vgm ', 0, 'ascii'); buffer.writeUInt32LE(0x0170, 0x08); buffer.writeUInt32LE(0xDC, 0x34);
+  buffer[0x100] = 0x66;
+  buffer.writeUInt32LE(4, 0xBC);
+  buffer.writeUInt32LE(8, 0xC4); buffer.writeUInt32LE(20, 0xC8);
+  // Clock list: chip id 0x80 (SN76489 id 0 | bit7) = second SN76489 instance.
+  buffer[0xCC] = 1; buffer[0xCD] = 0x80; buffer.writeUInt32LE(4000000, 0xCE);
+  // Volume list: chip id 0x00 (SN76489, primary instance), absolute, 50%.
+  buffer[0xDC] = 1; buffer[0xDD] = 0x00; buffer[0xDE] = 1; buffer.writeUInt16LE(0x0080, 0xDF);
+  const extra = new VGMParser(buffer).parse().extraHeader;
+  const byInstance = new Map(extra.map((entry) => [entry.instance, entry]));
+  assert.equal(byInstance.get(1).clock, 4000000);
+  assert.equal(byInstance.get(1).volume, undefined); // clock-only: no volume entry at all
+  assert.equal(byInstance.get(0).volume, 0x0080);
+  assert.equal(byInstance.get(0).clock, 0); // volume-only: no clock entry at all
+});
+
+test('VGM 1.70 extra header does not report volume:0 for a clock-only chip', () => {
+  // Regression test for the presence bug: a chip appearing only in the clock
+  // list used to get a synthetic `volume: 0` placeholder (indistinguishable
+  // from an actual "silence this chip" volume entry).
+  const buffer = Buffer.alloc(0x110);
+  buffer.write('Vgm ', 0, 'ascii'); buffer.writeUInt32LE(0x0170, 0x08); buffer.writeUInt32LE(0xDC, 0x34);
+  buffer[0x100] = 0x66;
+  buffer.writeUInt32LE(4, 0xBC);
+  buffer.writeUInt32LE(8, 0xC4); buffer.writeUInt32LE(0, 0xC8); // no volume list at all
+  buffer[0xCC] = 1; buffer[0xCD] = 2; buffer.writeUInt32LE(7670453, 0xCE); // YM2612 clock only
+  const extra = new VGMParser(buffer).parse().extraHeader;
+  assert.deepEqual(extra, [{ chip: 'YM2612', instance: 0, clock: 7670453 }]);
+  assert.equal('volume' in extra[0], false);
+});
+
+test('VGM 1.70 extra header exposes a relative (non-absolute) volume entry as-is', () => {
+  const buffer = Buffer.alloc(0x110);
+  buffer.write('Vgm ', 0, 'ascii'); buffer.writeUInt32LE(0x0170, 0x08); buffer.writeUInt32LE(0xDC, 0x34);
+  buffer[0x100] = 0x66;
+  buffer.writeUInt32LE(4, 0xBC);
+  buffer.writeUInt32LE(0, 0xC4); buffer.writeUInt32LE(20, 0xC8); // no clock list
+  buffer[0xDC] = 1; buffer[0xDD] = 3; buffer[0xDE] = 0; buffer.writeUInt16LE(0x0180, 0xDF); // flags bit0=0
+  const extra = new VGMParser(buffer).parse().extraHeader;
+  assert.deepEqual(extra, [
+    { chip: 'YM2151', instance: 0, clock: 0, volume: 0x0180, isAbsoluteVolume: false },
+  ]);
+});
+
+test('MidiConverter emits Extra Header absolute chip volume as a leading CC7', () => {
+  const converter = new MidiConverter({
+    header: createHeader({ ym2612Clock: 7670453, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
+      { type: 'end' },
+    ],
+    extraHeader: [
+      { chip: 'YM2612', instance: 0, clock: 7670453, volume: 0x0080, isAbsoluteVolume: true },
+    ],
+  });
+  const events = converter.convert().flatMap(track => track.events);
+  const cc7 = events.find(event => event.name === 'ControllerChangeEvent' && event.controllerNumber === 7);
+  assert.ok(cc7, 'expected a leading CC7 event on the YM2612 track');
+  assert.equal(cc7.controllerValue, 50); // 0x0080 / 0x0100 * 100 = 50%
+});
+
+test('MidiConverter omits CC7 when Extra Header volume is exactly 100%', () => {
+  const converter = new MidiConverter({
+    header: createHeader({ ym2612Clock: 7670453, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
+      { type: 'end' },
+    ],
+    extraHeader: [
+      { chip: 'YM2612', instance: 0, clock: 7670453, volume: 0x0100, isAbsoluteVolume: true },
+    ],
+  });
+  const events = converter.convert().flatMap(track => track.events);
+  assert.equal(events.some(event => event.name === 'ControllerChangeEvent' && event.controllerNumber === 7), false);
+});
+
+test('MidiConverter ignores a relative (non-absolute) Extra Header volume', () => {
+  const converter = new MidiConverter({
+    header: createHeader({ ym2612Clock: 7670453, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
+      { type: 'end' },
+    ],
+    extraHeader: [
+      { chip: 'YM2612', instance: 0, clock: 7670453, volume: 0x0040, isAbsoluteVolume: false },
+    ],
+  });
+  const events = converter.convert().flatMap(track => track.events);
+  assert.equal(events.some(event => event.name === 'ControllerChangeEvent' && event.controllerNumber === 7), false);
+});
+
+test('MidiConverter matches Extra Header entries by chip AND instance, not by chip alone', () => {
+  const converter = new MidiConverter({
+    header: createHeader({ ym2612Clock: 7670453, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
+      { type: 'end' },
+    ],
+    // Only the *second* YM2612 instance has a quiet Extra Header volume; the
+    // primary instance actually used here must stay untouched.
+    extraHeader: [
+      { chip: 'YM2612', instance: 1, clock: 7670453, volume: 0x0020, isAbsoluteVolume: true },
+    ],
+  });
+  const events = converter.convert().flatMap(track => track.events);
+  assert.equal(events.some(event => event.name === 'ControllerChangeEvent' && event.controllerNumber === 7), false);
 });
 
 test('VGM command $40 keeps its version-dependent operand boundary', () => {

@@ -324,7 +324,14 @@ class VGMParser {
             chipClocks,
         };
     }
-    /** VGM 1.70 extra header の第二チップclock/volumeリストを安全に読む。 */
+    /** VGM 1.70 extra header の第二チップclock/volumeリストを安全に読む。
+     *
+     * volumeはエントリが無ければundefinedのまま（=「未指定」）にする。かつては
+     * clockリストが先にvolume:0のプレースホルダを作ってしまい、clockだけ指定
+     * されたチップが「音量0（無音）」に見えるバグがあった。isAbsoluteVolumeは
+     * Flagsバイトのbit0（絶対値指定か、既定値からの相対値か）。miditrack側は
+     * 絶対値のみ採用する。
+     */
     parseExtraHeader() {
         if (this.buffer.length < 0xC0)
             return [];
@@ -338,32 +345,54 @@ class VGMParser {
         const volumeOffset = this.buffer.readUInt32LE(start + 8);
         const names = ['SN76489', 'YM2413', 'YM2612', 'YM2151', 'SegaPCM', 'RF5C68', 'YM2203', 'YM2608', 'YM2610', 'YM3812', 'YM3526', 'Y8950', 'YMF262', 'YMF278B', 'YMF271', 'YMZ280B', 'RF5C164', 'PWM', 'AY8910', 'GBDMG', 'NESAPU', 'MultiPCM', 'uPD7759', 'OKIM6258', 'OKIM6295', 'K051649', 'K054539', 'HuC6280', 'C140'];
         const entries = new Map();
-        const readList = (offset, isClock) => {
-            if (offset === 0)
-                return;
-            // offsets are relative to the offset field itself, not the header start.
-            const base = start + (isClock ? 4 : 8) + offset;
-            if (base >= this.buffer.length)
-                return;
-            const count = this.buffer[base];
-            for (let index = 0; index < count; index += 1) {
-                const position = base + 1 + index * (isClock ? 5 : 4);
-                if (position + (isClock ? 5 : 4) > this.buffer.length)
-                    break;
-                const rawId = this.buffer[position];
-                const chip = names[rawId & 0x7F] ?? `Chip${rawId & 0x7F}`;
-                const instance = isClock ? 1 : ((this.buffer[position + 1] & 1) !== 0 ? 1 : 0);
-                const key = `${chip}:${instance}`;
-                const current = entries.get(key) ?? { chip, instance, clock: 0, volume: 0 };
-                if (isClock)
-                    current.clock = this.buffer.readUInt32LE(position + 1) & vgm_chip_metadata_1.CLOCK_MASK;
-                else
-                    current.volume = this.buffer.readUInt16LE(position + 2);
-                entries.set(key, current);
+        // Chip IDのbit7は「2つ目のチップインスタンス」を示す共通の符号化で、
+        // clock/volume両リストで同じ意味を持つ（clock/volumeリストそれぞれが
+        // 独立にチップを列挙するため、片方にしか無いチップも起こりうる）。
+        const chipIdentity = (rawId) => ({
+            chip: names[rawId & 0x7F] ?? `Chip${rawId & 0x7F}`,
+            instance: (rawId & 0x80) !== 0 ? 1 : 0,
+        });
+        const getEntry = (chip, instance) => {
+            const key = `${chip}:${instance}`;
+            let entry = entries.get(key);
+            if (!entry) {
+                entry = { chip, instance, clock: 0 };
+                entries.set(key, entry);
             }
+            return entry;
         };
-        readList(clockOffset, true);
-        readList(volumeOffset, false);
+        // Chip Clock Data: 1バイトのエントリ数 + 5バイト(ChipID, Clock uint32)ずつ。
+        if (clockOffset !== 0) {
+            const base = start + 4 + clockOffset;
+            if (base < this.buffer.length) {
+                const count = this.buffer[base];
+                for (let index = 0; index < count; index += 1) {
+                    const position = base + 1 + index * 5;
+                    if (position + 5 > this.buffer.length)
+                        break;
+                    const { chip, instance } = chipIdentity(this.buffer[position]);
+                    const entry = getEntry(chip, instance);
+                    entry.clock = this.buffer.readUInt32LE(position + 1) & vgm_chip_metadata_1.CLOCK_MASK;
+                }
+            }
+        }
+        // Chip Volume Data: 1バイトのエントリ数 + 4バイト(ChipID, Flags, Volume uint16)ずつ。
+        if (volumeOffset !== 0) {
+            const base = start + 8 + volumeOffset;
+            if (base < this.buffer.length) {
+                const count = this.buffer[base];
+                for (let index = 0; index < count; index += 1) {
+                    const position = base + 1 + index * 4;
+                    if (position + 4 > this.buffer.length)
+                        break;
+                    const { chip, instance } = chipIdentity(this.buffer[position]);
+                    const flags = this.buffer[position + 1];
+                    const entry = getEntry(chip, instance);
+                    entry.volume = this.buffer.readUInt16LE(position + 2);
+                    entry.isAbsoluteVolume = (flags & 0x01) !== 0;
+                }
+            }
+        }
         return [...entries.values()];
     }
     parseCommandStream(header) {

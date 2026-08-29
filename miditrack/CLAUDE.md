@@ -882,6 +882,96 @@ change needed. Separately, the volume slider is no longer disabled for
 VGM/NSF `"game"` tracks — see the section below for why that was possible
 and what it cost.
 
+## Why the volume slider's initial value can be something other than 100%
+
+The converted MIDI can already carry a real mix decision from the source —
+`vgm2midi` now writes a leading CC7 per track when the source VGM's Extra
+Header records a chip-specific mix volume (see `vgm2midi/CLAUDE.md`'s
+"Added: Extra Header chip volume becomes a leading CC7"), and any hand-authored
+or DAW-exported `.mid` a user uploads directly can carry CC7 for the same
+reason spc2midi/VGMTrans output can. Before this feature the slider ignored
+all of that and always started at a flat 100%, silently discarding a mix
+balance the source file actually specified.
+
+`TrackInfo.source_volume_percent` (`midi.py`'s `analyze_track()`) reads the
+first CC7 on the track's own single note channel — the exact same
+channel-filtering approach `current_program`/`program_change_count` already
+use for Program Change, reused here rather than invented fresh. Two
+deliberate restrictions keep this addition narrow and safe:
+
+- **Only a CC7 below 100 is adopted (attenuation only), never above.**
+  `apply_assignments()`'s existing velocity math clamps at 127
+  (`max(1, min(127, ...))`), so treating e.g. `nsf2midi`'s `gm.mdf` preset
+  (which always sends `CC7=127` at header write time — see that project's
+  own `WriteHeader()`) as a >100% baseline would push velocity scaling into
+  that ceiling for every NSF conversion and silently destroy the dynamics
+  `gm.mdf`'s own `Velocity=1` cfg already worked to preserve. Restricting
+  adoption to genuinely quiet tracks (a real, deliberate "duck this
+  instrument" mix decision) avoids ever needing an amplifying multiplier at
+  all. One direct consequence: **no NSF conversion's slider defaults change**
+  because of this feature — `gm.mdf`'s CC7 values (127, 110) are always
+  above the threshold.
+- **Only a CC7 on a channel the track exclusively occupies is adopted.**
+  CC7 is channel-wide MIDI state, exactly the reason per-track volume itself
+  avoids ever *sending* CC7 (see the section above). `analyze_midi_file()`
+  runs a second pass after `analyze_track()` and resets
+  `source_volume_percent` back to the default for any track whose channel is
+  also used by another note-bearing track — this is why `nsf2midi`'s shared
+  NOISE/PCM channel (both channel 10) never actually seeds a non-100 slider
+  even though `gm.mdf`'s Noise/PCM sections *do* write CC7 values below 100
+  (110), the same channel-sharing consideration `apply_assignments()`'s own
+  docstring already documents for why volume never becomes a new CC7 send.
+
+`track_payload()` exposes both `volumePercent` (the effective slider value —
+a user-set value from `WebSession.volumes` if present, else this baseline)
+and `sourceVolumePercent` (the baseline itself, used by `app.js` as the
+mute/solo restore target instead of a hardcoded 100 — see `buildTrackRow()`'s
+`volumeBeforeMute` and `enterSolo()`). `validate_volumes()` now excludes a
+submitted value from `WebSession.volumes` when it matches *that track's own*
+baseline rather than the global constant 100 — so leaving the slider
+untouched, or explicitly dragging it back to its own starting position, are
+both treated as "no override" the same way submitting 100 always was.
+
+**Why the slider is "absolute volume," and what apply_assignments() actually
+does with the baseline**: the slider's number always means the same thing —
+100% is "as loud as an ordinary GM channel with no CC7 override" — rather
+than "percent of whatever this track originally sounded like." This matters
+because a user who never touches the slider still expects the audible result
+to sound like the source's own mix, not like a hardcoded 100% ignoring a
+source CC7=64. `apply_assignments()` therefore takes a new `source_volumes`
+argument (the baseline per track, always supplied by `web.py`'s `_apply_to()`
+alongside the effective `volumes` dict) and, whenever a track's baseline is
+below 100, rewrites *that track's own* existing CC7 messages in place —
+never inserting a new one, the same "mutate in place, never insert new
+channel-wide state" discipline `_is_bank_select()`/Program Change rewriting
+already follow — so the value becomes `round(cc7 * 100 / baseline)`. This
+normalizes a static or time-varying CC7 curve back up to a 100% baseline
+while preserving its shape (a mid-song CC7 dip proportionally follows the
+same math), and it is what makes the velocity multiplier in the same loop
+correct: an untouched slider still carries `volume == baseline` (via
+`web.py`'s effective-volumes dict, not merely the default), so velocity is
+scaled by the same ratio CC7 is renormalized by, leaving the *combined*
+audible result approximately unchanged from the source — the slider becoming
+visible at 64% instead of 100% is a UI change, not (to first-order,
+`fluidsynth`'s CC7 response is not perfectly linear — an already-documented
+approximation, see the section above) an audio change. If the user then
+drags the slider to some other value, velocity scales by that new value
+instead of the baseline, while CC7 stays normalized to 100 either way — the
+same "always re-derive from `original_path`" invariant that already keeps
+`apply_assignments()` idempotent applies here too, since `source_volumes` is
+recomputed from the original file's own analysis on every call, never
+accumulated.
+
+`_render_chip_hardware()`'s existing default/custom volume split (see the
+next section) also reads this baseline instead of the constant 100 for both
+halves: a "game"-selected track whose slider was never touched still joins
+the single default-group hardware render (its own emulation output already
+carries the source's mix), and a track the user *did* adjust gets an
+individual-render gain of `mix.STEM_GAIN * volume_percent / baseline_percent`
+rather than `.../ 100` — so a track with e.g. an already-quiet baseline that
+the user boosts back up doesn't get double-quietened by treating its own
+baseline as if it were already 100.
+
 ## Why per-track volume on VGM/NSF `"game"` tracks re-renders only the channels whose volume actually changed
 
 Originally, VGM/NSF `"game"` tracks (`CHIP_HARDWARE_SOURCE_FORMATS`) disabled

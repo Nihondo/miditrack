@@ -385,7 +385,8 @@ def track_payload(
         "currentProgram": track.current_program,
         "programChangeCount": track.program_change_count,
         "assignedProgram": assignments.get(track.index),
-        "volumePercent": volumes.get(track.index, midi.DEFAULT_TRACK_VOLUME_PERCENT),
+        "volumePercent": volumes.get(track.index, track.source_volume_percent),
+        "sourceVolumePercent": track.source_volume_percent,
         "volumeEditable": track.note_count > 0,
         "editable": track.editable,
         "reason": track.reason,
@@ -685,15 +686,17 @@ def create_app(
             web_session, tracks, parsed_sources
         )
 
+        tracks_by_index = {track.index: track for track in tracks}
         for track_index, value in parsed_assignments.items():
             if value is None:
                 web_session.assignments.pop(track_index, None)
         for track_index, value in parsed_volumes.items():
-            if value is None or value == midi.DEFAULT_TRACK_VOLUME_PERCENT:
+            track = tracks_by_index.get(track_index)
+            baseline = track.source_volume_percent if track else midi.DEFAULT_TRACK_VOLUME_PERCENT
+            if value is None or value == baseline:
                 web_session.volumes.pop(track_index, None)
         web_session.assignments.update(validated_assignments)
         web_session.volumes.update(validated_volumes)
-        tracks_by_index = {track.index: track for track in tracks}
         for track_index, source in validated_sources.items():
             _set_track_source(web_session, tracks_by_index[track_index], source)
         # 従来APIとの互換性: SPCで音色だけを指定した場合もGM SoundFontへ切り替え、
@@ -789,11 +792,23 @@ def create_app(
             for index, program in web_session.assignments.items()
             if _selected_track_source(web_session, web_session.tracks[index]) == "soundfont"
         }
+        # 実効音量: ユーザーが動かした値（web_session.volumes）を優先し、未操作でも
+        # 変換元CC7由来のsource_volume_percentが既定値でないトラックはそれを渡す
+        # （validate_volumes()はそれをユーザー入力と一致した時点で除外しているため、
+        # ここで補わないとapply_assignments()にそのトラックの音量変更意図が伝わらない）。
+        effective_volumes = {
+            track.index: web_session.volumes.get(track.index, track.source_volume_percent)
+            for track in web_session.tracks
+            if track.index in web_session.volumes
+            or track.source_volume_percent != midi.DEFAULT_TRACK_VOLUME_PERCENT
+        }
+        source_volumes = {track.index: track.source_volume_percent for track in web_session.tracks}
         return midi.apply_assignments(
             web_session.original_path,
             active_assignments,
             output_path,
-            web_session.volumes,
+            effective_volumes,
+            source_volumes,
             speed=speed,
             transpose=transpose,
         )
@@ -950,10 +965,22 @@ def create_app(
         if web_session.source_path is None:
             raise RenderError("原曲の音源の元ファイルがありません")
 
+        # ここでのbaselineはトラックの変換元CC7由来の音量(source_volume_percent)。
+        # 実機レンダリング音声には変換元の音量が既にそのまま含まれているため、
+        # 「未操作＝そのままbaselineの音量で鳴る」チャンネルはbaselineが100%
+        # でなくてもdefault_indices（追加ゲイン無し）扱いにする。ユーザーが実際に
+        # 操作したチャンネルだけ、baselineを基準にした相対ゲインで個別レンダリング
+        # する。
+        tracks_by_index = {track.index: track for track in web_session.tracks}
+        baseline_for = (
+            lambda index: tracks_by_index[index].source_volume_percent
+            if index in tracks_by_index
+            else midi.DEFAULT_TRACK_VOLUME_PERCENT
+        )
         default_indices = sorted(
             index for index in selected_chip_indices
-            if web_session.volumes.get(index, midi.DEFAULT_TRACK_VOLUME_PERCENT)
-            == midi.DEFAULT_TRACK_VOLUME_PERCENT
+            if index not in web_session.volumes
+            or web_session.volumes[index] == baseline_for(index)
         )
         custom_indices = sorted(set(selected_chip_indices) - set(default_indices))
 
@@ -965,8 +992,9 @@ def create_app(
         for index in custom_indices:
             stem_path = work_dir / f"{prefix}.track{index}.wav"
             _render_chip_targets([index], stem_path)
-            volume_percent = web_session.volumes.get(index, midi.DEFAULT_TRACK_VOLUME_PERCENT)
-            results.append((stem_path, mix.STEM_GAIN * volume_percent / 100))
+            baseline_percent = baseline_for(index) or midi.DEFAULT_TRACK_VOLUME_PERCENT
+            volume_percent = web_session.volumes.get(index, baseline_percent)
+            results.append((stem_path, mix.STEM_GAIN * volume_percent / baseline_percent))
         return results
 
     def _render_applied_midi(

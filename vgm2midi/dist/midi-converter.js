@@ -725,6 +725,25 @@ class MidiConverter {
             return parseInt(key.split('_')[1]) + 1;
         return 1;
     }
+    /** VGM Extra Headerのチップ別volumeを、CC7に出力する0-127の値へ変換する。
+     *
+     * volume=0x0100（256）が100%（GM既定のCC7=100相当）。エントリが無い、
+     * volume未指定、または相対値指定（isAbsoluteVolume!==true）の場合は
+     * undefinedを返す — 相対値は「既定値からの差分」であり既定値そのものを
+     * このパーサーは知らないため、絶対値指定のときだけ安全に採用できる。
+     */
+    extraHeaderVolumePercent(chip, instance) {
+        const extraHeader = this.vgmData.extraHeader;
+        if (!extraHeader || chip === 'misc')
+            return undefined;
+        // Extra Header側のチップ名テーブルはOKIM6258、descriptor.chipはMSM6258
+        // （このファイル内の他の命名と合わせた別名）を使う。
+        const lookupChip = chip === 'MSM6258' ? 'OKIM6258' : chip;
+        const entry = extraHeader.find((e) => e.chip === lookupChip && e.instance === instance);
+        if (!entry || entry.volume === undefined || entry.isAbsoluteVolume !== true)
+            return undefined;
+        return Math.max(0, Math.min(127, Math.round((entry.volume / 0x100) * 100)));
+    }
     /** source keyを、現在のchip instanceを含む不変のtrack descriptorへ変換する。 */
     descriptorForKey(key) {
         const existing = this.descriptors.get(key);
@@ -834,6 +853,20 @@ class MidiConverter {
             if (this.isWidePitchBendFMKey(key)) {
                 const range = this.pitchBendRangeForKey(key);
                 this.addPitchBendRange(track, descriptor.midiChannel, range);
+            }
+            // VGM Extra Headerが報告するチップ別ミックスバランス（マルチチップVGMの
+            // 音量差）をトラック先頭のCC7として出力する。miditrack側のトラック音量
+            // スライダーが初期値としてこれを採用する（miditrack/CLAUDE.md参照）。
+            // ControllerChangeEventのchannelは1-based（ProgramChangeEvent/
+            // PitchBendEventとは異なる。addPitchBendRange()と同じ扱い）。
+            const chipVolumePercent = this.extraHeaderVolumePercent(descriptor.chip, descriptor.instance);
+            if (chipVolumePercent !== undefined && chipVolumePercent !== 100) {
+                track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
+                    controllerNumber: 7,
+                    controllerValue: chipVolumePercent,
+                    channel: descriptor.midiChannel,
+                    delta: 0,
+                }));
             }
             this.tracks.set(storageKey, { descriptor, track, cursor: 0, expression: 127 });
         }

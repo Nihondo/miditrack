@@ -437,6 +437,7 @@ async function buildTrackRow(track, rowState = state) {
   // 参照をstate.trackRowsへ集める（renderTrackList()が描画のたびにリセットする）。
   const trackRowRef = {
     index: track.index,
+    sourceVolumePercent: track.sourceVolumePercent ?? 100,
     sourceSelect: null,
     programSelect: null,
     volumeSlider: null,
@@ -616,7 +617,7 @@ async function buildTrackRow(track, rowState = state) {
     slider.min = "0";
     slider.max = "200";
     slider.step = "5";
-    slider.value = String(track.volumePercent ?? 100);
+    slider.value = String(track.volumePercent ?? track.sourceVolumePercent ?? 100);
     // 「原曲の音源」（実機/エミュレーションのチップレンダリング）でも音量は
     // 有効: 音量を変更したチャンネルだけサーバー側で個別に再レンダリングして
     // ゲインを適用する（web.pyの_render_chip_hardware()参照）。
@@ -631,7 +632,8 @@ async function buildTrackRow(track, rowState = state) {
 
     // ミュート解除時に戻す音量。0%でない値でミュートボタンを押したときだけ更新する
     // （ミュート中にスライダーを直接動かした場合は、そちらを新しい基準にする）。
-    let volumeBeforeMute = Number(slider.value) || 100;
+    // フォールバックはtrack.sourceVolumePercent（変換元CC7由来の初期値、通常100）。
+    let volumeBeforeMute = Number(slider.value) || track.sourceVolumePercent || 100;
 
     const muteButton = document.createElement("button");
     muteButton.type = "button";
@@ -787,8 +789,9 @@ async function enterSolo(trackIndex) {
   for (const row of state.trackRows) {
     if (!row.volumeSlider) continue;
     if (row.index === trackIndex) {
-      const original = state.soloVolumeSnapshot[row.index] ?? 100;
-      volumes[row.index] = original === 0 ? 100 : original;
+      const baseline = row.sourceVolumePercent ?? 100;
+      const original = state.soloVolumeSnapshot[row.index] ?? baseline;
+      volumes[row.index] = original === 0 ? baseline : original;
     } else {
       volumes[row.index] = 0;
     }

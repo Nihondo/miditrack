@@ -79,6 +79,50 @@ def build_fixture_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def build_cc7_fixture_bytes(cc7_value: int = 64) -> bytes:
+    """変換元CC7音量を持つ単一トラックのMIDIフィクスチャ。
+
+    miditrack.midi.TestSourceVolumePercentの発想を再利用しつつ、Web層
+    (アップロード/PATCH/レンダリング)のテスト用に最小構成にしたもの。
+    """
+    mf = mido.MidiFile(ticks_per_beat=480)
+    t0 = mido.MidiTrack()
+    t0.append(mido.MetaMessage("track_name", name="Quiet", time=0))
+    t0.append(mido.Message("control_change", control=7, value=cc7_value, channel=0, time=0))
+    t0.append(mido.Message("program_change", program=80, channel=0, time=0))
+    t0.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+    t0.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=480))
+    mf.tracks.append(t0)
+    buffer = io.BytesIO()
+    mf.save(file=buffer)
+    return buffer.getvalue()
+
+
+def build_two_track_cc7_fixture_bytes(cc7_value: int = 64) -> bytes:
+    """track0がCC7=cc7_value（減衰）、track1はCC7無し（既定100%）の2トラック。
+
+    「原曲の音源」選択の一方だけが実機レンダリング対象になるケース
+    （mix_wav()が実際に呼ばれる、dryレンダリング1本+実機ステム1本の構成）用。
+    """
+    mf = mido.MidiFile(ticks_per_beat=480)
+    t0 = mido.MidiTrack()
+    t0.append(mido.MetaMessage("track_name", name="Quiet", time=0))
+    t0.append(mido.Message("control_change", control=7, value=cc7_value, channel=0, time=0))
+    t0.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+    t0.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=480))
+    mf.tracks.append(t0)
+
+    t1 = mido.MidiTrack()
+    t1.append(mido.MetaMessage("track_name", name="Plain", time=0))
+    t1.append(mido.Message("note_on", note=64, velocity=100, channel=1, time=0))
+    t1.append(mido.Message("note_off", note=64, velocity=0, channel=1, time=480))
+    mf.tracks.append(t1)
+
+    buffer = io.BytesIO()
+    mf.save(file=buffer)
+    return buffer.getvalue()
+
+
 class TestWebApp(unittest.TestCase):
     def setUp(self) -> None:
         self.render_calls: list[tuple[Path, Path, Path | None]] = []
@@ -1316,6 +1360,95 @@ class TestWebApp(unittest.TestCase):
         self.assertFalse(payload["source"]["hasPlaylist"])
 
 
+class TestWebAppSourceVolume(unittest.TestCase):
+    """変換元CC7をトラック音量スライダーの初期値として採用する経路。"""
+
+    def setUp(self) -> None:
+        self.render_calls: list[tuple[Path, Path, Path | None]] = []
+
+        def fake_renderer(mid_path: Path, wav_path: Path, soundfont: Path | None) -> None:
+            self.render_calls.append((mid_path, wav_path, soundfont))
+            wav_path.write_bytes(b"0" * 200)
+
+        self.app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            renderer=fake_renderer,
+        )
+        self.client = self.app.test_client()
+        self.addCleanup(self._clear_session)
+
+    def _clear_session(self) -> None:
+        self.app.config["MIDITRACK_SESSION"].clear()
+
+    def _upload(self, data: bytes, filename: str = "fixture.mid"):
+        form = {"midi": (io.BytesIO(data), filename)}
+        return self.client.post(
+            "/api/session", headers=AUTH_HEADERS, data=form, content_type="multipart/form-data"
+        )
+
+    def test_upload_with_attenuating_cc7_seeds_slider_initial_value(self) -> None:
+        response = self._upload(build_cc7_fixture_bytes(64))
+        payload = response.get_json()
+        track = payload["tracks"][0]
+        self.assertEqual(track["volumePercent"], 64)
+        self.assertEqual(track["sourceVolumePercent"], 64)
+
+    def test_upload_without_cc7_defaults_to_100(self) -> None:
+        response = self._upload(build_fixture_bytes())
+        track = response.get_json()["tracks"][0]
+        self.assertEqual(track["volumePercent"], 100)
+        self.assertEqual(track["sourceVolumePercent"], 100)
+
+    def test_render_without_touching_slider_normalizes_cc7_and_scales_velocity(self) -> None:
+        self._upload(build_cc7_fixture_bytes(64))
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+
+        rendered_midi = mido.MidiFile(self.render_calls[-1][0])
+        note_on = next(m for m in rendered_midi.tracks[0] if m.type == "note_on")
+        cc7 = next(m for m in rendered_midi.tracks[0] if m.type == "control_change" and m.control == 7)
+        self.assertEqual(note_on.velocity, 64)
+        self.assertEqual(cc7.value, 100)
+
+    def test_patching_slider_to_baseline_value_is_a_no_op(self) -> None:
+        self._upload(build_cc7_fixture_bytes(64))
+        response = self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"0": 64}}),
+        )
+        payload = response.get_json()
+        self.assertEqual(payload["tracks"][0]["volumePercent"], 64)
+        # baselineと一致する値はセッションのvolumesへ記録されない（100と一致した
+        # 場合と同じ「変更なし」扱い）。
+        session = self.app.config["MIDITRACK_SESSION"]
+        self.assertNotIn(0, session.volumes)
+
+    def test_patching_slider_to_100_is_kept_and_increases_effective_volume(self) -> None:
+        self._upload(build_cc7_fixture_bytes(64))
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"0": 100}}),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+
+        rendered_midi = mido.MidiFile(self.render_calls[-1][0])
+        note_on = next(m for m in rendered_midi.tracks[0] if m.type == "note_on")
+        cc7 = next(m for m in rendered_midi.tracks[0] if m.type == "control_change" and m.control == 7)
+        self.assertEqual(note_on.velocity, 100)  # baselineではなくユーザー指定の100%
+        self.assertEqual(cc7.value, 100)
+
+    def test_fresh_upload_resets_source_volume_baseline(self) -> None:
+        self._upload(build_cc7_fixture_bytes(64))
+        response = self._upload(build_fixture_bytes())
+        track = response.get_json()["tracks"][0]
+        self.assertEqual(track["volumePercent"], 100)
+        self.assertEqual(track["sourceVolumePercent"], 100)
+
+
 class TestWebAppChipStem(unittest.TestCase):
     """実機ノイズ/DPCMステム（chipNoise）とensure_render()での合成の挙動。
 
@@ -2290,6 +2423,99 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         # デフォルトグループ1回＋カスタムチャンネル1回＝2回のみ。2組み合わせ分
         # 増えたりはしない。
         self.assertEqual(len(self.libvgm_calls), 2)
+
+
+class TestWebAppChipHardwareVolumeBaseline(unittest.TestCase):
+    """「原曲の音源」レンダリングのゲインが、変換元CC7由来のbaselineを基準にした
+    相対値になること（web.py _render_chip_hardware()）。baseline=100%のケースは
+    TestWebAppLibvgmTrackSourceの各テストが既に回帰保証している。
+    """
+
+    def setUp(self) -> None:
+        self.libvgm_calls: list[tuple[Path, Path, int, list]] = []
+        self.mix_calls: list[list[tuple[Path, float]]] = []
+
+        def fake_converter(_fmt, _source, output_path, _options):
+            output_path.write_bytes(build_two_track_cc7_fixture_bytes(64))
+            libvgm.metadata_path_for(output_path).write_text(json.dumps({
+                "version": 1,
+                "sampleCount": 44100,
+                "tracks": [
+                    {"trackIndex": 0, "libvgm": {
+                        "deviceType": 0, "instance": 0, "mainMask": 1,
+                        "linkedMask": 0, "groupId": "tone-0",
+                        "suggestedForHardwareMix": True,
+                    }},
+                ],
+            }), encoding="utf-8")
+            return None, None
+
+        def fake_libvgm(source, output, sample_count, targets):
+            self.libvgm_calls.append((source, output, sample_count, targets))
+            output.write_bytes(b"L" * 200)
+
+        def fake_renderer(mid_path, wav_path, soundfont):
+            wav_path.write_bytes(b"D" * 200)
+
+        def fake_mixer(inputs, output):
+            self.mix_calls.append(inputs)
+            output.write_bytes(b"M" * 200)
+
+        self.app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            converter=fake_converter,
+            renderer=fake_renderer,
+            mixer=fake_mixer,
+            libvgm_renderer=fake_libvgm,
+        )
+        self.client = self.app.test_client()
+        self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
+
+    def _convert_and_select_game(self) -> None:
+        self.client.post(
+            "/api/source",
+            headers=AUTH_HEADERS,
+            data={"source": (io.BytesIO(b"fake-vgm"), "song.vgm")},
+            content_type="multipart/form-data",
+        )
+        self.client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"chipNoise": False}),
+        )
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"sources": {"0": "game"}}),
+        )
+
+    def test_untouched_track_with_non_100_baseline_still_renders_as_default_group(self) -> None:
+        # baseline(64%)が既定値100%でなくても、スライダーを未操作なら
+        # 追加ゲイン無しの一括レンダリング（STEM_GAIN）になる — 実機音声には
+        # 変換元の音量が既に含まれているため。
+        self._convert_and_select_game()
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 1)
+        gains = [round(gain, 6) for _path, gain in self.mix_calls[0]]
+        self.assertIn(round(mix.STEM_GAIN, 6), gains)
+
+    def test_touched_track_scales_relative_to_baseline_not_100(self) -> None:
+        # baseline 64% のトラックを128%へ設定 → ゲインはSTEM_GAIN*(128/64)=STEM_GAIN*2
+        # であって、STEM_GAIN*(128/100)ではない。
+        self._convert_and_select_game()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"0": 128}}),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 1)
+        gains = [round(gain, 6) for _path, gain in self.mix_calls[0]]
+        self.assertIn(round(mix.STEM_GAIN * 2, 6), gains)
+        self.assertNotIn(round(mix.STEM_GAIN * 1.28, 6), gains)
 
 
 class TestWebAppNsfChipTrackSource(unittest.TestCase):

@@ -8,6 +8,7 @@ import_mido() / load_note_events() / save_midi_atomic() を踏襲している
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +73,7 @@ class TrackInfo:
     program_change_count: int
     editable: bool
     reason: str | None  # None | "percussion" | "multi-channel" | "no-notes"
+    source_volume_percent: int  # 変換元CC7由来の音量(%)。既定はDEFAULT_TRACK_VOLUME_PERCENT
 
 
 def _track_name(track: Any) -> str | None:
@@ -85,11 +87,19 @@ def _track_name(track: Any) -> str | None:
 
 
 def analyze_track(track: Any, index: int) -> TrackInfo:
-    """1トラックを走査し、チャンネル・ノート数・既存プログラムチェンジを検出する。"""
+    """1トラックを走査し、チャンネル・ノート数・既存プログラムチェンジ・CC7音量を検出する。
+
+    source_volume_percentは、この時点ではチャンネル占有（同じチャンネルを他の
+    トラックも使っているか）を考慮しない単一トラック内の値を返す。占有判定は
+    全トラックが出揃わないとできないため、analyze_midi_file()側の2パス目で
+    必要に応じて既定値へ戻す。
+    """
     channels: set[int] = set()
     note_count = 0
     program_changes: list[int] = []  # 出現順のプログラム番号（チャンネル別に後でフィルタ）
     program_change_channels: list[int] = []
+    volume_changes: list[int] = []  # 出現順のCC7値（チャンネル別に後でフィルタ）
+    volume_change_channels: list[int] = []
 
     for message in track:
         if message.type in ("note_on", "note_off"):
@@ -99,12 +109,16 @@ def analyze_track(track: Any, index: int) -> TrackInfo:
         elif message.type == "program_change":
             program_changes.append(message.program)
             program_change_channels.append(message.channel)
+        elif message.type == "control_change" and message.control == 7:
+            volume_changes.append(message.value)
+            volume_change_channels.append(message.channel)
 
     sorted_channels = tuple(sorted(channels))
     name = _track_name(track) or f"Track {index}"
 
     current_program: int | None = None
     program_change_count = 0
+    source_volume_percent = DEFAULT_TRACK_VOLUME_PERCENT
     reason: str | None
     editable: bool
 
@@ -131,6 +145,18 @@ def analyze_track(track: Any, index: int) -> TrackInfo:
         program_change_count = len(matching)
         if matching:
             current_program = matching[0]
+        # 変換元CC7を音量スライダーの初期値として採用する。0-127を%へそのまま
+        # 対応させ（CC7=100が既定値100%と一致）、100%未満（減衰）だけ採用する。
+        # 100%以上を採用するとvelocityスケーリングのクランプで潰れるため
+        # 意図的に見送る（miditrack/CLAUDE.md「Why per-track volume scales
+        # Note On velocity...」参照）。
+        matching_volumes = [
+            value
+            for value, ch in zip(volume_changes, volume_change_channels)
+            if ch == channel
+        ]
+        if matching_volumes and matching_volumes[0] < DEFAULT_TRACK_VOLUME_PERCENT:
+            source_volume_percent = matching_volumes[0]
     else:
         editable = False
         reason = "multi-channel"
@@ -144,6 +170,7 @@ def analyze_track(track: Any, index: int) -> TrackInfo:
         program_change_count=program_change_count,
         editable=editable,
         reason=reason,
+        source_volume_percent=source_volume_percent,
     )
 
 
@@ -159,6 +186,25 @@ def analyze_midi_file(path: Path) -> tuple[Any, list[TrackInfo]]:
         raise MidiTrackError("トラックが1つもありません")
 
     tracks = [analyze_track(track, index) for index, track in enumerate(midi_file.tracks)]
+
+    # CC7はMIDIチャンネル単位の状態なので、そのチャンネルを使うノートありトラックが
+    # 自分1つだけの場合にのみsource_volume_percentを採用する。共有チャンネル
+    # （例: nsf2midiのNOISE/PCMは両方ch10）でCC7を採用すると、後段のapply_assignments()
+    # がそのチャンネルのCC7を書き換える際に他のトラックへ干渉してしまうため。
+    channel_track_counts: dict[int, int] = {}
+    for track in tracks:
+        if track.note_count > 0:
+            for channel in track.channels:
+                channel_track_counts[channel] = channel_track_counts.get(channel, 0) + 1
+
+    def _resolve_occupancy(track: TrackInfo) -> TrackInfo:
+        if track.source_volume_percent == DEFAULT_TRACK_VOLUME_PERCENT:
+            return track
+        if len(track.channels) != 1 or channel_track_counts.get(track.channels[0], 0) != 1:
+            return dataclasses.replace(track, source_volume_percent=DEFAULT_TRACK_VOLUME_PERCENT)
+        return track
+
+    tracks = [_resolve_occupancy(track) for track in tracks]
 
     if not any(track.note_count > 0 for track in tracks):
         raise MidiTrackError("演奏データのあるトラックがありません")
@@ -197,7 +243,9 @@ def validate_assignments(
 def validate_volumes(
     tracks: list[TrackInfo], raw_volumes: dict[int, int | None]
 ) -> dict[int, int]:
-    """トラック別音量（0-200%）を検証し、既定値100%以外だけを返す。"""
+    """トラック別音量（0-200%）を検証し、そのトラックの初期値（source_volume_percent、
+    通常は100%だが変換元CC7があれば異なる）と一致する値だけを除外して返す。
+    """
     tracks_by_index = {track.index: track for track in tracks}
     validated: dict[int, int] = {}
     for track_index, volume in raw_volumes.items():
@@ -215,7 +263,7 @@ def validate_volumes(
                 f"トラック音量は{MIN_TRACK_VOLUME_PERCENT}-{MAX_TRACK_VOLUME_PERCENT}%の"
                 f"範囲で指定してください: {volume}"
             )
-        if volume == DEFAULT_TRACK_VOLUME_PERCENT:
+        if volume == track.source_volume_percent:
             continue
         validated[track_index] = volume
     return validated
@@ -358,6 +406,7 @@ def apply_assignments(
     assignments: dict[int, int],
     output_path: Path,
     volumes: dict[int, int] | None = None,
+    source_volumes: dict[int, int] | None = None,
     speed: float = DEFAULT_SPEED_RATIO,
     transpose: int = DEFAULT_TRANSPOSE_SEMITONES,
 ) -> dict[str, int]:
@@ -365,12 +414,21 @@ def apply_assignments(
 
     既存のプログラムチェンジがあれば値を書き換えるだけ（delta-time連鎖を壊さない
     ＝タイミング完全維持）。無ければ、そのチャンネルの最初のメッセージの直前に
-    time=0 で挿入する（後続のtickは一切ずれない）。音量は共有MIDIチャンネルへCC7を
-    送らず、対象トラック内のNote On velocityだけを原本値から倍率変換するため、同じ
-    チャンネルを使う別トラックの音量へ干渉しない。speed/transposeが既定値
-    （1.0・0）のときはテンポ・ノート番号を一切書き換えず、常に原本を読み直す
-    apply_assignments()自体の不変条件により、この関数を繰り返し呼んでも
-    速度・移調が累積することはない。
+    time=0 で挿入する（後続のtickは一切ずれない）。
+
+    音量は「絶対音量（100%=CC7=100相当）」として扱う。共有MIDIチャンネルへ新規に
+    CC7を送ることはせず、対象トラック内のNote On velocityだけを原本値から倍率変換
+    するため、同じチャンネルを使う別トラックの音量へ干渉しない。ただし、そのトラック
+    が変換元で単独チャンネルを占有しCC7（source_volumes、既定100未満＝減衰のみ採用、
+    詳細はanalyze_track()参照）を持っていた場合は、そのCC7を100へ正規化する
+    （既存メッセージの値を書き換えるだけで新規挿入はしない）。これにより、slider値を
+    そのままvelocity倍率として適用しても二重に減衰しない。fluidsynthのCC7カーブは
+    厳密には線形ではないため、この畳み込みは近似であることに留意
+    （miditrack/CLAUDE.md「Why per-track volume scales Note On velocity...」参照）。
+
+    speed/transposeが既定値（1.0・0）のときはテンポ・ノート番号を一切書き換えず、
+    常に原本を読み直すapply_assignments()自体の不変条件により、この関数を繰り返し
+    呼んでも速度・移調が累積することはない。
     """
     mido = import_mido()
     try:
@@ -416,6 +474,22 @@ def apply_assignments(
                 message.velocity = 0
             else:
                 message.velocity = max(1, min(127, round(message.velocity * volume / 100)))
+
+        # 変換元CC7（減衰のみ採用、baseline<100）を100へ正規化する。velocity側は
+        # 上のループで既にvolume（既定はこのbaseline自身）で倍率変換済みなので、
+        # ここでCC7を書き換えないと減衰が二重にかかってしまう。baseline<=0は
+        # 分母になれないため対象外（そのトラックは既に無音相当）。
+        baseline = (source_volumes or {}).get(track_index, DEFAULT_TRACK_VOLUME_PERCENT)
+        if 0 < baseline < DEFAULT_TRACK_VOLUME_PERCENT:
+            channel = _single_note_channel(track)
+            if channel is not None:
+                for message in track:
+                    if (
+                        message.type == "control_change"
+                        and message.control == 7
+                        and message.channel == channel
+                    ):
+                        message.value = max(0, min(127, round(message.value * 100 / baseline)))
 
     if speed != DEFAULT_SPEED_RATIO:
         _scale_tempo(midi_file, speed)

@@ -66,6 +66,14 @@ export declare class MidiConverter {
     private opnCh3Context;
     private initializeOPNCh3SpecialChannels;
     private midiChannelForKey;
+    /** VGM Extra Headerのチップ別volumeを、CC7に出力する0-127の値へ変換する。
+     *
+     * volume=0x0100（256）が100%（GM既定のCC7=100相当）。エントリが無い、
+     * volume未指定、または相対値指定（isAbsoluteVolume!==true）の場合は
+     * undefinedを返す — 相対値は「既定値からの差分」であり既定値そのものを
+     * このパーサーは知らないため、絶対値指定のときだけ安全に採用できる。
+     */
+    private extraHeaderVolumePercent;
     /** source keyを、現在のchip instanceを含む不変のtrack descriptorへ変換する。 */
     private descriptorForKey;
     /** descriptor IDまたは従来source keyからdescriptorを得る。 */

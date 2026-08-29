@@ -1303,6 +1303,100 @@ HuC6280 noise-note updates called out below) plus new regression tests.
   simultaneously-sounding PCM voices on different pans still cannot be
   panned independently of each other.
 
+## Added: Extra Header chip volume becomes a leading CC7
+
+A VGM 1.70+ file's Extra Header can carry a per-chip-instance mix volume —
+this is how a rip records "this chip was mixed quieter than the others in
+the original hardware/emulator setup," independent of any per-channel
+register. `parseExtraHeader()` (`vgm-parser.ts`) already parsed this
+structure, but nothing downstream ever read the result: every converted
+`.mid` was silent about a genuine mix decision the source file recorded,
+which meant a multi-chip VGM's chips always played back at equal weight in
+`miditrack`'s per-track volume slider regardless of what the original mix
+actually was (see `miditrack/CLAUDE.md`'s "Why the volume slider's initial
+value can be something other than 100%" for the consumer side of this).
+
+**Fixed two real parsing bugs discovered while wiring this up**, both
+regression-tested directly against the VGM spec's byte layout rather than
+against the previous (undertested) behavior:
+
+- **Chip Clock entries always got `instance: 1`, never `instance: 0`.**
+  The VGM spec encodes "this is the second chip instance" as bit 7 of the
+  entry's own Chip ID byte — identical for both the Chip Clock list and the
+  Chip Volume list — but the old code hardcoded `instance = 1` for every
+  clock-list entry and derived a Chip Volume entry's instance from its
+  *Flags* byte instead (`(flags & 1)`, which is actually the
+  absolute/relative-volume bit, not an instance selector). This meant a
+  clock entry and a volume entry for the very same primary-instance chip
+  would land under two different map keys (`"YM2612:1"` vs `"YM2612:0"`)
+  and never merge into one entry with both fields populated.
+- **A chip appearing only in the Chip Clock list silently reported
+  `volume: 0`.** The old code seeded every new map entry with a `volume: 0`
+  placeholder before either list had actually been read, so a chip with no
+  Chip Volume entry at all was indistinguishable from one explicitly muted.
+  `parseExtraHeader()`'s return type now makes `volume` (and
+  `isAbsoluteVolume`) optional and only assigns them when a Chip Volume
+  entry for that exact chip+instance actually exists.
+
+Both fixes share one root cause: clock and volume entries were being
+merged by a chip-identity derivation that differed between the two lists.
+`chipIdentity(rawId)` is now the single shared helper both `readList`
+passes (inlined per-list after this fix, since their entry byte widths
+differ — 5 bytes for clock, 4 for volume) call to turn a raw Chip ID byte
+into `{ chip, instance }`, so a clock entry and a volume entry for the same
+physical chip instance are guaranteed to land in the same map slot
+regardless of which list they came from.
+
+`MidiConverter.extraHeaderVolumePercent(chip, instance)`
+(`midi-converter.ts`) turns a matched entry into a 0-127 CC7 value:
+`round((volume / 0x100) * 100)`, since `0x0100` (256) is the VGM spec's
+"100%, unmodified" sentinel for this field. Two safety restrictions, both
+deliberately conservative because this data is genuinely ambiguous
+otherwise:
+
+- **Only `isAbsoluteVolume === true` entries are used.** The Flags byte's
+  bit 0 selects whether `volume` is an absolute override or a *relative*
+  offset from some default this parser has no way to know (the VGM spec
+  does not name what that default actually is). Adopting a relative value
+  as if it were absolute would produce an arbitrary, meaningless CC7 for
+  exactly the files that use this less-common flag; skipping it entirely is
+  the correct default.
+- **A CC7 that would come out to exactly 100 is not emitted at all** — a
+  redundant Controller Change event on every track for the (very common)
+  case of an unmodified-volume chip.
+
+Lookup is by `${chip}:${instance}`, reusing the existing `TrackDescriptor`
+fields `getTrack()` already computes for every track — with one alias:
+`descriptor.chip` spells this chip `"MSM6258"` (matching this file's own
+internal naming for the OKI MSM6258, see the DAC-stream sections above),
+while the Extra Header chip-name table (inherited from the VGM spec's own
+chip list) spells it `"OKIM6258"`. `descriptor.chip === 'misc'` (a
+descriptor that couldn't be matched to any known chip family) is skipped
+outright rather than risking a coincidental name collision.
+
+**Why the VGM header's Volume Modifier (`$7C`, a `2^(v/0x20)`-scaled global
+gain applied equally to every chip) was deliberately not adopted here**: it
+scales the *entire mix* uniformly and therefore carries no information
+about the *relative* balance between chips — the only thing a MIDI-level
+CC7 per track can usefully represent. Folding it in would have added parser
+surface for a value that, by construction, can never change which track
+sounds relatively louder or quieter than another.
+
+**Verification**: `MidiConverter emits Extra Header absolute chip volume as
+a leading CC7`, its two negative counterparts (`omits CC7 when ... exactly
+100%` and `ignores a relative (non-absolute) ... volume`), and `matches
+Extra Header entries by chip AND instance, not by chip alone` (a second
+chip instance's quiet volume must never leak onto the primary instance's
+track) all construct a `MidiConverter` directly with a synthetic
+`extraHeader` array and inspect the resulting `ControllerChangeEvent`s —
+the same "construct `VGMData` in-process, skip the byte-level VGM
+encoding" style already used throughout this file's OPN/OPL/YM2413 tests.
+`vgm-parser.test.js`'s four `VGM 1.70 extra header ...` tests instead build
+the real byte layout by hand (chip ID bit 7 in both lists, Flags byte bit
+0, the presence-vs-zero distinction for a clock-only chip, and a relative
+volume passed through as-is) to pin down the parser fix independently of
+the converter.
+
 ## Out of scope (for now)
 
 - Stereo panning (`$01`/`$05`) and LFO/vibrato (`$08`/`$09`) for HuC6280 —

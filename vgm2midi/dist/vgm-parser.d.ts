@@ -24,7 +24,14 @@ export declare class VGMParser {
     /** VGM 1.00/1.01の共有FM clockが属する最初のFM writeを境界通り探索する。 */
     private findLegacyFMChip;
     parseHeader(): VGMHeader;
-    /** VGM 1.70 extra header の第二チップclock/volumeリストを安全に読む。 */
+    /** VGM 1.70 extra header の第二チップclock/volumeリストを安全に読む。
+     *
+     * volumeはエントリが無ければundefinedのまま（=「未指定」）にする。かつては
+     * clockリストが先にvolume:0のプレースホルダを作ってしまい、clockだけ指定
+     * されたチップが「音量0（無音）」に見えるバグがあった。isAbsoluteVolumeは
+     * Flagsバイトのbit0（絶対値指定か、既定値からの相対値か）。miditrack側は
+     * 絶対値のみ採用する。
+     */
     private parseExtraHeader;
     private parseCommandStream;
     /** VGMコマンド列を解析し、従来互換のコマンド配列を返します。 */
