@@ -54,6 +54,9 @@ const state = {
   isPianorollSeeking: false,
   pianorollPointerId: null,
   pianorollZoom: 1,
+  isPianorollAutoFollowing: false,
+  pianorollAutoScrollTarget: null,
+  playbackTimeFrameId: null,
 };
 
 // サーバー側の設定ファイル（/api/preferences）からピン留め・使用回数を読み込み、
@@ -967,6 +970,18 @@ function formatPianorollTime(seconds) {
   return minutes > 0 ? `${minutes}分${remainder}秒` : `${remainder}秒`;
 }
 
+function formatPlaybackClock(seconds) {
+  const totalTenths = Math.max(0, Math.floor((Number(seconds) || 0) * 10));
+  const minutes = Math.floor(totalTenths / 600);
+  const remainder = totalTenths % 600;
+  const wholeSeconds = Math.floor(remainder / 10);
+  const tenths = remainder % 10;
+  return {
+    whole: `${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}`,
+    decimal: String(tenths),
+  };
+}
+
 function setPianorollMessage(message, status = "") {
   $("#pianoroll-empty").textContent = message;
   $("#pianoroll-empty").hidden = !message;
@@ -995,6 +1010,7 @@ async function loadPianoroll() {
     const payload = await response.json();
     if (loadId !== state.pianorollLoadId) return;
     state.pianoroll = payload;
+    updatePlaybackTime();
     const status = payload.truncated
       ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
       : "";
@@ -1119,6 +1135,42 @@ function updatePianorollZoomControls() {
   $("#pianoroll-zoom-value").textContent = `${state.pianorollZoom}×`;
 }
 
+function setPianorollAutoFollow(isFollowing) {
+  state.isPianorollAutoFollowing = isFollowing;
+  if (!isFollowing) state.pianorollAutoScrollTarget = null;
+}
+
+function scrollPianorollToStart() {
+  const scrollArea = $("#pianoroll-scroll");
+  state.pianorollAutoScrollTarget = 0;
+  scrollArea.scrollLeft = 0;
+}
+
+function followPianorollPlayback() {
+  if (!state.isPianorollAutoFollowing || !state.pianoroll?.durationSeconds) return;
+  const scrollArea = $("#pianoroll-scroll");
+  const canvas = $("#pianoroll-canvas");
+  const canvasWidth = canvas.getBoundingClientRect().width;
+  const viewportHalf = scrollArea.clientWidth / 2;
+  const progress = Math.min(1, $("#player").currentTime / state.pianoroll.durationSeconds);
+  const playheadX = progress * canvasWidth;
+  if (playheadX <= viewportHalf) return;
+  const maximumScroll = Math.max(0, canvasWidth - scrollArea.clientWidth);
+  const target = Math.min(maximumScroll, Math.max(0, playheadX - viewportHalf));
+  if (Math.abs(scrollArea.scrollLeft - target) < 0.5) return;
+  state.pianorollAutoScrollTarget = target;
+  scrollArea.scrollLeft = target;
+}
+
+function handlePianorollScroll() {
+  const target = state.pianorollAutoScrollTarget;
+  if (target !== null && Math.abs($("#pianoroll-scroll").scrollLeft - target) < 1) {
+    state.pianorollAutoScrollTarget = null;
+    return;
+  }
+  setPianorollAutoFollow(false);
+}
+
 function setPianorollZoom(zoom, shouldPreserveCenter = true) {
   const canvas = $("#pianoroll-canvas");
   const scrollArea = $("#pianoroll-scroll");
@@ -1143,10 +1195,14 @@ function changePianorollZoom(direction) {
     PIANOROLL_ZOOM_LEVELS.length - 1,
     Math.max(0, currentIndex + direction),
   );
-  if (nextIndex !== currentIndex) setPianorollZoom(PIANOROLL_ZOOM_LEVELS[nextIndex]);
+  if (nextIndex !== currentIndex) {
+    setPianorollAutoFollow(false);
+    setPianorollZoom(PIANOROLL_ZOOM_LEVELS[nextIndex]);
+  }
 }
 
 function resetPianorollZoom() {
+  setPianorollAutoFollow(false);
   setPianorollZoom(PIANOROLL_ZOOM_LEVELS[0], false);
 }
 
@@ -1171,8 +1227,7 @@ function seekPianorollAt(clientX) {
   const canvas = $("#pianoroll-canvas");
   const rect = canvas.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  $("#player").currentTime = ratio * state.pianoroll.durationSeconds;
-  drawPianoroll();
+  seekPlaybackTo(ratio * state.pianoroll.durationSeconds);
 }
 
 // 再生位置のシーク（←→・Home/End・PageUp/PageDown）。以前はピアノロールの
@@ -1208,6 +1263,7 @@ function handleSeekKeydown(event) {
 
 function setupPianoroll() {
   const canvas = $("#pianoroll-canvas");
+  const scrollArea = $("#pianoroll-scroll");
   const resizeObserver = new ResizeObserver(([entry]) => resizePianoroll(entry));
   const supportsDevicePixels = typeof ResizeObserverEntry !== "undefined"
     && "devicePixelContentBoxSize" in ResizeObserverEntry.prototype;
@@ -1234,7 +1290,10 @@ function setupPianoroll() {
   document.addEventListener("keydown", handleSeekKeydown);
   $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
   $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));
-  $("#player").addEventListener("timeupdate", drawPianoroll);
+  for (const eventName of ["wheel", "pointerdown", "touchstart"]) {
+    scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
+  }
+  scrollArea.addEventListener("scroll", handlePianorollScroll, { passive: true });
   $("#player").addEventListener("loadedmetadata", updatePianorollInteraction);
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawPianorollStatic);
   updatePianorollZoomControls();
@@ -1260,8 +1319,11 @@ function updateSectionsReadiness() {
 
 function resetPlayer() {
   const player = $("#player");
+  setPianorollAutoFollow(false);
+  stopPlaybackTimeAnimation();
   player.removeAttribute("src");
   player.load();
+  updatePlaybackTime();
   updatePlaybackControls();
   updatePianorollInteraction();
   drawPianoroll();
@@ -1712,11 +1774,72 @@ function getPlaybackDuration() {
   return state.pianoroll?.durationSeconds || 0;
 }
 
+// 秒以下の桁を「.」と数字それぞれ別spanにして視覚的な間隔を空けるため、
+// 一つのtextContentへ丸ごと書き込まず、内訳ごとに差分更新する。「.」自体は
+// 常に固定文字なのでHTML側の静的テキストのまま更新しない。
+function applyPlaybackClock(container, seconds) {
+  const { whole, decimal } = formatPlaybackClock(seconds);
+  const wholeEl = container.querySelector(".playback-time-whole");
+  const decimalEl = container.querySelector(".playback-time-decimal");
+  if (wholeEl.textContent !== whole) wholeEl.textContent = whole;
+  if (decimalEl.textContent !== decimal) decimalEl.textContent = decimal;
+}
+
+function updatePlaybackTime() {
+  const player = $("#player");
+  const current = Math.min(getPlaybackDuration(), Math.max(0, player.currentTime || 0));
+  applyPlaybackClock($("#playback-current-time"), current);
+  applyPlaybackClock($("#playback-duration"), getPlaybackDuration());
+}
+
+function startPlaybackTimeAnimation() {
+  if (state.playbackTimeFrameId !== null) return;
+  const updateTime = () => {
+    state.playbackTimeFrameId = null;
+    updatePlaybackTime();
+    const player = $("#player");
+    if (!player.paused && !player.ended) {
+      state.playbackTimeFrameId = requestAnimationFrame(updateTime);
+    }
+  };
+  state.playbackTimeFrameId = requestAnimationFrame(updateTime);
+}
+
+function stopPlaybackTimeAnimation() {
+  if (state.playbackTimeFrameId === null) return;
+  cancelAnimationFrame(state.playbackTimeFrameId);
+  state.playbackTimeFrameId = null;
+  updatePlaybackTime();
+}
+
+function updatePlayerVolume() {
+  const player = $("#player");
+  const volumePercent = Math.round(player.volume * 100);
+  const volumeSlider = $("#player-volume");
+  const muteButton = $("#player-mute");
+  volumeSlider.value = String(volumePercent);
+  volumeSlider.setAttribute("aria-valuetext", `${volumePercent}%`);
+  $("#player-volume-value").textContent = `${volumePercent}%`;
+  muteButton.setAttribute("aria-pressed", String(player.muted));
+  muteButton.setAttribute("aria-label", player.muted ? "ミュートを解除" : "ミュート");
+}
+
+function updatePlaybackProgress() {
+  drawPianoroll();
+  updatePlaybackTime();
+  followPianorollPlayback();
+}
+
 function seekPlaybackTo(seconds) {
   const player = $("#player");
   if (!state.session?.hasRender || !player.getAttribute("src")) return;
-  player.currentTime = Math.min(getPlaybackDuration(), Math.max(0, seconds));
-  drawPianoroll();
+  const target = Math.min(getPlaybackDuration(), Math.max(0, seconds));
+  player.currentTime = target;
+  if (target <= 0.05) {
+    if (!player.paused) setPianorollAutoFollow(true);
+    scrollPianorollToStart();
+  }
+  updatePlaybackProgress();
 }
 
 function seekPlaybackBy(seconds) {
@@ -1732,14 +1855,19 @@ function updatePlaybackControls() {
   $("#playback-forward").disabled = !canSeek;
   $("#playback-start").disabled = !canSeek;
   $("#playback-toggle").disabled = !isReady || isBusy;
+  $("#player-mute").disabled = !canSeek;
+  $("#player-volume").disabled = !canSeek;
   $("#playback-toggle").setAttribute(
     "aria-pressed",
     String(canSeek && !player.paused && !player.ended),
   );
+  updatePlaybackTime();
+  updatePlayerVolume();
 }
 
 function setupPlaybackControls() {
   const player = $("#player");
+  let volumeBeforeMute = player.volume || 1;
   $("#playback-backward").addEventListener(
     "click",
     () => seekPlaybackBy(-PLAYBACK_SEEK_SECONDS),
@@ -1750,9 +1878,56 @@ function setupPlaybackControls() {
   );
   $("#playback-start").addEventListener("click", () => seekPlaybackTo(0));
   $("#playback-toggle").addEventListener("click", togglePlayback);
-  for (const eventName of ["play", "pause", "ended", "emptied", "loadedmetadata"]) {
+  $("#player-volume").addEventListener("input", (event) => {
+    player.volume = Number(event.target.value) / 100;
+    if (player.volume > 0) {
+      volumeBeforeMute = player.volume;
+      player.muted = false;
+    }
+  });
+  // マウス/タッチでスライダーを操作した直後もフォーカスが残り続け、以降のスペース/矢印
+  // キーがスライダー自身の既定動作に奪われグローバルの再生・シークショートカットへ届か
+  // なくなるため、ポインター操作の完了時のみblur()する。キーボードでの値変更（Tab移動
+  // 後の矢印キー操作）はpointerupを伴わないため、そちらの操作性は損なわない。
+  $("#player-volume").addEventListener("pointerup", (event) => {
+    event.target.blur();
+  });
+  $("#player-mute").addEventListener("click", () => {
+    if (player.muted) {
+      if (player.volume === 0) player.volume = volumeBeforeMute;
+      player.muted = false;
+    } else {
+      if (player.volume > 0) volumeBeforeMute = player.volume;
+      player.muted = true;
+    }
+  });
+  player.addEventListener("play", () => {
+    if (player.currentTime <= 0.05) {
+      setPianorollAutoFollow(true);
+      scrollPianorollToStart();
+    }
+    startPlaybackTimeAnimation();
+    updatePlaybackControls();
+  });
+  player.addEventListener("pause", () => {
+    stopPlaybackTimeAnimation();
+    updatePlaybackControls();
+  });
+  player.addEventListener("ended", () => {
+    setPianorollAutoFollow(false);
+    stopPlaybackTimeAnimation();
+    updatePlaybackControls();
+  });
+  player.addEventListener("emptied", () => {
+    setPianorollAutoFollow(false);
+    stopPlaybackTimeAnimation();
+    updatePlaybackControls();
+  });
+  for (const eventName of ["loadedmetadata", "durationchange"]) {
     player.addEventListener(eventName, updatePlaybackControls);
   }
+  player.addEventListener("timeupdate", updatePlaybackProgress);
+  player.addEventListener("volumechange", updatePlayerVolume);
   updatePlaybackControls();
 }
 

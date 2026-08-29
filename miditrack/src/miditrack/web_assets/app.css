@@ -1,7 +1,16 @@
+@font-face {
+  font-family: "DSEG7 Classic";
+  src: url("/assets/DSEG7Classic-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   --brand: #7799dd;
   --brand-dark: #5674b9;
   --brand-light: #eef2fa;
+  --digital-text: #5270b0;
   --brand-gradient: linear-gradient(135deg, #7799dd 0%, #5674b9 100%);
   --neutral-0: #fff;
   --neutral-10: #fafbfc;
@@ -29,6 +38,7 @@
   :root {
     --brand-dark: #6a8ecf;
     --brand-light: #253247;
+    --digital-text: #9bb8f3;
     --neutral-0: #1b2129;
     --neutral-10: #20262f;
     --neutral-20: #262d37;
@@ -572,13 +582,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .soundfont-row .program-select { min-width: 0; }
 .soundfont-row .button { white-space: nowrap; }
 
-.playback-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.playback-segment svg {
+.playback-controls svg {
   width: 20px;
   height: 28px;
   fill: currentColor;
@@ -590,12 +594,117 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .download-toolbar { margin-top: 12px; }
 
-.player-card {
-  margin-top: 16px;
+.playback-time {
+  min-width: 138px;
+  /* 再生コントロール側はボタンのmin-height 32px + このボーダー幅の分だけ
+     実際の高さが32pxを超える（box-sizing:border-boxでもボタンの中身が
+     min-heightを押し広げるため）。ここでも同じ実測高さに合わせておく。 */
+  min-height: 36px;
+  padding-inline: 8px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  place-items: center;
+  gap: 5px;
+  color: var(--digital-text);
+  background: var(--neutral-10);
+  border: 2px solid var(--neutral-40);
+  border-radius: 8px;
+  font-family: "DSEG7 Classic", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.025em;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.player-card audio {
+.playback-time-dot,
+.playback-time-decimal {
+  margin-inline-start: 0.18em;
+}
+
+.playback-time-separator {
+  color: var(--neutral-60);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  letter-spacing: 0;
+}
+
+.player-volume-control {
+  display: grid;
+  grid-template-columns: 32px minmax(72px, 96px) 38px;
+  align-items: center;
+  min-height: 32px;
+  overflow: hidden;
+  background: var(--neutral-0);
+  border: 2px solid var(--neutral-40);
+  border-radius: 8px;
+}
+
+.player-volume-slider {
+  min-width: 0;
+  min-height: 32px;
+  padding-inline: 8px;
+  display: grid;
+  align-items: center;
+  border-left: 1px solid var(--neutral-40);
+}
+
+.player-volume-slider input[type="range"] {
   width: 100%;
+  margin: 0;
+  accent-color: var(--brand-dark);
+}
+
+.player-mute-button {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  color: var(--neutral-60);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.player-mute-button:hover:not(:disabled) {
+  color: var(--brand-dark);
+  background: var(--brand-light);
+}
+
+.player-mute-button:focus-visible {
+  outline: 2px solid var(--brand-dark);
+  outline-offset: -2px;
+}
+
+.player-mute-button:disabled {
+  color: var(--neutral-50);
+  cursor: default;
+}
+
+.player-mute-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.player-muted-icon,
+.player-mute-button[aria-pressed="true"] .player-volume-icon { display: none; }
+.player-mute-button[aria-pressed="true"] {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.player-mute-button[aria-pressed="true"] .player-muted-icon { display: block; }
+
+.player-volume-value {
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  color: var(--neutral-80);
+  border-left: 1px solid var(--neutral-40);
+  font-size: 0.69rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .pianoroll-card {
@@ -646,13 +755,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .pianoroll-zoom,
 .compact-stepper,
-.playback-segment {
+.playback-controls {
   display: grid;
   min-height: 32px;
   overflow: hidden;
   color: var(--neutral-100);
   background: var(--neutral-0);
-  border: 1px solid var(--neutral-40);
+  border: 2px solid var(--neutral-40);
   border-radius: 8px;
 }
 
@@ -660,9 +769,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   grid-template-columns: 32px minmax(48px, auto) 32px;
 }
 
-.playback-segment { grid-template-columns: 32px 32px; }
+.playback-controls { grid-template-columns: repeat(4, 32px); }
 
-:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button,
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) button,
 .pianoroll-zoom span,
 .transform-value {
   min-width: 0;
@@ -676,30 +785,40 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button {
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) button {
   min-height: 32px;
   cursor: pointer;
 }
 
-:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button:hover:not(:disabled) {
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) button:hover:not(:disabled) {
   color: var(--brand-dark);
   background: var(--brand-light);
 }
 
-:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button:focus-visible {
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) button:focus-visible {
   position: relative;
   z-index: 1;
   outline: 2px solid var(--brand-dark);
   outline-offset: -2px;
 }
 
-:is(.pianoroll-zoom, .compact-stepper, .playback-segment) button:disabled {
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) button:disabled {
   color: var(--neutral-50);
   cursor: default;
 }
 
-:is(.pianoroll-zoom, .compact-stepper, .playback-segment) > * + * {
-  border-left: 1px solid var(--neutral-30);
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) > * + * {
+  border-left: 1px solid var(--neutral-40);
+}
+
+/* 上のbutton/.pianoroll-zoom span/.transform-valueへのborder:0リセットは
+   type選択子を伴い詳細度が上のルールより高く、隣接兄弟がbuttonまたは
+   .pianoroll-zoom spanの場合に区切り線を打ち消してしまう。同じ詳細度で
+   宣言順を後にして上書きし、button同士が並ぶplayback-controls等でも
+   区切り線を残す。 */
+:is(.pianoroll-zoom, .compact-stepper, .playback-controls) > * + button,
+.pianoroll-zoom > * + span {
+  border-left: 1px solid var(--neutral-40);
 }
 
 .transform-value {

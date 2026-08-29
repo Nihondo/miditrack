@@ -69,13 +69,19 @@ as the global keyboard shortcuts: one-second back/forward matches Arrow
 Left/Right, return-to-start matches Home or Command+Left, and play/pause matches
 Space. Playback events (`play`, `pause`, `ended`, and media reset/load events)
 must update the toggle icon and disabled states, regardless of whether the
-action came from a button, shortcut, piano-roll seek, or native audio control.
+action came from a button, shortcut, or piano-roll seek.
 Present those buttons as two segmented pairs — back/forward and
 return-to-start/play-pause — using the same height, border, separators,
 background, and focus treatment as `.compact-stepper`. The start icon must use
 a filled vertical bar so it remains visibly `|◀` with fill-only SVG styling.
-The native `<audio>` control stays below the piano roll for scrubbing and
-volume, and the MIDI/WAV download buttons belong immediately below that player.
+The native `<audio>` element remains the playback engine but is hidden. The
+custom media group sits immediately after the segmented playback buttons in
+the audition toolbar and owns elapsed/total time, a native range-based volume
+control, and a mute toggle; its state must follow media events. The timer uses
+the locally bundled DSEG7 Classic WOFF2 (with its OFL license), displays tenths
+as `mm:ss.t`, and runs its animation-frame refresh only while media is playing.
+Keep a tabular monospace fallback and fixed timer width so font swapping cannot
+shift adjacent controls. MIDI/WAV download buttons remain below the piano roll.
 
 The SoundFont select and adjacent Apply & Audition button retain their standard
 `.program-select` and `.button` heights. Center them vertically; do not stretch
@@ -89,6 +95,11 @@ steps and relies on the surrounding native horizontal scroll container. The
 `ResizeObserver` rebuilds the device-pixel backing store at each size, and seek
 coordinates continue to use the canvas's full scrolled `getBoundingClientRect()`;
 do not map pointer positions against the visible scroll viewport instead.
+Playback that begins at zero enables auto-follow. The viewport remains at the
+start until the playhead reaches its midpoint, then scrolls to keep the
+playhead centered. Wheel, pointer, touch, scrollbar, or other manual horizontal
+scroll intent disables auto-follow; pausing and resuming must not silently
+re-enable it, while returning to zero and starting playback does.
 The ordinary total-note count is intentionally not shown below the roll; the
 status line is reserved for truncation and load errors, so do not restore a
 plain `N notes` status when changing the piano-roll payload or rendering code.
