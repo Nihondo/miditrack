@@ -723,9 +723,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* 高さ380pxは元の190pxの2倍。drawPianorollTrack()が音域をcanvas高さいっぱいに
+   フィットさせて描画するため、この固定倍率だけでノート1音あたりの表示高さが
+   常に2倍になり、専用の縦ズームUIなしで視認性が上がる。 */
 .pianoroll-card {
   position: relative;
-  height: 190px;
+  height: 380px;
   margin-top: 16px;
   overflow: hidden;
   background: var(--neutral-10);
@@ -767,6 +770,17 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   z-index: 2;
   grid-template-columns: 32px 44px 32px;
   box-shadow: 0 2px 8px rgba(9, 30, 66, 0.2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+/* マウスホバー中、またはズームボタン自体にキーボードフォーカスがある間
+   だけ表示する。常時表示だとピアノロール上のノート描画を隠してしまうため。 */
+.pianoroll-card:hover .pianoroll-zoom,
+.pianoroll-card:focus-within .pianoroll-zoom {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .pianoroll-zoom,
