@@ -115,6 +115,7 @@ button { color: inherit; }
 }
 
 .card {
+  min-width: 0;
   padding: 24px;
   background: var(--neutral-0);
   border: 1px solid var(--neutral-30);
@@ -560,6 +561,57 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-size: 12px;
   font-weight: 700;
 }
+
+.soundfont-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.soundfont-row .program-select { min-width: 0; }
+.soundfont-row .button { min-height: 48px; white-space: nowrap; }
+
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.playback-controls button {
+  width: 48px;
+  min-height: 48px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--neutral-80);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.playback-controls button:hover:not(:disabled) {
+  color: var(--brand-dark);
+  background: var(--brand-light);
+}
+
+.playback-controls button:disabled {
+  color: var(--neutral-40);
+  cursor: not-allowed;
+}
+
+.playback-controls svg {
+  width: 28px;
+  height: 28px;
+  fill: currentColor;
+}
+
+.playback-pause-icon,
+#playback-toggle[aria-pressed="true"] .playback-play-icon { display: none; }
+#playback-toggle[aria-pressed="true"] .playback-pause-icon { display: block; }
+
+.download-toolbar { margin-top: 12px; }
 
 .player-card {
   margin-top: 16px;

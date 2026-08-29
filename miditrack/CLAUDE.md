@@ -64,6 +64,15 @@ pixels. Seeking is also keyboard-accessible through the focusable slider-style
 canvas. Muting only triggers a local static-layer redraw at lower opacity; it
 must not fetch `/api/pianoroll` again.
 
+The dedicated playback buttons above the piano roll must call the same helpers
+as the global keyboard shortcuts: one-second back/forward matches Arrow
+Left/Right, return-to-start matches Home or Command+Left, and play/pause matches
+Space. Playback events (`play`, `pause`, `ended`, and media reset/load events)
+must update the toggle icon and disabled states, regardless of whether the
+action came from a button, shortcut, piano-roll seek, or native audio control.
+The MIDI/WAV download buttons belong immediately below the piano roll; the
+native `<audio>` control stays below them for scrubbing and volume.
+
 Track colors have one browser-side source of truth: `getTrackColor(track.index,
 trackCount, opacity)`. Both the note rectangles and the color marker preceding
 each track name must use it, so sorting rows cannot break the visual mapping.
@@ -239,8 +248,8 @@ volume) and `PATCH /api/session/transform` sets them, independent of
 `PATCH /api/session/tracks` for the same reason `POST /api/soundfont` is
 its own endpoint: it is an orthogonal axis, not a per-track edit.
 
-The single-value speed/pitch controls live in the audition toolbar immediately
-after the WAV download button and align to the toolbar's inline end. Each is a
+The single-value speed/pitch controls live at the inline end of the playback-
+control row above the piano roll. Each is a
 compact segmented − / editable number / ＋ stepper sharing the piano-roll zoom
 control's visual language. Keep the native number inputs and their existing
 `transform-speed`/`transform-transpose` IDs: keyboard entry and the debounced

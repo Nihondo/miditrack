@@ -17,6 +17,7 @@ const DEFAULT_GM_PROGRAM = "80";
 const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
 const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
+const PLAYBACK_SEEK_SECONDS = 1;
 
 const state = {
   session: null,          // 直近の /api/session (POST/PATCH/GET) レスポンス
@@ -172,6 +173,7 @@ function showStatus(message, type = "") {
 function setBusy(isBusy, message = "") {
   document.body.classList.toggle("busy", isBusy);
   if (message) showStatus(message);
+  updatePlaybackControls();
 }
 
 async function apiFetch(path, options = {}) {
@@ -1181,22 +1183,27 @@ function seekPianorollAt(clientX) {
 // 素通しし、通常のカーソル移動（キャレット移動）を妨げない。
 // Cmd+←は通常の1秒戻しではなく、先頭（0秒）へ即座に戻す。
 function handleSeekKeydown(event) {
-  if (!state.session?.hasRender || !state.pianoroll) return;
+  if (!state.session?.hasRender || !state.pianoroll || !$("#player").getAttribute("src")) return;
   if (isPlaybackShortcutBlocked(event.target)) return;
-  const player = $("#player");
   let target = null;
   if (event.metaKey && event.key === "ArrowLeft") {
     target = 0;
   } else {
-    const keySteps = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
-    if (keySteps[event.key] !== undefined) target = player.currentTime + keySteps[event.key];
+    const keySteps = {
+      ArrowLeft: -PLAYBACK_SEEK_SECONDS,
+      ArrowRight: PLAYBACK_SEEK_SECONDS,
+      PageDown: -10,
+      PageUp: 10,
+    };
+    if (keySteps[event.key] !== undefined) {
+      target = $("#player").currentTime + keySteps[event.key];
+    }
     else if (event.key === "Home") target = 0;
-    else if (event.key === "End") target = state.pianoroll.durationSeconds;
+    else if (event.key === "End") target = getPlaybackDuration();
   }
   if (target === null) return;
   event.preventDefault();
-  player.currentTime = Math.min(state.pianoroll.durationSeconds, Math.max(0, target));
-  drawPianoroll();
+  seekPlaybackTo(target);
 }
 
 function setupPianoroll() {
@@ -1248,12 +1255,14 @@ function updateSectionsReadiness() {
   $("#upload-filename").textContent = state.session && state.session.filename
     ? state.session.filename
     : "";
+  updatePlaybackControls();
 }
 
 function resetPlayer() {
   const player = $("#player");
   player.removeAttribute("src");
   player.load();
+  updatePlaybackControls();
   updatePianorollInteraction();
   drawPianoroll();
 }
@@ -1687,11 +1696,64 @@ async function togglePlayback() {
     player.pause();
     return;
   }
-  if (!state.session.hasRender) {
+  if (!state.session.hasRender || !player.getAttribute("src")) {
     await handleRender();
     return;
   }
   player.play().catch(() => {});
+}
+
+// 再生ボタンと既存のカーソルキー操作で同じシーク処理を共有する。
+// audio.durationはメタデータ読込前にNaNとなるため、常に利用できる
+// ピアノロールの曲長をフォールバックとして使う。
+function getPlaybackDuration() {
+  const playerDuration = $("#player").duration;
+  if (Number.isFinite(playerDuration)) return playerDuration;
+  return state.pianoroll?.durationSeconds || 0;
+}
+
+function seekPlaybackTo(seconds) {
+  const player = $("#player");
+  if (!state.session?.hasRender || !player.getAttribute("src")) return;
+  player.currentTime = Math.min(getPlaybackDuration(), Math.max(0, seconds));
+  drawPianoroll();
+}
+
+function seekPlaybackBy(seconds) {
+  seekPlaybackTo($("#player").currentTime + seconds);
+}
+
+function updatePlaybackControls() {
+  const player = $("#player");
+  const isReady = !!(state.session && state.session.tracks.length > 0);
+  const isBusy = document.body.classList.contains("busy");
+  const canSeek = isReady && !!state.session.hasRender && !!player.getAttribute("src") && !isBusy;
+  $("#playback-backward").disabled = !canSeek;
+  $("#playback-forward").disabled = !canSeek;
+  $("#playback-start").disabled = !canSeek;
+  $("#playback-toggle").disabled = !isReady || isBusy;
+  $("#playback-toggle").setAttribute(
+    "aria-pressed",
+    String(canSeek && !player.paused && !player.ended),
+  );
+}
+
+function setupPlaybackControls() {
+  const player = $("#player");
+  $("#playback-backward").addEventListener(
+    "click",
+    () => seekPlaybackBy(-PLAYBACK_SEEK_SECONDS),
+  );
+  $("#playback-forward").addEventListener(
+    "click",
+    () => seekPlaybackBy(PLAYBACK_SEEK_SECONDS),
+  );
+  $("#playback-start").addEventListener("click", () => seekPlaybackTo(0));
+  $("#playback-toggle").addEventListener("click", togglePlayback);
+  for (const eventName of ["play", "pause", "ended", "emptied", "loadedmetadata"]) {
+    player.addEventListener(eventName, updatePlaybackControls);
+  }
+  updatePlaybackControls();
 }
 
 // マウスでボタンをクリックすると、クリック後もそのボタンにフォーカスが残り続け、
@@ -1851,6 +1913,7 @@ async function init() {
     renderTrackList();
   });
   setupPianoroll();
+  setupPlaybackControls();
   setupPlaybackShortcut();
   $("#reset-button").addEventListener("click", handleReset);
   $("#render-button").addEventListener("click", handleRender);
