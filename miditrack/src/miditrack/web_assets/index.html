@@ -99,10 +99,35 @@
         <select id="soundfont-select" class="program-select"></select>
         <p class="field-help" id="soundfont-help"></p>
       </div>
-      <div class="toolbar">
+      <div class="toolbar audition-toolbar">
         <button type="button" class="button primary" id="render-button">適用して試聴</button>
         <button type="button" class="button secondary" id="download-button">MIDIをダウンロード</button>
         <button type="button" class="button secondary" id="download-wav-button">WAVをダウンロード</button>
+        <div class="transform-controls" role="group" aria-label="全体の速度とピッチ">
+          <div class="transform-control">
+            <span class="transform-control-label">速度</span>
+            <div class="compact-stepper">
+              <button type="button" id="transform-speed-down" aria-label="全体の速度倍率を下げる">−</button>
+              <label class="transform-value" for="transform-speed">
+                <span class="visually-hidden">全体の速度倍率</span>
+                <input type="number" id="transform-speed" value="1.0" min="0.1" max="10" step="0.05" inputmode="decimal">
+                <span aria-hidden="true">×</span>
+              </label>
+              <button type="button" id="transform-speed-up" aria-label="全体の速度倍率を上げる">＋</button>
+            </div>
+          </div>
+          <div class="transform-control">
+            <span class="transform-control-label">ピッチ</span>
+            <div class="compact-stepper">
+              <button type="button" id="transform-transpose-down" aria-label="全体のピッチを1半音下げる">−</button>
+              <label class="transform-value" for="transform-transpose">
+                <span class="visually-hidden">全体のピッチ（半音）</span>
+                <input type="number" id="transform-transpose" value="0" min="-24" max="24" step="1" inputmode="numeric">
+              </label>
+              <button type="button" id="transform-transpose-up" aria-label="全体のピッチを1半音上げる">＋</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="pianoroll-card">
         <div class="pianoroll-scroll" id="pianoroll-scroll">
@@ -133,40 +158,29 @@
         <audio id="player" controls preload="metadata"></audio>
       </div>
 
-      <div class="variation-panel">
-        <p class="field-label">全体の速度・ピッチ</p>
-        <div class="convert-options">
-          <div class="convert-field">
-            <label for="transform-speed">速度倍率</label>
-            <input type="number" id="transform-speed" value="1.0" min="0.1" max="10" step="0.05">
+      <details class="variation-panel">
+        <summary>バリエーションをまとめて生成</summary>
+        <div class="variation-content">
+          <div class="convert-options">
+            <div class="convert-field">
+              <label for="variation-speeds">速度倍率（カンマ区切り）</label>
+              <input type="text" id="variation-speeds" value="1.2, 1.0, 0.8">
+            </div>
+            <div class="convert-field">
+              <label for="variation-transposes">ピッチ（半音、カンマ区切り）</label>
+              <input type="text" id="variation-transposes" value="-2, -1, 0, 1, 2">
+            </div>
           </div>
-          <div class="convert-field">
-            <label for="transform-transpose">ピッチ（半音）</label>
-            <input type="number" id="transform-transpose" value="0" min="-24" max="24" step="1">
+          <div class="convert-field is-checkbox">
+            <input type="checkbox" id="variation-include-midi" checked>
+            <label for="variation-include-midi">ZIPにMIDIも含める</label>
           </div>
-        </div>
-        <p class="field-help">MIDIのテンポとノート番号を直接書き換えるため音質劣化がなく、試聴・WAVダウンロード・MIDIダウンロードのすべてに反映されます。</p>
-
-        <p class="field-label variation-subsection">バリエーションをまとめて生成</p>
-        <div class="convert-options">
-          <div class="convert-field">
-            <label for="variation-speeds">速度倍率（カンマ区切り）</label>
-            <input type="text" id="variation-speeds" value="1.2, 1.0, 0.8">
+          <div class="toolbar">
+            <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード</button>
           </div>
-          <div class="convert-field">
-            <label for="variation-transposes">ピッチ（半音、カンマ区切り）</label>
-            <input type="text" id="variation-transposes" value="-2, -1, 0, 1, 2">
-          </div>
+          <p class="field-help">ツールバーの速度・ピッチと同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAV（とチェックすればMIDIも）をZIPにまとめます。試聴用の速度・ピッチ設定は変更されません。</p>
         </div>
-        <div class="convert-field is-checkbox">
-          <input type="checkbox" id="variation-include-midi" checked>
-          <label for="variation-include-midi">ZIPにMIDIも含める</label>
-        </div>
-        <div class="toolbar">
-          <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード</button>
-        </div>
-        <p class="field-help">上と同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAV（とチェックすればMIDIも）をZIPにまとめます。上の「全体の速度・ピッチ」の設定は変更されません。</p>
-      </div>
+      </details>
     </article>
   </main>
 

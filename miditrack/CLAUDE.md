@@ -72,12 +72,23 @@ steps and relies on the surrounding native horizontal scroll container. The
 `ResizeObserver` rebuilds the device-pixel backing store at each size, and seek
 coordinates continue to use the canvas's full scrolled `getBoundingClientRect()`;
 do not map pointer positions against the visible scroll viewport instead.
+The ordinary total-note count is intentionally not shown below the roll; the
+status line is reserved for truncation and load errors, so do not restore a
+plain `N notes` status when changing the piano-roll payload or rendering code.
 
 Track-column sorting is display-only. `state.session.tracks` remains in original
 MIDI order and `sortedTracks()` sorts a copy for rendering. All edits, solo
-audition, warning-row pairing, and server payloads continue to identify rows by
+audition, warning controls, and server payloads continue to identify rows by
 `track.index`. A change to sorting must never reorder the session array or the
 MIDI/WAV output. Channel-less tracks stay last in both sort directions.
+
+Track rows have a fixed 52px block size. Long track names and lock reasons must
+stay on one line and use visual ellipsis rather than increasing the row height;
+their complete DOM text remains available to assistive technology. A track with
+multiple Program Changes uses an in-row ⚠ button and a `popover="manual"`
+tooltip, never a second warning `<tr>`. The button's `aria-describedby` points
+to the full warning, and hover, focus, and touch/click focus all expose the same
+top-layer Popover so horizontal table scrolling cannot clip it.
 
 ## Why render-then-play, not a live softsynth
 
@@ -227,6 +238,17 @@ arrangement into a DAW. `WebSession` carries one `speed_ratio`/
 volume) and `PATCH /api/session/transform` sets them, independent of
 `PATCH /api/session/tracks` for the same reason `POST /api/soundfont` is
 its own endpoint: it is an orthogonal axis, not a per-track edit.
+
+The single-value speed/pitch controls live in the audition toolbar immediately
+after the WAV download button and align to the toolbar's inline end. Each is a
+compact segmented − / editable number / ＋ stepper sharing the piano-roll zoom
+control's visual language. Keep the native number inputs and their existing
+`transform-speed`/`transform-transpose` IDs: keyboard entry and the debounced
+`PATCH /api/session/transform` path remain the source of truth, while the
+flanking buttons only call `stepUp()`/`stepDown()` and dispatch `input`. The
+bulk-variation fields stay in a native `<details>` disclosure below the player,
+collapsed by default; moving the single-value controls must not couple those two
+settings or payloads.
 
 `POST /api/variations` generates every combination of a speed list × a
 transpose list the same way — by writing each combination's own MIDI and
@@ -776,7 +798,7 @@ For a track whose channel already carries one or more `program_change`
 messages, every one of them has its `.program` mutated in place — not
 just the first. This matters for `nsf2midi`'s duty-driven re-sends and any
 track that changes instrument mid-song (`program_change_count > 1`,
-surfaced in the UI as a warning): picking a new instrument should apply
+surfaced in the UI as a ⚠ Popover tooltip): picking a new instrument should apply
 uniformly, and mutating in place means the delta-time chain is completely
 untouched, so every note's absolute tick is provably unaffected (verified
 in `tests/test_midi.py` by comparing absolute-tick note event lists before
@@ -1434,8 +1456,8 @@ dark-mode values for the same reason — `--brand-dark`'s light-mode value
 (`#5674b9`) reads fine on white but is too close in luminance to the dark
 palette's own background tones, so dark mode lightens it to `#6a8ecf`.
 `--warning` (`#b45309`, a dark amber) is brightened to `#eab308` for the
-same reason — it is used only as *text* (`.pc-warning`), where the
-light-mode value's low luminance would fail contrast against a dark card
+same reason — it colors the ⚠ warning control and its Popover border, where
+the light-mode value's low luminance would fail contrast against a dark card
 background. `--success`/`--danger` needed no change: both are only ever
 used as toast *backgrounds* under fixed white text, so their contrast is
 theme-independent.

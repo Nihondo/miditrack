@@ -179,6 +179,27 @@ button { color: inherit; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .compact-toolbar { margin-top: 12px; }
 
+.transform-controls {
+  margin-inline-start: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.transform-control {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.transform-control-label {
+  color: var(--neutral-60);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .button {
   min-height: 38px;
   padding: 9px 15px;
@@ -258,25 +279,26 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   vertical-align: middle;
 }
 
+.track-row { height: 52px; }
 .track-row.is-locked { color: var(--neutral-60); }
 
-/* 曲中で楽器が変わる警告は、メイン行のtd内ではなく専用のtrに切り出してある
-   （app.js参照）。区切り線はこの警告行側に持たせ、メイン行同士の高さは
-   警告の有無に関わらず揃える。 */
-.track-row.has-warning td { border-bottom: none; }
-
-.track-row-warning td {
-  padding: 0 10px 4px;
-  border-bottom: 1px solid var(--neutral-20);
-}
+.track-name-cell { width: 180px; max-width: 180px; }
 
 .track-name {
   min-height: 32px;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--neutral-100);
   font-weight: 600;
+}
+
+.track-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .track-color-bar {
@@ -313,12 +335,16 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   text-align: right;
 }
 
-.lock-reason { color: var(--neutral-60); font-size: 12px; }
+.track-instrument-cell { min-width: 280px; }
 
-.pc-warning {
-  margin: 0;
-  color: var(--warning);
-  font-size: 11px;
+.lock-reason {
+  max-width: 320px;
+  display: block;
+  overflow: hidden;
+  color: var(--neutral-60);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .program-select {
@@ -341,7 +367,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .pin-button,
 .mute-button,
-.solo-button {
+.solo-button,
+.track-warning-button {
   width: 32px;
   height: 32px;
   flex: 0 0 auto;
@@ -359,12 +386,35 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .pin-button:hover:not(:disabled),
 .mute-button:hover:not(:disabled),
 .solo-button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-dark); }
+.track-warning-button:hover { border-color: var(--warning); color: var(--warning); }
 .pin-button:disabled,
 .mute-button:disabled,
 .solo-button:disabled { opacity: 0.4; cursor: not-allowed; }
 .pin-button.is-pinned { color: var(--warning); border-color: var(--warning); }
 .mute-button.is-muted { color: var(--danger); border-color: var(--danger); }
 .solo-button.is-solo { color: var(--brand-dark); border-color: var(--brand); background: var(--brand-light); }
+
+.track-warning-button {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.track-warning-tooltip[popover] {
+  position: fixed;
+  inset: auto;
+  z-index: 20;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 24px));
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--neutral-100);
+  background: var(--neutral-0);
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(9, 30, 66, 0.24);
+  font-size: 12px;
+  line-height: 1.45;
+}
 
 .source-select {
   min-width: 9.5rem;
@@ -377,11 +427,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 /* VGM/NSFで原曲の音源（実機チップレンダリング）を選んだトラック行。
    SPCの原曲の音色（SoundFontバンク切替）はis-hardwareを付与しない
-   （音量スライダーが引き続き有効なままなので視覚的にも区別する）。
-   曲中で楽器が変わる警告行（.track-row-warning）にも同じ背景色を
-   同期させ、1トラックの2つのtrが視覚的に1行として見えるようにする。 */
-.track-row.is-hardware,
-.track-row-warning.is-hardware {
+   （音量スライダーが引き続き有効なままなので視覚的にも区別する）。 */
+.track-row.is-hardware {
   background: var(--brand-light);
 }
 
@@ -523,19 +570,28 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   right: 8px;
   bottom: 8px;
   z-index: 2;
-  display: grid;
   grid-template-columns: 32px 44px 32px;
+  box-shadow: 0 2px 8px rgba(9, 30, 66, 0.2);
+}
+
+.pianoroll-zoom,
+.compact-stepper {
+  display: grid;
   min-height: 32px;
   overflow: hidden;
   color: var(--neutral-100);
   background: var(--neutral-0);
   border: 1px solid var(--neutral-40);
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(9, 30, 66, 0.2);
 }
 
-.pianoroll-zoom button,
-.pianoroll-zoom span {
+.compact-stepper {
+  grid-template-columns: 32px minmax(48px, auto) 32px;
+}
+
+:is(.pianoroll-zoom, .compact-stepper) button,
+.pianoroll-zoom span,
+.transform-value {
   min-width: 0;
   display: grid;
   place-items: center;
@@ -547,29 +603,62 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-.pianoroll-zoom button {
+:is(.pianoroll-zoom, .compact-stepper) button {
   min-height: 32px;
   cursor: pointer;
 }
 
-.pianoroll-zoom button:hover:not(:disabled) {
+:is(.pianoroll-zoom, .compact-stepper) button:hover:not(:disabled) {
   color: var(--brand-dark);
   background: var(--brand-light);
 }
 
-.pianoroll-zoom button:focus-visible {
+:is(.pianoroll-zoom, .compact-stepper) button:focus-visible {
   position: relative;
   z-index: 1;
   outline: 2px solid var(--brand-dark);
   outline-offset: -2px;
 }
 
-.pianoroll-zoom button:disabled {
+:is(.pianoroll-zoom, .compact-stepper) button:disabled {
   color: var(--neutral-50);
   cursor: default;
 }
 
-.pianoroll-zoom > * + * { border-left: 1px solid var(--neutral-30); }
+:is(.pianoroll-zoom, .compact-stepper) > * + * { border-left: 1px solid var(--neutral-30); }
+
+.transform-value {
+  grid-template-columns: minmax(2.5ch, auto) auto;
+  gap: 2px;
+  padding-inline: 5px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.transform-value input {
+  width: 4.5ch;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  appearance: textfield;
+  font: inherit;
+  font-variant-numeric: inherit;
+  text-align: center;
+}
+
+.transform-value input::-webkit-inner-spin-button,
+.transform-value input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+
+.transform-value input:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--brand-dark);
+  outline-offset: 4px;
+}
+
+.transform-value:has(input:disabled) { color: var(--neutral-50); }
 
 .pianoroll-empty {
   position: absolute;
@@ -595,11 +684,18 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-radius: 12px;
 }
 
-.variation-panel > .field-label { margin-bottom: 12px; }
+.variation-panel > summary {
+  color: var(--neutral-80);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.variation-panel > summary:hover { color: var(--brand-dark); }
+.variation-panel > summary:focus-visible { outline-offset: 4px; }
+.variation-content { margin-top: 14px; }
 .variation-panel .convert-options { margin-bottom: 4px; }
 .variation-panel .toolbar { margin: 12px 0 4px; }
-.variation-panel .variation-subsection { margin-top: 20px; }
-
 .status-toast {
   position: fixed;
   right: 20px;
@@ -619,6 +715,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 @media (max-width: 640px) {
   .header-inner { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .audition-toolbar { align-items: flex-start; }
+  .transform-controls { width: 100%; margin-inline-start: 0; }
   #convert-options.has-timing-group { grid-template-columns: 1fr; }
   #convert-options.has-timing-group > .convert-field:not([data-layout-group="timing"]) {
     grid-column: auto;

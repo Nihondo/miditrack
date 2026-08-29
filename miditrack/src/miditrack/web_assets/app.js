@@ -321,6 +321,46 @@ function reasonLabel(reason) {
   }
 }
 
+function showTrackWarningTooltip(button, tooltip) {
+  if (!tooltip.matches(":popover-open")) tooltip.showPopover();
+  const buttonRect = button.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const left = Math.max(
+    12,
+    Math.min(window.innerWidth - tooltipRect.width - 12, buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2),
+  );
+  const spaceAbove = buttonRect.top - tooltipRect.height - 8;
+  const top = spaceAbove >= 12 ? spaceAbove : buttonRect.bottom + 8;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function hideTrackWarningTooltip(tooltip) {
+  if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+}
+
+function createTrackWarningControl(track, warningText) {
+  const button = document.createElement("button");
+  const tooltip = document.createElement("span");
+  tooltip.id = `track-warning-${track.index}`;
+  tooltip.className = "track-warning-tooltip";
+  tooltip.setAttribute("role", "tooltip");
+  tooltip.setAttribute("popover", "manual");
+  tooltip.textContent = warningText;
+  button.type = "button";
+  button.className = "track-warning-button";
+  button.textContent = "⚠";
+  button.setAttribute("aria-label", `${track.name}の警告`);
+  button.setAttribute("aria-describedby", tooltip.id);
+  button.addEventListener("mouseenter", () => showTrackWarningTooltip(button, tooltip));
+  button.addEventListener("mouseleave", () => {
+    if (document.activeElement !== button) hideTrackWarningTooltip(tooltip);
+  });
+  button.addEventListener("focus", () => showTrackWarningTooltip(button, tooltip));
+  button.addEventListener("blur", () => hideTrackWarningTooltip(tooltip));
+  return { button, tooltip };
+}
+
 // ネイティブ<select>のポップアップが開いている間はOSネイティブUIがキー入力を
 // 奪うため、「ドロップダウンを開いた後でCmd/Ctrlを押す」操作をJS側で検知する
 // 確実な方法が無い。またchangeイベント自体も、選んだ値が変更前と同じ場合は
@@ -385,9 +425,6 @@ async function buildTrackRow(track, rowState = state) {
   const row = document.createElement("tr");
   row.className = "track-row";
   if (!track.editable) row.classList.add("is-locked");
-  // 曲中で楽器が変わる警告用の別行（後述）。is-hardwareの背景色をrowと
-  // 揃えるため、sourceSelectのchangeハンドラからも参照できるようにしておく。
-  let warningRow = null;
 
   // Cmd/Ctrl+操作での「全トラックに同じ設定を適用」用に、この行のコントロール
   // 参照をstate.trackRowsへ集める（renderTrackList()が描画のたびにリセットする）。
@@ -402,13 +439,17 @@ async function buildTrackRow(track, rowState = state) {
   rowState.trackRows.push(trackRowRef);
 
   const nameCell = document.createElement("td");
+  nameCell.className = "track-name-cell";
   const nameLabel = document.createElement("div");
   nameLabel.className = "track-name";
   const colorBar = document.createElement("span");
   colorBar.className = "track-color-bar";
   colorBar.setAttribute("aria-hidden", "true");
   colorBar.style.setProperty("--track-color", getTrackColor(track.index, state.session?.tracks.length || 1));
-  nameLabel.append(colorBar, document.createTextNode(track.name));
+  const nameText = document.createElement("span");
+  nameText.className = "track-name-text";
+  nameText.textContent = track.name;
+  nameLabel.append(colorBar, nameText);
   nameCell.appendChild(nameLabel);
   row.appendChild(nameCell);
 
@@ -444,7 +485,6 @@ async function buildTrackRow(track, rowState = state) {
     sourceSelect.addEventListener("change", () => {
       const isHardware = sourceSelect.value === "game" && isChipHardwareFormat();
       row.classList.toggle("is-hardware", isHardware);
-      warningRow?.classList.toggle("is-hardware", isHardware);
       const programSelect = row.querySelector(".program-select");
       if (programSelect) {
         programSelect.disabled = sourceSelect.value !== "soundfont";
@@ -479,7 +519,7 @@ async function buildTrackRow(track, rowState = state) {
   row.appendChild(sourceCell);
 
   const instrumentCell = document.createElement("td");
-  let warningText = null;
+  instrumentCell.className = "track-instrument-cell";
   if (track.editable) {
     const fragment = await loadInstrumentOptions();
     const select = document.createElement("select");
@@ -542,11 +582,13 @@ async function buildTrackRow(track, rowState = state) {
     selectRow.className = "instrument-select-row";
     selectRow.appendChild(select);
     selectRow.appendChild(pinButton);
-    instrumentCell.appendChild(selectRow);
-
     if (track.programChangeCount > 1) {
-      warningText = "曲中で楽器が変わります。適用するとすべて上書きされます";
+      const warningText = "曲中で楽器が変わります。適用するとすべて上書きされます";
+      const warningControl = createTrackWarningControl(track, warningText);
+      selectRow.appendChild(warningControl.button);
+      instrumentCell.appendChild(warningControl.tooltip);
     }
+    instrumentCell.appendChild(selectRow);
   } else {
     const reason = document.createElement("span");
     reason.className = "lock-reason";
@@ -663,32 +705,7 @@ async function buildTrackRow(track, rowState = state) {
     volumeCell.textContent = "—";
   }
   row.appendChild(volumeCell);
-
-  if (!warningText) return row;
-
-  // 警告文をメイン行のtd内に置くと、tdの縦方向中央揃え（vertical-align: middle）が
-  // 「セレクト+警告文をまとめたブロック」ごと中央に置いてしまい、セレクト自体の
-  // 高さが警告文の無い他の行とズレて見える。警告文だけを次のtr（楽器列の位置に
-  // colspanで表示）へ切り出すことで、メイン行の高さは警告文の有無に関わらず揃い、
-  // セレクトの垂直位置も全行で一致する。
-  row.classList.add("has-warning");
-  const fragment = document.createDocumentFragment();
-  fragment.appendChild(row);
-
-  warningRow = document.createElement("tr");
-  warningRow.className = "track-row-warning";
-  warningRow.classList.toggle("is-hardware", row.classList.contains("is-hardware"));
-  warningRow.appendChild(document.createElement("td")).colSpan = 4;
-  const warningCell = document.createElement("td");
-  const warning = document.createElement("p");
-  warning.className = "pc-warning";
-  warning.textContent = warningText;
-  warningCell.appendChild(warning);
-  warningRow.appendChild(warningCell);
-  warningRow.appendChild(document.createElement("td"));
-  fragment.appendChild(warningRow);
-
-  return fragment;
+  return row;
 }
 
 // ソロ試聴中に音色・音量・音源のいずれかを直接操作した場合、ソロ開始時に
@@ -970,8 +987,8 @@ async function loadPianoroll() {
     if (loadId !== state.pianorollLoadId) return;
     state.pianoroll = payload;
     const status = payload.truncated
-      ? `${payload.totalNoteCount.toLocaleString()}ノート中、先頭${payload.noteCount.toLocaleString()}ノートを表示しています。`
-      : `${payload.noteCount.toLocaleString()}ノート`;
+      ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
+      : "";
     setPianorollMessage(payload.noteCount > 0 ? "" : "表示できるノートがありません。", status);
     redrawPianorollStatic();
     updatePianorollInteraction();
@@ -1203,6 +1220,8 @@ function updateSectionsReadiness() {
   $("#render-button").disabled = !ready;
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-wav-button").disabled = !(state.session && state.session.hasDownload);
+  document.querySelectorAll(".transform-controls button, .transform-controls input")
+    .forEach((control) => { control.disabled = !ready; });
   // バリエーション一括生成はensure_render()を経由しないため事前の試聴レンダリングは
   // 不要（hasRenderではなくhasDownload = MIDIアップロード済みかどうかで活性化する）。
   $("#variation-button").disabled = !(state.session && state.session.hasDownload);
@@ -1249,6 +1268,16 @@ async function refreshFromSession(payload) {
 function onTransformChange() {
   clearTimeout(state.transformPatchTimer);
   state.transformPatchTimer = setTimeout(flushTransform, 250);
+}
+
+// 数値入力のstepUp()/stepDown()を使い、HTMLのmin/max/stepを単一の定義元にする。
+// stepUp()/stepDown()自体はinputイベントを発火しないため、既存のデバウンスPATCHへ
+// 接続する目的で明示的にinputイベントを送る。
+function stepTransformInput(inputId, direction) {
+  const input = $(inputId);
+  if (direction < 0) input.stepDown();
+  else input.stepUp();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 // #transform-speed/#transform-transposeの現在値をPATCH /api/session/transformへ送る。
@@ -1629,7 +1658,7 @@ function parseNumberList(text) {
 }
 
 // 速度・ピッチのバリエーションをまとめて生成する（POST /api/variations）。
-// 上の「全体の速度・ピッチ」と同じMIDI書き換え+再レンダリングを組み合わせの
+// ツールバーの速度・ピッチと同じMIDI書き換え+再レンダリングを組み合わせの
 // 数だけ実行するサーバー側処理を待つだけなので、クライアント側で整数チェック等は
 // 行わない（サーバーのvalidate_variation_options()のエラーメッセージに委ねる）。
 async function handleVariations() {
@@ -1726,6 +1755,10 @@ async function init() {
   $("#soundfont-select").addEventListener("change", handleSoundfontChange);
   $("#transform-speed").addEventListener("input", onTransformChange);
   $("#transform-transpose").addEventListener("input", onTransformChange);
+  $("#transform-speed-down").addEventListener("click", () => stepTransformInput("#transform-speed", -1));
+  $("#transform-speed-up").addEventListener("click", () => stepTransformInput("#transform-speed", 1));
+  $("#transform-transpose-down").addEventListener("click", () => stepTransformInput("#transform-transpose", -1));
+  $("#transform-transpose-up").addEventListener("click", () => stepTransformInput("#transform-transpose", 1));
 
   await loadPreferences();
   await loadSoundfonts();

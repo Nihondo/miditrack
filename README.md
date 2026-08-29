@@ -33,8 +33,8 @@ Turn chiptune music — NES (`.nsf`), SNES (`.spc`/`.rsn`), or VGM (`.vgm`/`.vgz
 - **Reassign each track's instrument** — every track gets a General MIDI instrument dropdown, grouped into the 16 standard families (Piano, Guitar, Strings, Brass, and so on) for easy browsing. Any instrument the converter already picked is pre-selected.
 - **Adjust volume per track** — a 0–200% slider per track, independent of every other track even when several share a MIDI channel.
 - **Hear the original chip/game sound instead of a generic SoundFont** — for tracks where it's available, switch a "SoundFont" row to "原曲の音源" (Original game sound) to hear the actual NES/SNES/chip hardware output instead of a synthesized approximation.
-- **Change the whole song's speed and pitch** — a global speed multiplier and semitone transpose, applied directly to the MIDI (no audio time-stretch artifacts), reflected in every play, WAV download, and MIDI download until you change it back.
-- **Export a batch of speed/pitch variations** — generate every combination of a few speed factors and semitone shifts as a single downloadable ZIP of WAV files, handy for game-development or remix use.
+- **Change the whole song's speed and pitch** — use the compact −/＋ controls beside "WAVをダウンロード" (Download WAV) to adjust the global speed multiplier and semitone transpose. The change is applied directly to the MIDI (no audio time-stretch artifacts) and reflected in every play, WAV download, and MIDI download until you change it back.
+- **Export a batch of speed/pitch variations** — expand the normally collapsed "バリエーションをまとめて生成" (Generate variations in bulk) disclosure to generate every combination of a few speed factors and semitone shifts as a single downloadable ZIP of WAV files, handy for game-development or remix use.
 - **Play it back and download the result** — a real audio player with seek/scrub support, plus a download button for both the edited `.mid` and the rendered `.wav`. Your original upload is never modified.
 - **Pick your own SoundFont** — choose which `.sf2`/`.sf3` bank to render with, right from the browser.
 
@@ -73,12 +73,12 @@ Most people only ever need `miditrack` — the three converters and two scripts 
 ### Starting from a MIDI file
 
 1. Select or drag a `.mid`/`.midi` file onto the upload area.
-2. The track list appears. Each editable track shows an instrument dropdown (pre-selected to whatever the file already specifies) and, for tracks with notes, a 0–200% volume slider.
+2. The track list appears. Each editable track shows an instrument dropdown (pre-selected to whatever the file already specifies) and, for tracks with notes, a 0–200% volume slider. Long track names and non-editable reasons are shortened with an ellipsis to keep every row the same height; focus or point at a ⚠ button to read an instrument-change warning.
 3. Optionally pick a different **SoundFont** from the dropdown in the audition card.
-4. Optionally set a speed multiplier and/or semitone transpose under "全体の速度・ピッチ" (Overall speed/pitch).
+4. Optionally adjust the speed multiplier and/or semitone transpose with the compact −/＋ controls beside "WAVをダウンロード" (Download WAV). You can also type a value directly into either control.
 5. Click "適用して試聴" (Apply & Audition) to render the result, then use the audio player — dragging the scrubber seeks freely.
 6. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) to save your work.
-7. Optionally enter comma-separated speed factors and semitone values under "速度・ピッチのバリエーション" (Speed/pitch variations) and click "速度・ピッチ違いをZIPでダウンロード" to get every combination as one ZIP.
+7. Optionally expand "バリエーションをまとめて生成" (Generate variations in bulk), enter comma-separated speed factors and semitone values, and click "バリエーションをZIPでダウンロード" (Download variations as ZIP) to get every combination as one ZIP.
 
 ### Starting from a source file (`.nsf`/`.spc`/`.rsn`/`.vgm`, a `.zip`, or several files at once)
 
