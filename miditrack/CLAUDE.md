@@ -260,15 +260,41 @@ instead. This avoids re-running an emulation pass (a cost comparable to
 the fluidsynth render itself) N times for output that would be byte-
 identical each time.
 
-**Why the combination cap dropped from 40 to `MAX_VARIATION_COUNT = 12`**:
+**Why the combination cap dropped from 40 to `MAX_VARIATION_COUNT = 15`**:
 the old cap modeled "how many `rubberband` subprocesses is reasonable to
-launch from one WAV," where the default (2×5=10) left headroom to spare.
-One combination is now a full `apply_assignments()` + fluidsynth render (and
-possibly an `ffmpeg` mix and a `rubberband` stem sync), each costing
-roughly what a single "Apply & Audition" click costs — and the whole batch
-holds `render_lock` for its entire duration, blocking any concurrent
-render. 12 was chosen to sit just above the shipped default of 10, not as
-a measurement of any hard resource limit.
+launch from one WAV," where the shipped default (originally 2 speeds × 5
+transposes = 10) left headroom to spare. One combination is now a full
+`apply_assignments()` + fluidsynth render (and possibly an `ffmpeg` mix and
+a `rubberband` stem sync), each costing roughly what a single "Apply &
+Audition" click costs — and the whole batch holds `render_lock` for its
+entire duration, blocking any concurrent render. The cap was chosen to sit
+just above the shipped default, not as a measurement of any hard resource
+limit; when `DEFAULT_VARIATION_SPEEDS` grew from `[1.2, 0.8]` to
+`[1.2, 1.0, 0.8]` (adding the unmodified-speed case so a user doesn't have
+to also request a plain `1.0` pass separately) the default combination
+count became 3×5=15, so the cap moved from 12 to 15 in lockstep — it must
+never sit below whatever the shipped defaults themselves produce.
+
+**Why the ZIP's MIDI files are optional (`includeMidi`, default `true`)**:
+every combination's `.mid` is still always generated — `_apply_to()`
+writes it because `_render_applied_midi()` needs it as the render source,
+not because the ZIP wants it — but bundling it into the ZIP is now
+conditional. Some users want the `.mid` files (to drop the
+transposed/retimed arrangement straight into a DAW, the same reasoning
+"Why speed/pitch is a MIDI-layer edit" gives for the single-value control),
+while others just want to audition or distribute a batch of WAVs and would
+rather the ZIP not double in file count for files they'll never open.
+`variations_endpoint()` validates `includeMidi` as a plain `bool` (rejecting
+anything else, same posture as every other boolean-shaped request field in
+this codebase) and simply skips the `archive.write(mid_out, ...)` call per
+combination when it's `false` — the `.mid` file itself is still written to
+`variations_work/` and still deleted by the `finally` block regardless, so
+this flag only ever affects what ends up inside the ZIP, never how many
+files `_render_applied_midi()` produces. Each `items[]` entry's `"mid"`
+field is `null` when `includeMidi` is `false`, rather than still naming a
+file that isn't actually in the ZIP — the API response should never claim
+something exists that a client fetching `/api/download/variations` won't
+actually find there.
 
 **Why `variations_zip_path` shares `audio_path`'s invalidation
 lifecycle, but for a different reason than before**: the field (renamed
@@ -633,6 +659,76 @@ still receive a track-local velocity multiplier. Tracks with no notes expose no
 slider. Like instrument changes, PATCH validation is repeated server-side,
 invalidates the current render, and every apply starts from `original_path`, so
 moving 50% -> 200% never compounds the earlier 50% pass.
+
+**Added: a mute button, and per-track volume for VGM/NSF `"game"` tracks
+too.** Each row's volume control gained a ☆-style mute button (`app.js`'s
+`.mute-button`, remembering the pre-mute value so a second click restores
+it) — purely a frontend convenience over the existing slider, no server
+change needed. Separately, the volume slider is no longer disabled for
+VGM/NSF `"game"` tracks — see the section below for why that was possible
+and what it cost.
+
+## Why per-track volume on VGM/NSF `"game"` tracks re-renders only the channels whose volume actually changed
+
+Originally, VGM/NSF `"game"` tracks (`CHIP_HARDWARE_SOURCE_FORMATS`) disabled
+the volume slider outright — see "Frontend vocabulary" in the NSF
+per-track hardware selection section below for why: the velocity-scaling
+path above only ever touches the MIDI, but a `"game"`-selected track is
+removed from the MIDI entirely and its audio comes from `libvgm`/
+`nsf2midi --chip-render` re-emulating the original source file — a
+process that has no concept of "velocity" to scale. `WebSession.volumes`
+was still saved and written into the MIDI's Note On velocities for such
+tracks, but since that MIDI is never rendered, the value was silently
+inert (confirmed by tracing `_plan_render_jobs()`, which drops
+`"game"`-selected indices from the dry MIDI before it ever reaches
+`render_wav()`).
+
+Per-track volume for these tracks was added by mixing in a linear gain at
+the WAV level instead — the same place `mix.mix_wav()` already lets any
+number of inputs be summed with independent gains. `_render_chip_hardware()`
+(`web.py`) splits the selected `"game"` indices into two groups: those still
+at the default 100% volume are rendered together in **one** `libvgm`/
+`nsf2midi --chip-render` call (unchanged behavior, `mix.STEM_GAIN` as
+before), and each channel whose volume was actually changed is rendered
+**individually** (`_render_chip_targets()` called once per channel) with a
+gain of `mix.STEM_GAIN * volume_percent / 100`. `_render_chip_hardware()`
+now returns `list[tuple[Path, float]]` instead of a single `Path | None`,
+and `_render_applied_midi()`'s `chip_render_stems` parameter (renamed from
+`chip_render_stem`) threads that list straight into `mix_wav()`'s inputs;
+`_synced_stem()` (for non-default speed/transpose) runs once per entry in
+that list rather than once total.
+
+**Why split by "changed from default" instead of always rendering every
+channel individually**: `libvgm`'s native helper and `nsf2midi
+--chip-render` both re-run the *entire* source file's emulation from the
+start for every invocation (see "Added: real chip-noise mixing" and "Added:
+NSF per-track hardware selection" below) — there's no way to render "just
+one channel's contribution" without paying for a full pass. Individually
+rendering every selected channel, even ones nobody touched, would multiply
+render time by the channel count for no audible benefit on tracks left at
+their default volume. Grouping the untouched channels into the single call
+they always used to get keeps the common case (nobody touches the volume
+slider on a `"game"` track) exactly as fast as before this feature; the
+per-channel cost is paid only for channels a user actually adjusted. This
+was a deliberate scope decision, confirmed with the user, over the
+alternative of always rendering every channel individually for
+maximally-accurate mixing.
+
+**Why the default/custom split happens inside `_render_chip_hardware()`
+rather than being decided by the caller**: both call sites
+(`_render_applied_midi()`'s own auto-generation path, and
+`POST /api/variations`'s shared-stem-across-combinations path) need
+identical grouping logic, and `WebSession.volumes` is the single source of
+truth for "which volume is default" regardless of which caller is asking.
+
+**Batch variations (`POST /api/variations`) interaction**: `_render_chip_hardware()`
+still gets called exactly once per batch, before the `itertools.product()`
+loop, and its `list[tuple[Path, float]]` result is passed to every
+combination's `_render_applied_midi()` call the same way the old single
+`Path` was — the per-channel-if-changed rendering happens once, not once
+per combination, preserving the existing "the whole batch shares one
+chip-hardware render" optimization this project already relies on for
+render time.
 
 ## Why in-place `msg.program` mutation, or a `time=0` insertion — never delete/rebuild
 
@@ -1234,14 +1330,17 @@ their hardware audio through genuinely different mechanisms:
   `"libvgm（実機音）"` for VGM) to two, shared by all three formats:
   `"原曲の音源"` (append `（推奨）` when `track.sourceSuggested`) and
   `"SoundFont"`. The row highlight class renamed from `is-libvgm` to the
-  format-agnostic `is-hardware`. The volume-slider disable rule — SPC's
-  `"game"` keeps the slider enabled (it's still a FluidSynth render, just
-  through a different bank), VGM/NSF's `"game"` disables it (the audio
-  never touches FluidSynth's velocity handling at all) — is now driven by
-  a small `CHIP_HARDWARE_SOURCE_FORMATS` constant mirrored in `app.js`
+  format-agnostic `is-hardware`. The volume-slider disable rule at the time —
+  SPC's `"game"` kept the slider enabled (it's still a FluidSynth render,
+  just through a different bank), VGM/NSF's `"game"` disabled it (the audio
+  never touched FluidSynth's velocity handling at all) — was driven by a
+  small `CHIP_HARDWARE_SOURCE_FORMATS` constant mirrored in `app.js`
   (`isChipHardwareFormat()`) rather than a hardcoded `=== "libvgm"` check,
-  so it stays correct for both VGM and NSF without duplicating the
-  distinction in two places.
+  so it stayed correct for both VGM and NSF without duplicating the
+  distinction in two places. **This disable rule no longer exists** — see
+  "Why per-track volume on VGM/NSF `"game"` tracks re-renders only the
+  channels whose volume actually changed" above; `isChipHardwareFormat()`
+  itself is unchanged and still used for the `is-hardware` row highlight.
 - Verified end-to-end against a real synthetic multi-track NSF through a
   live, fully non-mocked `create_app()` (real `nsf2midi`, real
   `fluidsynth`, a real `.sf2`): converting with `chipNoise: true` correctly
@@ -1252,9 +1351,11 @@ their hardware audio through genuinely different mechanisms:
   direct `nsf2midi --chip-render SQ1,SQ2` CLI run of the same channels;
   switching one channel back to `"soundfont"` via `PATCH
   /api/session/tracks` correctly re-enabled that track's volume slider
-  while the remaining hardware-selected tracks' sliders stayed disabled,
-  and re-rendering produced a new, correctly larger WAV (FluidSynth now
-  also contributing that one track's audio) with no leftover temp files.
+  while the remaining hardware-selected tracks' sliders stayed disabled
+  (true at the time of this verification, before per-track volume on
+  `"game"` tracks existed), and re-rendering produced a new, correctly
+  larger WAV (FluidSynth now also contributing that one track's audio)
+  with no leftover temp files.
 
 `tests/test_nsf_chip.py` mirrors `tests/test_libvgm.py` exactly (sidecar
 load/validation, out-of-range track index, missing-sidecar back-compat,
@@ -1521,20 +1622,23 @@ correctly overrides song labels only for the file it actually names, that
 `POST /api/source/select-file` correctly switches which ZIP member is
 active (re-running song listing) without requiring a fresh upload, and
 that `POST /api/variations` produces the expected number of combinations
-from the default lists, honors custom `speeds`/`transposes`, rejects an
-over-large combination count and a non-integer transpose with `400`
-without ever calling the injected `renderer`, applies the session's
-current track assignments to every combination, never touches the
-injected `pitch_shifter` when no chip stem is present (the headline
-regression guard that the batch path is fully MIDI-layer now, not a
-`rubberband` post-process), leaves the session's own `speed`/`transpose`
-and the existing audition render (`/api/audio`) untouched by a batch run,
-cleans up `variations_work/` and every `render-*.partN.wav`/split-MIDI
-temp file afterward, and that `GET /api/download/variations` returns a ZIP
-containing a `.wav` and a `.mid` per combination (with filenames encoding
-speed/transpose and the `.mid` verified via `mido` to carry the correctly
-scaled tempo and shifted note) and is invalidated by a subsequent track
-change. A dedicated `TestWebAppChipStem` class (its own `create_app()`
+from the default lists (15 = 3 speeds × 5 transposes), honors custom
+`speeds`/`transposes`, rejects an over-large combination count, a
+non-integer transpose, and a non-`bool` `includeMidi` with `400` without
+ever calling the injected `renderer`, applies the session's current track
+assignments to every combination, never touches the injected
+`pitch_shifter` when no chip stem is present (the headline regression
+guard that the batch path is fully MIDI-layer now, not a `rubberband`
+post-process), leaves the session's own `speed`/`transpose` and the
+existing audition render (`/api/audio`) untouched by a batch run, cleans up
+`variations_work/` and every `render-*.partN.wav`/split-MIDI temp file
+afterward, and that `GET /api/download/variations` returns a ZIP
+containing a `.wav` and a `.mid` per combination by default (with filenames
+encoding speed/transpose and the `.mid` verified via `mido` to carry the
+correctly scaled tempo and shifted note) — or only `.wav` files, with every
+`items[]` entry's `"mid"` field `null`, when `includeMidi: false` is
+passed — and is invalidated by a subsequent track change. A dedicated
+`TestWebAppChipStem` class (its own `create_app()`
 with an injected `mixer=<fake>`, separate from the rest of `test_web.py`'s
 `TestWebApp`, which never injects one) covers the `chipNoise` mixing path:
 converting with `chipNoise: true` sets `hasChipStem` in the session
@@ -1645,7 +1749,17 @@ fully non-mocked `create_app()` with the real `fluidsynth`/`ffmpeg`/
 `pitch_shift.sh` all wired in — see the dedicated verification paragraph
 above ("The MIDI-layer speed/pitch feature ... was verified end-to-end").
 
-All 378 tests pass as of this writing (`test_render.py` additionally covers
+All 387 tests pass as of this writing (`TestWebAppLibvgmTrackSource`/
+`TestWebAppNsfChipTrackSource` additionally cover the default/custom volume
+split in `_render_chip_hardware()`: all-default-volume selections still
+render once, a single changed channel triggers exactly one extra
+individual render with the correct `mix.STEM_GAIN * volume_percent / 100`
+gain alongside the unchanged default group's `mix.STEM_GAIN`, changing
+every selected channel's volume drops the default group entirely (pure
+per-channel rendering, no group-of-one call), and a batch
+`POST /api/variations` run reuses the same individually-rendered stems
+across every combination rather than re-rendering per combination.
+`test_render.py` additionally covers
 `list_soundfonts()`'s directory-order/file-sort behavior and
 `is_soundfont_file()`'s validation; `test_web.py` covers
 `GET /api/soundfonts`, `POST /api/soundfont`'s accept/reject paths, that
@@ -1702,10 +1816,21 @@ non-mocked `create_app()` (real `fluidsynth`; no `pitch_shift.sh` call at
 all, since this fixture carries no chip stem): a small real `.mid` fixture
 was uploaded, `POST /api/variations` with the default lists produced a real
 `variations.zip` containing 20 files (10 `.wav` + 10 `.mid`, confirmed via
-`unzip -l`), one extracted `.mid` was independently opened with `mido` and
-confirmed to carry the expected scaled tempo and shifted note for its
-filename's speed/transpose, and `GET /api/session` confirmed the session's
-own `speed`/`transpose` were unchanged by the batch run.
+`unzip -l`, back when the shipped default was still 2 speeds × 5
+transposes = 10), one extracted `.mid` was independently opened with
+`mido` and confirmed to carry the expected scaled tempo and shifted note
+for its filename's speed/transpose, and `GET /api/session` confirmed the
+session's own `speed`/`transpose` were unchanged by the batch run.
+
+The `DEFAULT_VARIATION_SPEEDS` change (to `[1.2, 1.0, 0.8]`) and
+`includeMidi` were separately re-verified end-to-end against a live,
+non-mocked `miditrack` process: `POST /api/variations` with an empty body
+returned exactly 15 items (confirming the new 3×5 default); a follow-up
+call with `{"speeds": [1.2, 1.0], "transposes": [0], "includeMidi":
+false}` returned `items[].mid === null` for both entries, and the
+downloaded ZIP (`unzip -l`) contained exactly 2 files, both `.wav`, no
+`.mid` — confirming `includeMidi: false` actually changes what lands in
+the ZIP, not just the JSON response.
 
 The `gameSoundfont` hybrid-rendering feature was verified end-to-end
 against a real, unmodified game rip beyond the mocked unit tests, using a

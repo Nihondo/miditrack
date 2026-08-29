@@ -125,17 +125,21 @@
         <div class="convert-options">
           <div class="convert-field">
             <label for="variation-speeds">速度倍率（カンマ区切り）</label>
-            <input type="text" id="variation-speeds" value="1.2, 0.8">
+            <input type="text" id="variation-speeds" value="1.2, 1.0, 0.8">
           </div>
           <div class="convert-field">
             <label for="variation-transposes">ピッチ（半音、カンマ区切り）</label>
             <input type="text" id="variation-transposes" value="-2, -1, 0, 1, 2">
           </div>
         </div>
-        <div class="toolbar">
-          <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード（WAV+MIDI）</button>
+        <div class="convert-field is-checkbox">
+          <input type="checkbox" id="variation-include-midi" checked>
+          <label for="variation-include-midi">ZIPにMIDIも含める</label>
         </div>
-        <p class="field-help">上と同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAVとMIDIをZIPにまとめます。上の「全体の速度・ピッチ」の設定は変更されません。</p>
+        <div class="toolbar">
+          <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード</button>
+        </div>
+        <p class="field-help">上と同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAV（とチェックすればMIDIも）をZIPにまとめます。上の「全体の速度・ピッチ」の設定は変更されません。</p>
       </div>
     </article>
   </main>

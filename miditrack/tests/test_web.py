@@ -16,7 +16,7 @@ from unittest import mock
 
 import mido
 
-from miditrack import libvgm, nsf_chip, preferences
+from miditrack import libvgm, mix, nsf_chip, preferences
 from miditrack.convert import SourceFormat
 from miditrack.errors import ConvertError
 from miditrack.web import WebSession, create_app, resolve_startup_soundfont_override
@@ -463,21 +463,54 @@ class TestWebApp(unittest.TestCase):
 
     # --- 速度・ピッチのバリエーション（MIDIレイヤー一括生成） ---
 
-    def test_variations_default_lists_produce_ten_combinations(self) -> None:
+    def test_variations_default_lists_produce_fifteen_combinations(self) -> None:
         self._upload()
         response = self.client.post("/api/variations", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        # 既定値（速度2種 x ピッチ5種）= 10件。単体変換と同じMIDI適用+レンダリングを
-        # 組み合わせの数だけ呼ぶので、render_callsも10回になる。
-        self.assertEqual(len(payload["items"]), 10)
+        # 既定値（速度3種 x ピッチ5種）= 15件。単体変換と同じMIDI適用+レンダリングを
+        # 組み合わせの数だけ呼ぶので、render_callsも15回になる。
+        self.assertEqual(len(payload["items"]), 15)
         self.assertEqual(payload["downloadUrl"], "/api/download/variations")
-        self.assertEqual(len(self.render_calls), 10)
+        self.assertEqual(len(self.render_calls), 15)
         # バッチ経路はMIDIレイヤーで完結し、rubberband(pitch_shift.sh)は
         # 一切呼ばれない（このfixtureにはchip_stem_pathが無いため同期も不要）。
         # これが本改修の看板となる回帰ガード: 旧実装のようにWAV後処理へは
         # 一切フォールバックしない。
         self.assertEqual(self.pitch_shift_calls, [])
+
+    def test_variations_default_includes_midi_in_zip(self) -> None:
+        self._upload()
+        self.client.post("/api/variations", headers=AUTH_HEADERS)
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        names = archive.namelist()
+        self.assertEqual(len(names), 30)  # 15組み合わせ x (wav+mid)
+        self.assertTrue(any(n.endswith(".mid") for n in names))
+
+    def test_variations_exclude_midi_when_unchecked(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.2, 0.8], "transposes": [0], "includeMidi": False}),
+        )
+        payload = response.get_json()
+        self.assertTrue(all(item["mid"] is None for item in payload["items"]))
+        download = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(download.data))
+        names = archive.namelist()
+        self.assertEqual(len(names), 2)  # 2組み合わせ x wavのみ
+        self.assertTrue(all(n.endswith(".wav") for n in names))
+
+    def test_variations_rejects_non_bool_include_midi(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.0], "transposes": [0], "includeMidi": "yes"}),
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_variations_uses_custom_lists(self) -> None:
         self._upload()
@@ -1860,6 +1893,14 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             self.mix_calls.append(inputs)
             output.write_bytes(b"M" * 200)
 
+        # バリエーション一括生成で既定値以外のspeed/transposeを含む組み合わせを
+        # 使うテストが、実物のpitch_shift.sh(rubberband)を起動してこのダミー
+        # WAVを読ませてしまわないよう注入する。
+        def fake_pitch_shifter(wav_path, work_dir, _speeds, _pitches):
+            out = work_dir / "synced.wav"
+            out.write_bytes(wav_path.read_bytes())
+            return [out]
+
         self.app = create_app(
             token=TOKEN,
             session=WebSession(),
@@ -1867,6 +1908,7 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             renderer=fake_renderer,
             mixer=fake_mixer,
             libvgm_renderer=fake_libvgm,
+            pitch_shifter=fake_pitch_shifter,
         )
         self.client = self.app.test_client()
         self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
@@ -1910,6 +1952,90 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["tracks"][0]["source"], "game")
+
+    def test_default_volume_game_tracks_render_libvgm_once(self) -> None:
+        # 両トラックとも音量が既定(100%)のままなら、従来どおりまとめて1回の
+        # レンダリング呼び出しになる（音量調整によるレンダリング回数増加が
+        # 起きない、という回帰ガード）。
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"sources": {"0": "game", "1": "game"}}),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 1)
+        self.assertEqual({t.group_id for t in self.libvgm_calls[0][3]}, {"tone-0", "noise-3"})
+
+    def test_custom_volume_game_track_is_rendered_individually(self) -> None:
+        # 音量を変更したチャンネルだけ個別にレンダリングし、既定音量のままの
+        # チャンネルは引き続きまとめて1回——チャンネル数分の再エミュレーション
+        # コストを、実際に音量調整したチャンネルだけに限定する設計。
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "sources": {"0": "game", "1": "game"},
+                "volumes": {"1": 150},
+            }),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 2)
+        default_call = next(c for c in self.libvgm_calls if len(c[3]) == 1 and c[3][0].group_id == "tone-0")
+        custom_call = next(c for c in self.libvgm_calls if len(c[3]) == 1 and c[3][0].group_id == "noise-3")
+        self.assertIsNotNone(default_call)
+        self.assertIsNotNone(custom_call)
+        # mix_wav()の入力に、音量150%を反映したゲイン(STEM_GAIN*1.5)が
+        # 含まれていること。
+        gains = [round(gain, 6) for _path, gain in self.mix_calls[0]]
+        self.assertIn(round(mix.STEM_GAIN * 1.5, 6), gains)
+        self.assertIn(round(mix.STEM_GAIN, 6), gains)
+
+    def test_all_custom_volume_game_tracks_render_individually_only(self) -> None:
+        # 全チャンネルの音量を変更した場合、既定音量グループは空になり、
+        # チャンネルごとの個別レンダリングだけになる。
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "sources": {"0": "game", "1": "game"},
+                "volumes": {"0": 50, "1": 150},
+            }),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 2)
+        self.assertTrue(all(len(call[3]) == 1 for call in self.libvgm_calls))
+        gains = sorted(round(gain, 6) for _path, gain in self.mix_calls[0])
+        self.assertEqual(gains, sorted([round(mix.STEM_GAIN * 0.5, 6), round(mix.STEM_GAIN * 1.5, 6)]))
+
+    def test_variations_reuse_individually_rendered_chip_stems_across_combinations(self) -> None:
+        # バリエーション一括生成でも、音量調整で個別レンダリングされた
+        # チャンネルは全組み合わせで使い回される（組み合わせの数だけ
+        # libvgmが呼ばれることはない）。
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "sources": {"0": "game", "1": "game"},
+                "volumes": {"1": 150},
+            }),
+        )
+        response = self.client.post(
+            "/api/variations",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speeds": [1.0, 1.2], "transposes": [0]}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.get_json()["items"]), 2)
+        # デフォルトグループ1回＋カスタムチャンネル1回＝2回のみ。2組み合わせ分
+        # 増えたりはしない。
+        self.assertEqual(len(self.libvgm_calls), 2)
 
 
 class TestWebAppNsfChipTrackSource(unittest.TestCase):
@@ -2044,6 +2170,39 @@ class TestWebAppNsfChipTrackSource(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["tracks"][0]["source"], "game")
+
+    def test_default_volume_game_tracks_render_nsf_chip_once(self) -> None:
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"sources": {"0": "game", "1": "game"}}),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.nsf_chip_calls), 1)
+        self.assertEqual({t.group_id for t in self.nsf_chip_calls[0][3]}, {"SQ1", "NOISE"})
+
+    def test_custom_volume_game_track_is_rendered_individually(self) -> None:
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "sources": {"0": "game", "1": "game"},
+                "volumes": {"1": 150},
+            }),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.nsf_chip_calls), 2)
+        default_call = next(c for c in self.nsf_chip_calls if len(c[3]) == 1 and c[3][0].group_id == "SQ1")
+        custom_call = next(c for c in self.nsf_chip_calls if len(c[3]) == 1 and c[3][0].group_id == "NOISE")
+        self.assertIsNotNone(default_call)
+        self.assertIsNotNone(custom_call)
+        gains = [round(gain, 6) for _path, gain in self.mix_calls[0]]
+        self.assertIn(round(mix.STEM_GAIN * 1.5, 6), gains)
+        self.assertIn(round(mix.STEM_GAIN, 6), gains)
 
 
 class TestWebAppPreferences(unittest.TestCase):

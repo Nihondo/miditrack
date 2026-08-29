@@ -328,6 +328,7 @@ async function buildTrackRow(track) {
   row.appendChild(channelCell);
 
   const noteCell = document.createElement("td");
+  noteCell.className = "track-note-count";
   noteCell.textContent = String(track.noteCount);
   row.appendChild(noteCell);
 
@@ -364,8 +365,6 @@ async function buildTrackRow(track) {
           onProgramChange(track.index, programSelect.value);
         }
       }
-      const volumeSlider = row.querySelector("input[type=range]");
-      if (volumeSlider) volumeSlider.disabled = isHardware;
       onSourceChange(track.index, sourceSelect.value);
     });
     sourceCell.appendChild(sourceSelect);
@@ -460,7 +459,9 @@ async function buildTrackRow(track) {
     slider.max = "200";
     slider.step = "5";
     slider.value = String(track.volumePercent ?? 100);
-    slider.disabled = track.source === "game" && isChipHardwareFormat();
+    // 「原曲の音源」（実機/エミュレーションのチップレンダリング）でも音量は
+    // 有効: 音量を変更したチャンネルだけサーバー側で個別に再レンダリングして
+    // ゲインを適用する（web.pyの_render_chip_hardware()参照）。
     slider.dataset.trackIndex = String(track.index);
     slider.setAttribute("aria-valuetext", `${slider.value}%`);
 
@@ -470,13 +471,37 @@ async function buildTrackRow(track) {
     value.value = `${slider.value}%`;
     value.textContent = value.value;
 
+    // ミュート解除時に戻す音量。0%でない値でミュートボタンを押したときだけ更新する
+    // （ミュート中にスライダーを直接動かした場合は、そちらを新しい基準にする）。
+    let volumeBeforeMute = Number(slider.value) || 100;
+
+    const muteButton = document.createElement("button");
+    muteButton.type = "button";
+    muteButton.className = "mute-button";
+    const updateMuteButton = () => {
+      const isMuted = Number(slider.value) === 0;
+      muteButton.textContent = isMuted ? "🔇" : "🔊";
+      muteButton.title = isMuted ? "ミュートを解除" : "ミュート";
+      muteButton.setAttribute("aria-label", `${track.name}を${isMuted ? "ミュート解除" : "ミュート"}`);
+      muteButton.classList.toggle("is-muted", isMuted);
+    };
+    updateMuteButton();
+
     slider.addEventListener("input", () => {
       value.value = `${slider.value}%`;
       value.textContent = value.value;
       slider.setAttribute("aria-valuetext", value.value);
+      if (Number(slider.value) > 0) volumeBeforeMute = Number(slider.value);
+      updateMuteButton();
       onVolumeChange(track.index, Number(slider.value));
     });
+    muteButton.addEventListener("click", () => {
+      slider.value = Number(slider.value) === 0 ? String(volumeBeforeMute) : "0";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
     control.appendChild(label);
+    control.appendChild(muteButton);
     control.appendChild(slider);
     control.appendChild(value);
     volumeCell.appendChild(control);
@@ -1005,7 +1030,8 @@ async function handleVariations() {
     showStatus("速度・ピッチには数値をカンマ区切りで入力してください", "error");
     return;
   }
-  const comboCount = (speeds.length || 2) * (transposes.length || 5);
+  const includeMidi = $("#variation-include-midi").checked;
+  const comboCount = (speeds.length || 3) * (transposes.length || 5);
   setBusy(true, `バリエーションを生成中…（${comboCount}回レンダリングします）`);
   try {
     const response = await apiFetch("/api/variations", {
@@ -1014,10 +1040,12 @@ async function handleVariations() {
       body: JSON.stringify({
         speeds: speeds.length > 0 ? speeds : undefined,
         transposes: transposes.length > 0 ? transposes : undefined,
+        includeMidi,
       }),
     });
     const payload = await response.json();
-    showStatus(`${payload.items.length}件のバリエーション（WAV+MIDI）を生成しました。ダウンロードします…`);
+    const contentsLabel = includeMidi ? "（WAV+MIDI）" : "（WAV）";
+    showStatus(`${payload.items.length}件のバリエーション${contentsLabel}を生成しました。ダウンロードします…`);
     const filename = `${(state.session && state.session.filename) || "miditrack"}_variations.zip`;
     await downloadFrom("/api/download/variations", filename);
   } catch (error) {

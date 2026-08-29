@@ -840,29 +840,16 @@ def create_app(
         outputs = run_pitch_shift(stem_copy, work_dir, [speed], [float(transpose)])
         return outputs[0]
 
-    def _render_chip_hardware(output_path: Path) -> Path | None:
-        """VGM/NSFの実機チャンネルレンダリング選択に従い、選択チャンネルの
-        合成音声をoutput_pathへ書く。選択が無ければ何もせずNoneを返す。
-        speed/transposeに依存しないため、バリエーション一括生成
-        （POST /api/variations）は全組み合わせでこの結果を1回だけ生成して使い回す。
+    def _render_chip_targets(indices: list[int], output_path: Path) -> None:
+        """指定したチャンネル(トラック)集合を1本のWAVへ実機/エミュレーションで
+        レンダリングする。呼び出し元が選択チャンネルの存在・chip_metadataの
+        存在を確認済みであることが前提。
         """
-        selected_chip_indices = (
-            [
-                index for index, source in web_session.track_sources.items()
-                if source == "game"
-            ]
-            if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
-            else []
-        )
-        if not selected_chip_indices or not web_session.chip_metadata:
-            return None
-        if web_session.source_path is None:
-            raise RenderError("原曲の音源の元ファイルがありません")
+        assert web_session.source_path is not None
         if web_session.source_format == "vgm":
             assert isinstance(web_session.chip_metadata, libvgm.LibvgmMetadata)
             libvgm_targets = [
-                web_session.chip_metadata.targets[index]
-                for index in sorted(selected_chip_indices)
+                web_session.chip_metadata.targets[index] for index in indices
             ]
             render_libvgm(
                 web_session.source_path,
@@ -875,8 +862,7 @@ def create_app(
             if web_session.source_song_index is None:
                 raise RenderError("原曲の音源に対応する曲番号がありません")
             nsf_targets = [
-                web_session.chip_metadata.targets[index]
-                for index in sorted(selected_chip_indices)
+                web_session.chip_metadata.targets[index] for index in indices
             ]
             render_nsf_chip(
                 web_session.source_path,
@@ -885,7 +871,50 @@ def create_app(
                 nsf_targets,
                 web_session.source_song_index,
             )
-        return output_path
+
+    def _render_chip_hardware(work_dir: Path, prefix: str) -> list[tuple[Path, float]]:
+        """VGM/NSFの実機チャンネルレンダリング選択に従い、選択チャンネルの
+        合成音声を生成する。音量が既定(100%)のチャンネルはまとめて1回、
+        音量を変更したチャンネルだけチャンネル単位で個別にレンダリングする —
+        個別レンダリングはVGM/NSFの全曲再エミュレーションをチャンネルの数だけ
+        繰り返すコストがあるため、実際に音量調整されたチャンネルだけに限定する
+        （miditrack/CLAUDE.md「Why per-track volume on 'game' tracks only
+        re-renders the channels whose volume actually changed」参照）。
+        speed/transposeに依存しないため、バリエーション一括生成
+        （POST /api/variations）は全組み合わせでこの結果を1回だけ生成して使い回す。
+        戻り値は(WAVパス, ゲイン)の列。選択が無ければ空リスト。
+        """
+        selected_chip_indices = (
+            [
+                index for index, source in web_session.track_sources.items()
+                if source == "game"
+            ]
+            if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
+            else []
+        )
+        if not selected_chip_indices or not web_session.chip_metadata:
+            return []
+        if web_session.source_path is None:
+            raise RenderError("原曲の音源の元ファイルがありません")
+
+        default_indices = sorted(
+            index for index in selected_chip_indices
+            if web_session.volumes.get(index, midi.DEFAULT_TRACK_VOLUME_PERCENT)
+            == midi.DEFAULT_TRACK_VOLUME_PERCENT
+        )
+        custom_indices = sorted(set(selected_chip_indices) - set(default_indices))
+
+        results: list[tuple[Path, float]] = []
+        if default_indices:
+            stem_path = work_dir / f"{prefix}.wav"
+            _render_chip_targets(default_indices, stem_path)
+            results.append((stem_path, mix.STEM_GAIN))
+        for index in custom_indices:
+            stem_path = work_dir / f"{prefix}.track{index}.wav"
+            _render_chip_targets([index], stem_path)
+            volume_percent = web_session.volumes.get(index, midi.DEFAULT_TRACK_VOLUME_PERCENT)
+            results.append((stem_path, mix.STEM_GAIN * volume_percent / 100))
+        return results
 
     def _render_applied_midi(
         applied_path: Path,
@@ -894,7 +923,7 @@ def create_app(
         render_id: int,
         speed: float,
         transpose: int,
-        chip_render_stem: Path | None = None,
+        chip_render_stems: list[tuple[Path, float]] | None = None,
     ) -> None:
         """適用済みMIDI(applied_path)をwav_pathへレンダリングする。
 
@@ -903,7 +932,7 @@ def create_app(
         render_lockを1回だけ取ってから呼ぶ設計になっている）。
 
         _plan_render_jobs() が決めたジョブが1つだけ、かつ実機ノイズ/DPCM/DAC
-        ステム（chip_stem_path・dac_stem_path・chip_render_stem）も無く、
+        ステム（chip_stem_path・dac_stem_path・chip_render_stems）も無く、
         speed/transposeも既定値なら、従来どおりfluidsynthの出力を直接
         wav_pathへ書く。ジョブが2つ（ゲーム由来SoundFont側と手動指定した
         GM SoundFont側への分割）になった場合やステムがある場合は、各ジョブを
@@ -912,16 +941,16 @@ def create_app(
         pitch_shift.shで同じ量だけ変換して同期を保つ（既定値のままなら通常
         ケースにrubberbandの依存を増やさないため一切呼ばない）。
 
-        chip_render_stemを渡さなければ、この関数自身が_render_chip_hardware()を
+        chip_render_stemsを渡さなければ、この関数自身が_render_chip_hardware()を
         呼んで一時ファイルとして扱う（終了時に削除）。渡された場合は呼び出し元が
         所有するものとして削除しない — バリエーション一括生成
         （POST /api/variations）が、speed/transposeに依存しないこの結果を
         全組み合わせで1回だけ生成して使い回すため。
         """
-        owns_chip_render_stem = chip_render_stem is None
-        if owns_chip_render_stem:
-            chip_render_stem = _render_chip_hardware(
-                web_session.root / f"render-{render_id:04d}.chiprender.wav"
+        owns_chip_render_stems = chip_render_stems is None
+        if owns_chip_render_stems:
+            chip_render_stems = _render_chip_hardware(
+                web_session.root, f"render-{render_id:04d}.chiprender"
             )
 
         effective_soundfont = web_session.soundfont_override or soundfont
@@ -933,7 +962,7 @@ def create_app(
         dac_stem = web_session.dac_stem_path
         if dac_stem is not None and not dac_stem.exists():
             dac_stem = None
-        has_stem = stem is not None or dac_stem is not None or chip_render_stem is not None
+        has_stem = stem is not None or dac_stem is not None or len(chip_render_stems) > 0
         has_transform = _has_transform(speed, transpose)
 
         # applied_pathは分割MIDIではなく渡された適用済みMIDIなので、レンダリング後に
@@ -941,8 +970,8 @@ def create_app(
         # 分割で新規に書いたgame.mid/gm.midだけをここに集め、パートWAVは下の
         # ループで追加する。
         temp_paths = [job_path for job_path, _sf in jobs if job_path != applied_path]
-        if owns_chip_render_stem and chip_render_stem is not None:
-            temp_paths.append(chip_render_stem)
+        if owns_chip_render_stems:
+            temp_paths.extend(path for path, _gain in chip_render_stems)
         stem_sync_dir: Path | None = None
         try:
             if has_stem and has_transform:
@@ -952,10 +981,13 @@ def create_app(
                     stem = _synced_stem(stem, "noise", stem_sync_dir, speed, transpose)
                 if dac_stem is not None:
                     dac_stem = _synced_stem(dac_stem, "dac", stem_sync_dir, speed, transpose)
-                if chip_render_stem is not None:
-                    chip_render_stem = _synced_stem(
-                        chip_render_stem, "chiprender", stem_sync_dir, speed, transpose
+                chip_render_stems = [
+                    (
+                        _synced_stem(path, f"chiprender{index}", stem_sync_dir, speed, transpose),
+                        gain,
                     )
+                    for index, (path, gain) in enumerate(chip_render_stems)
+                ]
 
             if len(jobs) == 1 and not has_stem:
                 render_wav(jobs[0][0], wav_path, jobs[0][1])
@@ -976,8 +1008,7 @@ def create_app(
                     inputs.append((stem, mix.STEM_GAIN))
                 if dac_stem is not None:
                     inputs.append((dac_stem, mix.STEM_GAIN))
-                if chip_render_stem is not None:
-                    inputs.append((chip_render_stem, mix.STEM_GAIN))
+                inputs.extend(chip_render_stems)
                 if len(inputs) == 1:
                     shutil.copyfile(inputs[0][0], wav_path)
                 else:
@@ -1071,12 +1102,16 @@ def create_app(
 
     @app.post("/api/variations")
     def variations_endpoint() -> Response:
-        """速度×ピッチの全組み合わせをMIDIレイヤーで生成し、WAV+MIDIのZIPにまとめる。
+        """速度×ピッチの全組み合わせをMIDIレイヤーで生成し、WAV（+任意でMIDI）のZIPにまとめる。
 
         単体変換（PATCH /api/session/transform）と同じ_apply_to()/
         _render_applied_midi()を組み合わせの数だけ呼ぶ — rubberbandによるWAV
         後処理（旧実装）ではなく、組み合わせごとにMIDIのテンポ・ノート番号を
-        書き換えて再レンダリングするため、音質劣化が無く生成物にMIDIも含まれる。
+        書き換えて再レンダリングするため、音質劣化が無い。MIDIは各組み合わせの
+        レンダリング元として常に生成するが、ZIPへ含めるかどうかは`includeMidi`
+        （既定true）で選べる — DAWへ持ち込みたい場合はMIDIも欲しいが、単に
+        音を量産して聴き比べたいだけならWAVのみでZIPを軽くしたいという両方の
+        使い方があるため。
         ensure_render()を経由しないので事前の試聴レンダリングは不要で、既存の
         試聴WAV（audio_path）・セッションのspeed/transposeにも一切影響しない
         （threaded=Trueのサーバーで一括生成中にセッションを書き換えると並行する
@@ -1090,6 +1125,9 @@ def create_app(
         speeds, transposes = midi.validate_variation_options(
             body.get("speeds"), body.get("transposes")
         )
+        include_midi = body.get("includeMidi", True)
+        if not isinstance(include_midi, bool):
+            raise WebValidationError("includeMidiはtrue/falseで指定してください")
 
         work_dir = web_session.root / "variations_work"
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -1100,8 +1138,8 @@ def create_app(
             with web_session.render_lock:
                 # 実機チップ/DACレンダリングはspeed/transposeに依存しないため、
                 # バッチ全体で1回だけ生成し全組み合わせで使い回す
-                # （_render_applied_midi()のchip_render_stem引数）。
-                shared_chip = _render_chip_hardware(work_dir / "_chiprender.wav")
+                # （_render_applied_midi()のchip_render_stems引数）。
+                shared_chip_stems = _render_chip_hardware(work_dir, "_chiprender")
                 for speed, transpose in itertools.product(speeds, transposes):
                     label = _variation_label(speed, transpose)
                     mid_out = work_dir / f"{web_session.original_name}_{label}.mid"
@@ -1114,14 +1152,14 @@ def create_app(
                         render_id=web_session.render_id,
                         speed=speed,
                         transpose=transpose,
-                        chip_render_stem=shared_chip,
+                        chip_render_stems=shared_chip_stems,
                     )
                     items.append(
                         {
                             "speed": speed,
                             "transpose": transpose,
                             "wav": wav_out.name,
-                            "mid": mid_out.name,
+                            "mid": mid_out.name if include_midi else None,
                         }
                     )
                     pairs.append((mid_out, wav_out))
@@ -1131,7 +1169,8 @@ def create_app(
                 web_session.variations_zip_path.unlink(missing_ok=True)
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
                 for mid_out, wav_out in pairs:
-                    archive.write(mid_out, arcname=mid_out.name)
+                    if include_midi:
+                        archive.write(mid_out, arcname=mid_out.name)
                     archive.write(wav_out, arcname=wav_out.name)
             web_session.variations_zip_path = zip_path
         finally:

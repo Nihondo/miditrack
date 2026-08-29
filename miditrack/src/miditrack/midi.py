@@ -33,11 +33,13 @@ MAX_TRANSPOSE_SEMITONES = 24
 # 速度・ピッチの「バリエーション一括生成」（web.py の POST /api/variations）の
 # 既定値・上限。1組み合わせ = MIDI適用+フルレンダリング1回なので、rubberband
 # 1プロセスで済んでいた旧pitch_shift.sh方式（上限40）より大幅に低く抑える。
-DEFAULT_VARIATION_SPEEDS: list[float] = [1.2, 0.8]
+# MAX_VARIATION_COUNTは既定の組み合わせ数（3速度×5移調=15）がちょうど収まる
+# 値にしてある。
+DEFAULT_VARIATION_SPEEDS: list[float] = [1.2, 1.0, 0.8]
 DEFAULT_VARIATION_TRANSPOSES: list[int] = [-2, -1, 0, 1, 2]
 MAX_VARIATION_SPEED_COUNT = 6
 MAX_VARIATION_TRANSPOSE_COUNT = 8
-MAX_VARIATION_COUNT = 12
+MAX_VARIATION_COUNT = 15
 
 # SMFの既定テンポ（tempoメタが1つも無いファイルでの4分音符=120BPM相当）。
 DEFAULT_TEMPO_MICROSECONDS = 500_000
