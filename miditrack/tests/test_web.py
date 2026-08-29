@@ -345,6 +345,50 @@ class TestWebApp(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    # --- ピアノロール ---
+
+    def test_pianoroll_without_upload_is_rejected(self) -> None:
+        response = self.client.get("/api/pianoroll", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_pianoroll_is_available_before_render(self) -> None:
+        self._upload()
+        response = self.client.get("/api/pianoroll", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["noteCount"], 2)
+        self.assertEqual(len(payload["tracks"]), 2)
+        self.assertEqual(self.render_calls, [])
+
+    def test_pianoroll_reflects_transform(self) -> None:
+        self._upload()
+        original = self.client.get("/api/pianoroll", headers=AUTH_HEADERS).get_json()
+        self.client.patch(
+            "/api/session/transform",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speed": 2.0, "transpose": 12}),
+        )
+        transformed = self.client.get("/api/pianoroll", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(transformed["durationSeconds"], original["durationSeconds"] / 2)
+        self.assertEqual(transformed["tracks"][0]["notes"][2], 72)
+        self.assertEqual(transformed["tracks"][1]["notes"][2], 42)
+
+    def test_track_patch_does_not_change_pianoroll(self) -> None:
+        self._upload()
+        before = self.client.get("/api/pianoroll", headers=AUTH_HEADERS).get_json()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}, "volumes": {"0": 50}}),
+        )
+        after = self.client.get("/api/pianoroll", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(after, before)
+
+    def test_pianoroll_query_token_is_rejected(self) -> None:
+        self._upload()
+        response = self.client.get(f"/api/pianoroll?token={TOKEN}")
+        self.assertEqual(response.status_code, 403)
+
     def test_render_applies_transform_to_edited_midi(self) -> None:
         self._upload()
         self.client.patch(

@@ -69,14 +69,15 @@
       </div>
       <div class="table-scroll">
         <table class="track-table">
+          <caption class="visually-hidden">MIDIトラック一覧。列見出しで表示順を変更できます。</caption>
           <thead>
             <tr>
-              <th>トラック</th>
-              <th>ch</th>
-              <th>ノート数</th>
-              <th>音源</th>
-              <th>楽器</th>
-              <th>音量</th>
+              <th scope="col" data-sort-key="index" aria-sort="ascending"><button type="button" class="sort-button" data-sort-key="index">トラック<span class="sort-indicator" aria-hidden="true">▲</span></button></th>
+              <th scope="col" data-sort-key="channel"><button type="button" class="sort-button" data-sort-key="channel">ch<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" data-sort-key="noteCount"><button type="button" class="sort-button" data-sort-key="noteCount">ノート数<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" data-sort-key="source"><button type="button" class="sort-button" data-sort-key="source">音源<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" data-sort-key="instrument"><button type="button" class="sort-button" data-sort-key="instrument">楽器<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" data-sort-key="volume"><button type="button" class="sort-button" data-sort-key="volume">音量<span class="sort-indicator" aria-hidden="true"></span></button></th>
             </tr>
           </thead>
           <tbody id="track-list"></tbody>
@@ -103,6 +104,31 @@
         <button type="button" class="button secondary" id="download-button">MIDIをダウンロード</button>
         <button type="button" class="button secondary" id="download-wav-button">WAVをダウンロード</button>
       </div>
+      <div class="pianoroll-card">
+        <div class="pianoroll-scroll" id="pianoroll-scroll">
+          <canvas
+            id="pianoroll-canvas"
+            role="slider"
+            tabindex="0"
+            aria-label="ピアノロールの再生位置"
+            aria-orientation="horizontal"
+            aria-describedby="pianoroll-help pianoroll-status"
+            aria-disabled="true"
+            aria-valuemin="0"
+            aria-valuemax="0"
+            aria-valuenow="0"
+            aria-valuetext="0秒"
+          >ピアノロール表示。標準の音声プレーヤーでも再生位置を変更できます。</canvas>
+        </div>
+        <p class="pianoroll-empty" id="pianoroll-empty">MIDIを読み込むとここに表示されます。</p>
+        <div class="pianoroll-zoom" role="group" aria-label="ピアノロールの時間軸倍率">
+          <button type="button" id="pianoroll-zoom-out" aria-label="時間軸を縮小" disabled>−</button>
+          <span id="pianoroll-zoom-value" aria-label="現在の時間軸倍率">1×</span>
+          <button type="button" id="pianoroll-zoom-in" aria-label="時間軸を拡大" disabled>＋</button>
+        </div>
+      </div>
+      <p class="field-help" id="pianoroll-help">右下の−／＋で時間軸を拡大・縮小できます。レンダリング後はクリック／ドラッグ、または矢印キーで再生位置を変更できます。</p>
+      <p class="field-help" id="pianoroll-status"></p>
       <div class="player-card">
         <audio id="player" controls preload="metadata"></audio>
       </div>

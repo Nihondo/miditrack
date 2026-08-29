@@ -16,6 +16,7 @@ const KEEP_ORIGINAL = "__keep__";
 const DEFAULT_GM_PROGRAM = "80";
 const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
 const MAX_FAVORITE_PROGRAMS = 8;
+const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 
 const state = {
   session: null,          // 直近の /api/session (POST/PATCH/GET) レスポンス
@@ -42,6 +43,15 @@ const state = {
   soundfontPayload: null, // 直近の /api/soundfonts レスポンス（hasGameSoundfont変化時の再描画用）
   soloTrackIndex: null,     // ソロ試聴中のトラック番号（無ければnull）
   soloVolumeSnapshot: null, // ソロ開始直前の全トラック音量 { トラック番号: パーセント }。解除時に戻す。
+  trackSort: { key: "index", direction: "asc" },
+  trackRenderId: 0,
+  pianoroll: null,
+  pianorollBase: document.createElement("canvas"),
+  pianorollLoadId: 0,
+  pianorollSize: null,
+  isPianorollSeeking: false,
+  pianorollPointerId: null,
+  pianorollZoom: 1,
 };
 
 // サーバー側の設定ファイル（/api/preferences）からピン留め・使用回数を読み込み、
@@ -371,7 +381,7 @@ function applyMuteToAllTracks(shouldMute, originIndex) {
   }
 }
 
-async function buildTrackRow(track) {
+async function buildTrackRow(track, rowState = state) {
   const row = document.createElement("tr");
   row.className = "track-row";
   if (!track.editable) row.classList.add("is-locked");
@@ -389,12 +399,16 @@ async function buildTrackRow(track) {
     muteButton: null,
     soloButton: null,
   };
-  state.trackRows.push(trackRowRef);
+  rowState.trackRows.push(trackRowRef);
 
   const nameCell = document.createElement("td");
   const nameLabel = document.createElement("div");
   nameLabel.className = "track-name";
-  nameLabel.textContent = track.name;
+  const colorBar = document.createElement("span");
+  colorBar.className = "track-color-bar";
+  colorBar.setAttribute("aria-hidden", "true");
+  colorBar.style.setProperty("--track-color", getTrackColor(track.index, state.session?.tracks.length || 1));
+  nameLabel.append(colorBar, document.createTextNode(track.name));
   nameCell.appendChild(nameLabel);
   row.appendChild(nameCell);
 
@@ -521,7 +535,7 @@ async function buildTrackRow(track) {
       if (select.value === KEEP_ORIGINAL) return;
       toggleProgramPinned(Number(select.value));
     });
-    state.instrumentRows.push({ select, updatePinButton });
+    rowState.instrumentRows.push({ select, updatePinButton });
     trackRowRef.programSelect = select;
 
     const selectRow = document.createElement("div");
@@ -823,6 +837,7 @@ async function flushPendingTrackSettings() {
       });
       state.session = await response.json();
       await renderTrackList();
+      redrawPianorollStatic();
       resetPlayer();
       showStatus("設定を変更しました。もう一度「適用して試聴」を押してください。");
       return true;
@@ -838,16 +853,347 @@ async function flushPendingTrackSettings() {
   return flushPendingTrackSettings();
 }
 
-async function renderTrackList() {
-  const tbody = $("#track-list");
-  tbody.innerHTML = "";
-  state.instrumentRows = [];
-  state.trackRows = [];
-  const tracks = state.session ? state.session.tracks : [];
-  $("#tracks-empty").hidden = tracks.length > 0;
-  for (const track of tracks) {
-    tbody.appendChild(await buildTrackRow(track));
+function trackSortValue(track, key) {
+  if (key === "index") return track.index;
+  if (key === "channel") return track.channels[0] ?? null;
+  if (key === "noteCount") return track.noteCount;
+  if (key === "source") return track.source || "";
+  if (key === "instrument") return track.assignedProgram ?? track.currentProgram ?? -1;
+  if (key === "volume") return track.volumePercent;
+  return track.index;
+}
+
+function compareTrackValues(left, right, key) {
+  const leftValue = trackSortValue(left, key);
+  const rightValue = trackSortValue(right, key);
+  if (key === "channel" && (leftValue === null || rightValue === null)) {
+    if (leftValue === rightValue) return 0;
+    return leftValue === null ? 1 : -1;
   }
+  if (typeof leftValue === "string") return leftValue.localeCompare(rightValue, "ja");
+  return leftValue - rightValue;
+}
+
+function sortedTracks(tracks) {
+  const direction = state.trackSort.direction === "asc" ? 1 : -1;
+  return tracks.slice().sort((left, right) => {
+    const comparison = compareTrackValues(left, right, state.trackSort.key);
+    if (state.trackSort.key === "channel" && (
+      trackSortValue(left, "channel") === null || trackSortValue(right, "channel") === null
+    )) return comparison;
+    return comparison * direction;
+  });
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll(".track-table th[data-sort-key]").forEach((header) => {
+    const isActive = header.dataset.sortKey === state.trackSort.key;
+    if (isActive) header.setAttribute("aria-sort", state.trackSort.direction === "asc" ? "ascending" : "descending");
+    else header.removeAttribute("aria-sort");
+    const indicator = header.querySelector(".sort-indicator");
+    if (indicator) indicator.textContent = isActive
+      ? (state.trackSort.direction === "asc" ? "▲" : "▼")
+      : "";
+  });
+}
+
+async function renderTrackList() {
+  const renderId = ++state.trackRenderId;
+  const tracks = state.session ? sortedTracks(state.session.tracks) : [];
+  const fragment = document.createDocumentFragment();
+  const rowState = { instrumentRows: [], trackRows: [] };
+  for (const track of tracks) fragment.appendChild(await buildTrackRow(track, rowState));
+  if (renderId !== state.trackRenderId) return;
+  state.instrumentRows = rowState.instrumentRows;
+  state.trackRows = rowState.trackRows;
+  $("#track-list").replaceChildren(fragment);
+  $("#tracks-empty").hidden = tracks.length > 0;
+  updateSortHeaders();
+}
+
+function setupTrackSorting() {
+  document.querySelectorAll(".sort-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.sortKey;
+      if (state.trackSort.key === key) {
+        state.trackSort.direction = state.trackSort.direction === "asc" ? "desc" : "asc";
+      } else {
+        state.trackSort = { key, direction: "asc" };
+      }
+      renderTrackList();
+    });
+  });
+}
+
+function cssColor(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function getTrackColor(trackIndex, trackCount, opacity = 1) {
+  const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+  return `hsl(${hue} 68% 48% / ${opacity})`;
+}
+
+function formatPianorollTime(seconds) {
+  const safeSeconds = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = Math.floor(safeSeconds % 60);
+  return minutes > 0 ? `${minutes}分${remainder}秒` : `${remainder}秒`;
+}
+
+function setPianorollMessage(message, status = "") {
+  $("#pianoroll-empty").textContent = message;
+  $("#pianoroll-empty").hidden = !message;
+  $("#pianoroll-status").textContent = status;
+}
+
+function clearPianoroll(message = "MIDIを読み込むとここに表示されます。") {
+  state.pianoroll = null;
+  state.pianorollBase.width = 0;
+  state.pianorollBase.height = 0;
+  resetPianorollZoom();
+  setPianorollMessage(message);
+  updatePianorollInteraction();
+  drawPianoroll();
+}
+
+async function loadPianoroll() {
+  const loadId = ++state.pianorollLoadId;
+  if (!state.session || state.session.tracks.length === 0) {
+    clearPianoroll();
+    return;
+  }
+  setPianorollMessage("ピアノロールを読み込み中…");
+  try {
+    const response = await apiFetch("/api/pianoroll");
+    const payload = await response.json();
+    if (loadId !== state.pianorollLoadId) return;
+    state.pianoroll = payload;
+    const status = payload.truncated
+      ? `${payload.totalNoteCount.toLocaleString()}ノート中、先頭${payload.noteCount.toLocaleString()}ノートを表示しています。`
+      : `${payload.noteCount.toLocaleString()}ノート`;
+    setPianorollMessage(payload.noteCount > 0 ? "" : "表示できるノートがありません。", status);
+    redrawPianorollStatic();
+    updatePianorollInteraction();
+    updatePianorollZoomControls();
+  } catch (error) {
+    if (loadId !== state.pianorollLoadId) return;
+    clearPianoroll("ピアノロールを読み込めませんでした。");
+    $("#pianoroll-status").textContent = error.message;
+  }
+}
+
+function pianorollFieldOffsets(payload) {
+  return Object.fromEntries(payload.fields.map((field, index) => [field, index]));
+}
+
+function drawPianorollGrid(context, width, height) {
+  context.fillStyle = cssColor("--neutral-10", "#fafbfc");
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = cssColor("--neutral-30", "#ebecf0");
+  context.lineWidth = 1;
+  context.beginPath();
+  for (let index = 1; index < 8; index += 1) {
+    const x = Math.round(width * index / 8) + 0.5;
+    context.moveTo(x, 0);
+    context.lineTo(x, height);
+  }
+  for (let index = 1; index < 6; index += 1) {
+    const y = Math.round(height * index / 6) + 0.5;
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+  }
+  context.stroke();
+}
+
+function drawPianorollTrack(context, track, layout, mutedIndices) {
+  const { payload, offsets, width, height, minNote, noteSpan, trackCount } = layout;
+  context.fillStyle = getTrackColor(
+    track.index,
+    trackCount,
+    mutedIndices.has(track.index) ? 0.18 : 0.72,
+  );
+  for (let offset = 0; offset < track.notes.length; offset += payload.stride) {
+    const start = track.notes[offset + offsets.start];
+    const duration = track.notes[offset + offsets.duration];
+    const note = track.notes[offset + offsets.note];
+    const x = start / payload.durationSeconds * width;
+    const noteWidth = Math.max(1, duration / payload.durationSeconds * width);
+    const y = height - ((note - minNote + 1) / noteSpan * height);
+    context.fillRect(x, y, noteWidth, Math.max(1.5, height / noteSpan * 0.72));
+  }
+}
+
+function redrawPianorollStatic() {
+  const payload = state.pianoroll;
+  const size = state.pianorollSize;
+  if (!payload || !size || size.width <= 0 || size.height <= 0) return;
+  const base = state.pianorollBase;
+  base.width = size.pixelWidth;
+  base.height = size.pixelHeight;
+  const context = base.getContext("2d");
+  context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
+  drawPianorollGrid(context, size.width, size.height);
+  if (payload.noteCount > 0 && payload.durationSeconds > 0) {
+    const mutedIndices = new Set((state.session?.tracks || [])
+      .filter((track) => track.volumePercent === 0).map((track) => track.index));
+    const layout = {
+      payload, offsets: pianorollFieldOffsets(payload), width: size.width, height: size.height,
+      minNote: payload.minNote, noteSpan: payload.maxNote - payload.minNote + 3,
+      trackCount: payload.tracks.length,
+    };
+    for (const track of payload.tracks) drawPianorollTrack(context, track, layout, mutedIndices);
+  }
+  drawPianoroll();
+}
+
+function drawPianoroll() {
+  const canvas = $("#pianoroll-canvas");
+  const context = canvas.getContext("2d");
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  if (state.pianorollBase.width > 0) context.drawImage(state.pianorollBase, 0, 0);
+  const payload = state.pianoroll;
+  const size = state.pianorollSize;
+  if (!payload || !size || payload.durationSeconds <= 0) return;
+  const seconds = Math.min(payload.durationSeconds, $("#player").currentTime || 0);
+  context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
+  context.strokeStyle = cssColor("--brand-dark", "#5674b9");
+  context.lineWidth = 2;
+  context.beginPath();
+  const x = seconds / payload.durationSeconds * size.width;
+  context.moveTo(x, 0);
+  context.lineTo(x, size.height);
+  context.stroke();
+  updatePianorollAria(seconds);
+}
+
+function updatePianorollAria(seconds = 0) {
+  const canvas = $("#pianoroll-canvas");
+  const maximum = state.pianoroll?.durationSeconds || 0;
+  const current = Math.min(maximum, Math.max(0, seconds));
+  canvas.setAttribute("aria-valuemax", String(maximum));
+  canvas.setAttribute("aria-valuenow", String(Number(current.toFixed(3))));
+  canvas.setAttribute("aria-valuetext", formatPianorollTime(current));
+}
+
+function updatePianorollInteraction() {
+  const canvas = $("#pianoroll-canvas");
+  const canSeek = !!(state.session?.hasRender && state.pianoroll?.durationSeconds > 0);
+  canvas.classList.toggle("is-seekable", canSeek);
+  canvas.setAttribute("aria-disabled", String(!canSeek));
+  updatePianorollAria($("#player").currentTime || 0);
+}
+
+function updatePianorollZoomControls() {
+  const zoomIndex = PIANOROLL_ZOOM_LEVELS.indexOf(state.pianorollZoom);
+  const canZoom = !!state.pianoroll?.durationSeconds;
+  $("#pianoroll-zoom-out").disabled = !canZoom || zoomIndex <= 0;
+  $("#pianoroll-zoom-in").disabled = !canZoom || zoomIndex >= PIANOROLL_ZOOM_LEVELS.length - 1;
+  $("#pianoroll-zoom-value").textContent = `${state.pianorollZoom}×`;
+}
+
+function setPianorollZoom(zoom, shouldPreserveCenter = true) {
+  const canvas = $("#pianoroll-canvas");
+  const scrollArea = $("#pianoroll-scroll");
+  const previousWidth = canvas.getBoundingClientRect().width;
+  const centerRatio = previousWidth > 0
+    ? (scrollArea.scrollLeft + scrollArea.clientWidth / 2) / previousWidth
+    : 0;
+  state.pianorollZoom = zoom;
+  canvas.style.inlineSize = `${zoom * 100}%`;
+  updatePianorollZoomControls();
+  requestAnimationFrame(() => {
+    const nextWidth = canvas.getBoundingClientRect().width;
+    scrollArea.scrollLeft = shouldPreserveCenter
+      ? centerRatio * nextWidth - scrollArea.clientWidth / 2
+      : 0;
+  });
+}
+
+function changePianorollZoom(direction) {
+  const currentIndex = PIANOROLL_ZOOM_LEVELS.indexOf(state.pianorollZoom);
+  const nextIndex = Math.min(
+    PIANOROLL_ZOOM_LEVELS.length - 1,
+    Math.max(0, currentIndex + direction),
+  );
+  if (nextIndex !== currentIndex) setPianorollZoom(PIANOROLL_ZOOM_LEVELS[nextIndex]);
+}
+
+function resetPianorollZoom() {
+  setPianorollZoom(PIANOROLL_ZOOM_LEVELS[0], false);
+}
+
+function resizePianoroll(entry) {
+  const canvas = $("#pianoroll-canvas");
+  const rect = canvas.getBoundingClientRect();
+  const deviceBox = entry?.devicePixelContentBoxSize?.[0];
+  const pixelWidth = deviceBox?.inlineSize || Math.round(rect.width * window.devicePixelRatio);
+  const pixelHeight = deviceBox?.blockSize || Math.round(rect.height * window.devicePixelRatio);
+  if (pixelWidth <= 0 || pixelHeight <= 0) return;
+  canvas.width = pixelWidth;
+  canvas.height = pixelHeight;
+  state.pianorollSize = {
+    width: rect.width, height: rect.height, pixelWidth, pixelHeight,
+    scaleX: pixelWidth / rect.width, scaleY: pixelHeight / rect.height,
+  };
+  redrawPianorollStatic();
+}
+
+function seekPianorollAt(clientX) {
+  if (!state.session?.hasRender || !state.pianoroll) return;
+  const canvas = $("#pianoroll-canvas");
+  const rect = canvas.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  $("#player").currentTime = ratio * state.pianoroll.durationSeconds;
+  drawPianoroll();
+}
+
+function handlePianorollKeydown(event) {
+  if (!state.session?.hasRender || !state.pianoroll) return;
+  const player = $("#player");
+  const keySteps = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
+  let target = keySteps[event.key] === undefined ? null : player.currentTime + keySteps[event.key];
+  if (event.key === "Home") target = 0;
+  if (event.key === "End") target = state.pianoroll.durationSeconds;
+  if (target === null) return;
+  event.preventDefault();
+  player.currentTime = Math.min(state.pianoroll.durationSeconds, Math.max(0, target));
+  drawPianoroll();
+}
+
+function setupPianoroll() {
+  const canvas = $("#pianoroll-canvas");
+  const resizeObserver = new ResizeObserver(([entry]) => resizePianoroll(entry));
+  const supportsDevicePixels = typeof ResizeObserverEntry !== "undefined"
+    && "devicePixelContentBoxSize" in ResizeObserverEntry.prototype;
+  resizeObserver.observe(canvas, supportsDevicePixels ? { box: "device-pixel-content-box" } : {});
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!state.session?.hasRender || event.pointerType === "touch") return;
+    state.isPianorollSeeking = true;
+    state.pianorollPointerId = event.pointerId;
+    canvas.setPointerCapture(event.pointerId);
+    seekPianorollAt(event.clientX);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (state.isPianorollSeeking && event.pointerId === state.pianorollPointerId) {
+      seekPianorollAt(event.clientX);
+    }
+  });
+  const finishSeek = (event) => {
+    if (event.pointerId !== state.pianorollPointerId) return;
+    state.isPianorollSeeking = false;
+    state.pianorollPointerId = null;
+  };
+  canvas.addEventListener("pointerup", finishSeek);
+  canvas.addEventListener("pointercancel", finishSeek);
+  canvas.addEventListener("keydown", handlePianorollKeydown);
+  $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
+  $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));
+  $("#player").addEventListener("timeupdate", drawPianoroll);
+  $("#player").addEventListener("loadedmetadata", updatePianorollInteraction);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawPianorollStatic);
+  updatePianorollZoomControls();
 }
 
 function updateSectionsReadiness() {
@@ -869,6 +1215,8 @@ function resetPlayer() {
   const player = $("#player");
   player.removeAttribute("src");
   player.load();
+  updatePianorollInteraction();
+  drawPianoroll();
 }
 
 // セッションのspeed/transposeを速度・ピッチ入力欄へ反映する。未指定（handleReset()の
@@ -886,6 +1234,7 @@ async function refreshFromSession(payload) {
   state.soloTrackIndex = null;
   state.soloVolumeSnapshot = null;
   state.session = payload;
+  resetPianorollZoom();
   await renderTrackList();
   updateSectionsReadiness();
   renderConvertPanel(payload.source || null);
@@ -894,6 +1243,7 @@ async function refreshFromSession(payload) {
   if (state.soundfontPayload) {
     renderSoundfontOptions(state.soundfontPayload);
   }
+  await loadPianoroll();
 }
 
 function onTransformChange() {
@@ -922,6 +1272,7 @@ async function flushTransform() {
     state.session = await response.json();
     resetPlayer();
     updateSectionsReadiness();
+    await loadPianoroll();
     showStatus("速度・ピッチを変更しました。もう一度「適用して試聴」を押してください。");
   } catch (error) {
     showStatus(error.message, "error");
@@ -1215,6 +1566,8 @@ async function renderAndLoadPlayer() {
     state.session.hasDownload = true;
   }
   updateSectionsReadiness();
+  updatePianorollInteraction();
+  drawPianoroll();
   return player;
 }
 
@@ -1361,6 +1714,8 @@ async function init() {
     return;
   }
   setupDropZone();
+  setupTrackSorting();
+  setupPianoroll();
   $("#reset-button").addEventListener("click", handleReset);
   $("#render-button").addEventListener("click", handleRender);
   $("#download-button").addEventListener("click", handleDownload);

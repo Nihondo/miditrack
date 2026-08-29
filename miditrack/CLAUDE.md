@@ -26,6 +26,7 @@ src/miditrack/
                             PitchShiftError / MixError
   gm.py                    the 128-name GM table + 16 families (single source of truth)
   midi.py                  track analysis, apply/save program changes and velocity-based volume
+  pianoroll.py             read-only note/tempo extraction for the browser piano roll
   render.py                midi2wav.sh resolution + safe subprocess invocation
   convert.py               nsf2midi/spc2midi/vgm2midi resolution, -l parsing, safe invocation,
                             ZIP extraction (zip-slip guarded), gme-format m3u playlist parsing
@@ -43,6 +44,40 @@ src/miditrack/
   web_assets/               index.html / app.css / app.js
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
+
+## Why the piano roll is independent from rendering and track sorting
+
+`GET /api/pianoroll` always re-reads `WebSession.original_path` and applies the
+session's speed/transpose analytically. It must not use `applied_path`,
+`audio_path`, assignments, volume, selected per-track sources, or the SoundFont:
+the roll is intentionally available before the first render and survives every
+render invalidation. Tempo events from all MIDI tracks form one global tempo
+map; note pairing remains track-local because different tracks may share a MIDI
+channel. The response uses a server-described flat note schema (`stride` plus
+`fields`) and caps the globally earliest notes at 20,000 to bound response size.
+
+The browser caches the static note/grid layer in an offscreen canvas. Playback
+updates copy that layer and draw only the playhead, avoiding a full redraw of up
+to 20,000 notes on every `<audio>` `timeupdate`. Canvas resolution follows the
+device-pixel `ResizeObserver` size, while pointer coordinates remain in CSS
+pixels. Seeking is also keyboard-accessible through the focusable slider-style
+canvas. Muting only triggers a local static-layer redraw at lower opacity; it
+must not fetch `/api/pianoroll` again.
+
+Track colors have one browser-side source of truth: `getTrackColor(track.index,
+trackCount, opacity)`. Both the note rectangles and the color marker preceding
+each track name must use it, so sorting rows cannot break the visual mapping.
+Piano-roll time-axis zoom changes the canvas CSS inline size through fixed zoom
+steps and relies on the surrounding native horizontal scroll container. The
+`ResizeObserver` rebuilds the device-pixel backing store at each size, and seek
+coordinates continue to use the canvas's full scrolled `getBoundingClientRect()`;
+do not map pointer positions against the visible scroll viewport instead.
+
+Track-column sorting is display-only. `state.session.tracks` remains in original
+MIDI order and `sortedTracks()` sorts a copy for rendering. All edits, solo
+audition, warning-row pairing, and server payloads continue to identify rows by
+`track.index`. A change to sorting must never reorder the session array or the
+MIDI/WAV output. Channel-less tracks stay last in both sort directions.
 
 ## Why render-then-play, not a live softsynth
 

@@ -29,7 +29,7 @@ try:
 except ImportError as import_error:  # pragma: no cover - exercised via cli.py's own guard
     raise ImportError("miditrack requires Flask") from import_error
 
-from . import convert, libvgm, midi, mix, nsf_chip, pitch_shift, preferences, render
+from . import convert, libvgm, midi, mix, nsf_chip, pianoroll, pitch_shift, preferences, render
 from .convert import SourceFormat
 from .errors import (
     ConvertError,
@@ -720,6 +720,19 @@ def create_app(
 
         web_session.invalidate_render()
         return jsonify(**session_payload(web_session))
+
+    @app.get("/api/pianoroll")
+    def get_pianoroll() -> Response:
+        """現在のMIDIから、レンダリング非依存のピアノロール情報を返す。"""
+        web_session.require_tracks()
+        if web_session.original_path is None:
+            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+        original_path = web_session.original_path
+        speed = web_session.speed_ratio
+        transpose = web_session.transpose_semitones
+        return jsonify(
+            **pianoroll.extract_notes(original_path, speed=speed, transpose=transpose)
+        )
 
     def _apply_to(output_path: Path, speed: float, transpose: int) -> dict[str, int]:
         """assignments・volumesを適用したMIDIをoutput_pathへ書き、summaryを返す。
