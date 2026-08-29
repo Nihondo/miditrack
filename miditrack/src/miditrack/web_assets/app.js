@@ -1173,13 +1173,26 @@ function seekPianorollAt(clientX) {
   drawPianoroll();
 }
 
-function handlePianorollKeydown(event) {
+// 再生位置のシーク（←→・Home/End・PageUp/PageDown）。以前はピアノロールの
+// canvasにフォーカスがある時だけ効いていたが、毎回canvasをクリックしてからでないと
+// 使えないのは不便なため、documentレベルで拾う。canvasにフォーカスがある場合も
+// このイベントへバブリングしてくるので、role="slider"のキーボード操作は変わらず動く。
+// isPlaybackShortcutBlocked()と同じ判定で、テキスト入力欄等にフォーカスがある間は
+// 素通しし、通常のカーソル移動（キャレット移動）を妨げない。
+// Cmd+←は通常の1秒戻しではなく、先頭（0秒）へ即座に戻す。
+function handleSeekKeydown(event) {
   if (!state.session?.hasRender || !state.pianoroll) return;
+  if (isPlaybackShortcutBlocked(event.target)) return;
   const player = $("#player");
-  const keySteps = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
-  let target = keySteps[event.key] === undefined ? null : player.currentTime + keySteps[event.key];
-  if (event.key === "Home") target = 0;
-  if (event.key === "End") target = state.pianoroll.durationSeconds;
+  let target = null;
+  if (event.metaKey && event.key === "ArrowLeft") {
+    target = 0;
+  } else {
+    const keySteps = { ArrowLeft: -1, ArrowRight: 1, PageDown: -10, PageUp: 10 };
+    if (keySteps[event.key] !== undefined) target = player.currentTime + keySteps[event.key];
+    else if (event.key === "Home") target = 0;
+    else if (event.key === "End") target = state.pianoroll.durationSeconds;
+  }
   if (target === null) return;
   event.preventDefault();
   player.currentTime = Math.min(state.pianoroll.durationSeconds, Math.max(0, target));
@@ -1211,7 +1224,7 @@ function setupPianoroll() {
   };
   canvas.addEventListener("pointerup", finishSeek);
   canvas.addEventListener("pointercancel", finishSeek);
-  canvas.addEventListener("keydown", handlePianorollKeydown);
+  document.addEventListener("keydown", handleSeekKeydown);
   $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
   $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));
   $("#player").addEventListener("timeupdate", drawPianoroll);
@@ -1250,7 +1263,8 @@ function resetPlayer() {
 function renderTransformFields(payload) {
   const speed = payload && typeof payload.speed === "number" ? payload.speed : 1.0;
   const transpose = payload && typeof payload.transpose === "number" ? payload.transpose : 0;
-  $("#transform-speed").value = String(speed);
+  // 速度は0.1刻みのUIに合わせ、整数でも"1"ではなく"1.0"と常に小数第1位まで表示する。
+  $("#transform-speed").value = speed.toFixed(1);
   $("#transform-transpose").value = String(transpose);
 }
 
@@ -1284,6 +1298,9 @@ function stepTransformInput(inputId, direction) {
   const input = $(inputId);
   if (direction < 0) input.stepDown();
   else input.stepUp();
+  // stepUp()/stepDown()は末尾の".0"を落とした値（例:"1"）を入力欄へセットするため、
+  // 速度欄だけは常に小数第1位まで表示する規約に合わせて上書きする。
+  if (inputId === "#transform-speed") input.value = Number(input.value).toFixed(1);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
@@ -1845,6 +1862,12 @@ async function init() {
   $("#soundfont-select").addEventListener("change", handleSoundfontChange);
   $("#transform-speed").addEventListener("input", onTransformChange);
   $("#transform-transpose").addEventListener("input", onTransformChange);
+  // 手入力で確定した（blur/Enter）タイミングで、常に小数第1位までの表示に揃える。
+  // "input"イベント（タイプ中）で都度書き換えるとカーソル位置がずれるため使わない。
+  $("#transform-speed").addEventListener("change", (event) => {
+    const value = Number(event.target.value);
+    if (!Number.isNaN(value)) event.target.value = value.toFixed(1);
+  });
   $("#transform-speed-down").addEventListener("click", () => stepTransformInput("#transform-speed", -1));
   $("#transform-speed-up").addEventListener("click", () => stepTransformInput("#transform-speed", 1));
   $("#transform-transpose-down").addEventListener("click", () => stepTransformInput("#transform-transpose", -1));
