@@ -1335,6 +1335,7 @@ async function uploadMidi(file) {
     const response = await apiFetch("/api/session", { method: "POST", body: formData });
     resetPlayer();
     await refreshFromSession(await response.json());
+    $("#upload-card").open = true;
     showStatus("MIDIを読み込みました。", "success");
   } catch (error) {
     showStatus(error.message, "error");
@@ -1351,6 +1352,7 @@ async function uploadSource(files) {
     const response = await apiFetch("/api/source", { method: "POST", body: formData });
     resetPlayer();
     await refreshFromSession(await response.json());
+    $("#upload-card").open = true;
     showStatus("音源を読み込みました。曲とオプションを選んで変換してください。", "success");
   } catch (error) {
     showStatus(error.message, "error");
@@ -1604,6 +1606,7 @@ async function handleConvert() {
     } else {
       showStatus("MIDIに変換しました。", "success");
     }
+    $("#upload-card").open = false;
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -1792,6 +1795,7 @@ async function handleReset() {
       source: null,
     });
     $("#midi-input").value = "";
+    $("#upload-card").open = true;
     showStatus("リセットしました。");
   } catch (error) {
     showStatus(error.message, "error");

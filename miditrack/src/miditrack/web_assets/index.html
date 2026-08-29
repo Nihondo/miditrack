@@ -21,14 +21,15 @@
   </header>
 
   <main class="app-shell">
-    <article class="card" id="upload-card">
-      <div class="card-heading">
+    <details class="card" id="upload-card" open>
+      <summary class="card-heading">
         <span class="step-number">1</span>
         <div>
           <h2>音源またはMIDIを選択</h2>
           <p>.mid / .midi、または .nsf / .spc / .rsn / .vgm 等の音源ファイル（.zipアーカイブ可、.m3uプレイリスト同梱可）を読み込みます。</p>
         </div>
-      </div>
+        <svg class="disclosure-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+      </summary>
       <label class="drop-zone" id="drop-zone" for="midi-input">
         <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
         <strong>ファイルをドロップ</strong>
@@ -57,7 +58,7 @@
           <button type="button" class="button primary" id="convert-button">MIDIに変換</button>
         </div>
       </div>
-    </article>
+    </details>
 
     <article class="card disabled-section" id="tracks-card">
       <div class="card-heading">

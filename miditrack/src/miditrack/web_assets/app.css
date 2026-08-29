@@ -133,6 +133,32 @@ button { color: inherit; }
 .card-heading h2 { margin: 0 0 4px; font-size: 18px; letter-spacing: -0.01em; }
 .card-heading p { margin: 0; color: var(--neutral-60); font-size: 13px; }
 
+/* <details class="card">のsummaryをcard-headingとして使う場合、既定のdisplay:flexで
+   ネイティブの開閉三角（marker）が消えるため、自前のシェブロンで代替する。 */
+summary.card-heading {
+  cursor: pointer;
+  list-style: none;
+}
+summary.card-heading::-webkit-details-marker { display: none; }
+summary.card-heading::marker { content: ""; }
+summary.card-heading:focus-visible { outline-offset: 4px; }
+
+.disclosure-chevron {
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--neutral-60);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease;
+}
+details[open] > summary.card-heading .disclosure-chevron { transform: rotate(180deg); }
+
 .step-number {
   width: 28px;
   height: 28px;
