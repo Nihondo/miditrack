@@ -426,6 +426,137 @@ class TestWebApp(unittest.TestCase):
         self.client.post("/api/render", headers=AUTH_HEADERS)
         self.assertEqual(self.pitch_shift_calls, [])
 
+    # --- ダウンロードファイル名 ---
+
+    def test_patch_filename_updates_download_stem(self) -> None:
+        self._upload()
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "my song"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["downloadStem"], "my song")
+        # filename（アップロード時の名前）自体は変わらない。
+        self.assertEqual(payload["filename"], "fixture")
+
+    def test_patch_filename_sanitizes_unsafe_characters(self) -> None:
+        self._upload()
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "a/../b:c*d"}),
+        )
+        payload = response.get_json()
+        self.assertNotIn("/", payload["downloadStem"])
+        self.assertNotIn(":", payload["downloadStem"])
+        self.assertNotIn("*", payload["downloadStem"])
+
+    def test_patch_filename_blank_clears_override(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "   "}),
+        )
+        payload = response.get_json()
+        self.assertEqual(payload["downloadStem"], "")
+
+    def test_patch_filename_requires_name_field(self) -> None:
+        self._upload()
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_filename_without_upload_is_rejected(self) -> None:
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_uploading_new_midi_resets_download_stem(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        response = self._upload()
+        payload = response.get_json()
+        self.assertEqual(payload["downloadStem"], "")
+
+    def test_download_midi_uses_custom_filename(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "my song"}),
+        )
+        response = self.client.get("/api/download", headers=AUTH_HEADERS)
+        self.assertIn("my song_miditrack.mid", response.headers.get("Content-Disposition", ""))
+
+    def test_download_wav_uses_custom_filename(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "my song"}),
+        )
+        response = self.client.get("/api/download/wav", headers=AUTH_HEADERS)
+        self.assertIn("my song_miditrack.wav", response.headers.get("Content-Disposition", ""))
+
+    def test_variations_zip_and_members_use_custom_filename(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "my song"}),
+        )
+        self.client.post("/api/variations", headers=AUTH_HEADERS)
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        self.assertIn("my song_variations.zip", response.headers.get("Content-Disposition", ""))
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        self.assertTrue(all(name.startswith("my song_") for name in archive.namelist()))
+
+    def test_changing_filename_after_generation_invalidates_variations_zip(self) -> None:
+        self._upload()
+        self.client.post("/api/variations", headers=AUTH_HEADERS)
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "renamed"}),
+        )
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_setting_same_filename_does_not_invalidate_variations_zip(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        self.client.post("/api/variations", headers=AUTH_HEADERS)
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+
     # --- レンダリング/試聴/ダウンロード ---
 
     def test_render_invokes_injected_renderer(self) -> None:

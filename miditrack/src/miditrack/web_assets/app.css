@@ -594,6 +594,22 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .download-toolbar { margin-top: 12px; }
 
+.download-toolbar input[type="text"] {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 6px 8px;
+  color: var(--neutral-100);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+}
+
+.download-toolbar input[type="text"]:disabled {
+  color: var(--neutral-60);
+  background: var(--neutral-10);
+  cursor: not-allowed;
+}
+
 .playback-time {
   min-width: 138px;
   /* 再生コントロール側はボタンのmin-height 32px + このボーダー幅の分だけ

@@ -456,6 +456,91 @@ game-SoundFont half and the GM half are always rendered from
 already-transformed MIDI, and only the real-audio stems need the separate
 `pitch_shift.sh` pass described above.
 
+## Added: a user-editable download filename (`download_stem`)
+
+Before this feature, `GET /api/download`, `GET /api/download/wav`, and the
+batch `POST /api/variations`/`GET /api/download/variations` pair all named
+their output solely from `WebSession.original_name` — the sanitized stem of
+whatever file was uploaded or converted. A user who wanted a different
+deliverable name (e.g. matching a DAW project's own naming convention, or
+distinguishing several takes downloaded from the same session) had no way to
+set one; only a rename after the fact in Finder. `index.html`'s
+`.download-toolbar` gained a plain `#download-filename` text input next to
+the two download buttons, pre-filled with the currently loaded file's name
+and editable at any time.
+
+**Why this is a `WebSession` field with its own `PATCH /api/session/filename`
+endpoint, not a per-request query parameter or JSON body field**: three
+separate download-shaped endpoints need the same base name applied
+consistently, and one of them (`POST /api/variations`) has to know it at
+*generation* time — the per-item `.mid`/`.wav` filenames baked into the ZIP
+are decided while the batch loop runs, not when the ZIP is later fetched via
+`GET /api/download/variations`. Threading a `name` argument through every
+`downloadFrom()` call site in `app.js` would still leave that generation-time
+problem unsolved, since the field's value at generation time and at download
+time could differ. A session field mirrors exactly how `speed_ratio`/
+`transpose_semitones` already solve the identical "one setting, several
+downstream readers, some of them at generation time" shape (see "Speed/pitch
+is a MIDI-layer edit" above) — `PATCH /api/session/filename` is a third
+"one value for the whole session" endpoint alongside `PATCH
+/api/session/transform` and `POST /api/soundfont`, for the same reason
+those weren't folded into `PATCH /api/session/tracks`: this isn't a
+per-track edit.
+
+`WebSession.download_stem: str = ""` stores the raw override; `""` means "no
+override, use `original_name`" — never `None`, since the field always holds
+a string the frontend can drop straight into the input's `.value`.
+`_effective_download_stem(session)` (`session.download_stem or
+session.original_name`) is the single place all four download-name call
+sites (`get_download`, `get_download_wav`, the `POST /api/variations` loop,
+`get_download_variations`) read from, so a fifth future download endpoint
+only needs to call the same helper rather than re-deriving the fallback
+logic. `PATCH /api/session/filename` sanitizes the submitted value through
+the same `sanitize_stem()` every upload path already uses (never trusting a
+client-supplied string straight into a filename), and treats a blank or
+whitespace-only submission as "clear the override" (`download_stem = ""`)
+rather than sanitizing it into the literal fallback `"miditrack"` —
+clearing the field should restore the automatic name, not pin it to a
+placeholder.
+
+**Why `download_stem` resets in `reset_midi_state()`, not
+`soundfont_override`'s "survives across uploads" lifecycle**: unlike the
+selected SoundFont (a UI preference independent of which file is loaded),
+this field's entire purpose is "the name for *this* file's downloads" — its
+own placeholder/initial value in the UI is the newly loaded file's name, so
+a fresh upload or source conversion resetting it back to `""` (which the
+frontend then displays as the new `filename`) is the expected behavior, not
+a bug to guard against. This mirrors `original_name` itself, which the field
+overrides and shares a reset lifecycle with.
+
+**Why changing the filename invalidates `variations_zip_path` but not
+`audio_path`/`applied_path`**: a filename edit changes nothing about the
+actual MIDI or audio content, so re-running `ensure_render()`/
+`ensure_applied()` would be pure waste — unlike `invalidate_render()`
+(called by every actual content-changing PATCH), `update_download_filename()`
+clears only `variations_zip_path` directly, and only when the sanitized
+value actually differs from the current one. This is necessary because the
+ZIP's *internal* per-item filenames (`{stem}_{label}.mid`/`.wav`, written
+once during the `POST /api/variations` loop) are baked in at generation
+time — leaving a stale ZIP downloadable under a *new* outer name (from
+`_effective_download_stem()` re-evaluated at `GET /api/download/variations`
+time) while its internal files still carried the *old* stem would be a
+visible inconsistency between the ZIP's own filename and its contents.
+Forcing regeneration is the same invalidate-on-any-input-change posture
+`variations_zip_path`'s own field comment already documents for every other
+generation input (assignments/volumes/track_sources/soundfont).
+
+`app.js`'s `renderDownloadFilenameField(payload)` mirrors
+`renderTransformFields(payload)` exactly: called from `refreshFromSession()`
+so any session refresh (a track edit, a fresh upload, `handleReset()`) keeps
+the field in sync with the server's `downloadStem`/`filename`, but the
+debounced `flushDownloadFilename()` — triggered 250ms after the user's own
+`input` event, via `state.downloadFilenamePatchTimer` — deliberately does
+**not** call it again after a successful `PATCH`, for the same reason
+`flushTransform()` doesn't re-call `renderTransformFields()`: re-rendering
+the field from the user's own just-submitted response would fight the
+browser's cursor position if they kept typing during the round trip.
+
 ## Why source-file conversion lives in `miditrack`, not in each CLI
 
 `nsf2midi`/`spc2midi`/`vgm2midi` are three independently-built tools in
@@ -1877,6 +1962,28 @@ Beyond the mocked unit tests, this feature was verified through a live,
 fully non-mocked `create_app()` with the real `fluidsynth`/`ffmpeg`/
 `pitch_shift.sh` all wired in — see the dedicated verification paragraph
 above ("The MIDI-layer speed/pitch feature ... was verified end-to-end").
+
+`TestWebApp` also covers the download-filename override
+(`PATCH /api/session/filename`): unsafe characters are sanitized the same
+way an upload's filename is, a blank/whitespace-only submission clears the
+override back to `original_name`, requests with no `name` key or a
+non-string `name` return 400, the same as an upload-less session, a fresh
+MIDI upload resets `downloadStem` to `""`, and `GET /api/download`/
+`GET /api/download/wav`/`GET /api/download/variations` all reflect the
+override in their `Content-Disposition` filename (the variations case also
+checks every member inside the returned ZIP carries the overridden stem).
+`test_changing_filename_after_generation_invalidates_variations_zip` and
+`test_setting_same_filename_does_not_invalidate_variations_zip` are the pair
+of regression guards for the invalidation rule described above: editing the
+field to an actually different value after generating a ZIP forces
+`GET /api/download/variations` back to 400 (matching the existing
+track-change invalidation test), while re-submitting the exact same
+(sanitized) value leaves an already-generated ZIP downloadable. This was
+additionally checked by hand against a live, non-mocked `miditrack`
+process: setting the field to `"my custom name"` via the browser and
+inspecting the resulting `PATCH` request, `GET /api/session`'s
+`downloadStem`, and the `Content-Disposition` headers on both single-file
+downloads and the variations ZIP (plus its member names) all agreed.
 
 All 387 tests pass as of this writing (`TestWebAppLibvgmTrackSource`/
 `TestWebAppNsfChipTrackSource` additionally cover the default/custom volume

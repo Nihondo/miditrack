@@ -72,6 +72,12 @@ class WebSession:
     root: Path | None = None
     original_path: Path | None = None
     original_name: str = ""
+    # MIDI/WAV単体ダウンロードとバリエーションZIP（ZIP自体・内部の各ファイル名）が
+    # 共通して参照するベースファイル名の明示指定。空文字列は「未指定」を意味し、
+    # その場合はoriginal_nameを使う。original_nameと同じ「MIDI由来」の設定なので
+    # reset_midi_state()で初期化する（soundfont_overrideのようなMIDIをまたいで
+    # 残るUI設定ではない）。
+    download_stem: str = ""
     ticks_per_beat: int | None = None
     tracks: list[TrackInfo] = field(default_factory=list)
     assignments: dict[int, int] = field(default_factory=dict)
@@ -162,6 +168,7 @@ class WebSession:
             self.variations_zip_path.unlink(missing_ok=True)
         self.original_path = None
         self.original_name = ""
+        self.download_stem = ""
         self.ticks_per_beat = None
         self.tracks = []
         self.assignments = {}
@@ -251,6 +258,17 @@ def sanitize_stem(filename: str) -> str:
     stem = Path(basename).stem.strip().lstrip(".")
     safe = re.sub(r"[^\w .()-]", "_", stem, flags=re.UNICODE).strip(" .")
     return safe or "miditrack"
+
+
+def _effective_download_stem(session: WebSession) -> str:
+    """ダウンロードファイル名のベースstemを返す。
+
+    session.download_stem（ユーザーがダウンロードファイル名欄で明示指定した名前）
+    があればそれを、無ければアップロード時のファイル名（original_name）を使う。
+    MIDI/WAV単体ダウンロードとバリエーションZIP（ZIP自体・内部の各ファイル名）が
+    すべてこの1箇所を参照するので、呼び出し側ごとに定義がずれない。
+    """
+    return session.download_stem or session.original_name
 
 
 def _safe_upload_basename(filename: str) -> str:
@@ -410,6 +428,7 @@ def source_payload(session: WebSession) -> dict[str, Any] | None:
 def session_payload(session: WebSession) -> dict[str, Any]:
     return {
         "filename": session.original_name or None,
+        "downloadStem": session.download_stem,
         "ticksPerBeat": session.ticks_per_beat,
         "trackCount": len(session.tracks),
         "tracks": [
@@ -715,6 +734,31 @@ def create_app(
             web_session.transpose_semitones = midi.validate_transpose_semitones(body["transpose"])
 
         web_session.invalidate_render()
+        return jsonify(**session_payload(web_session))
+
+    @app.patch("/api/session/filename")
+    def update_download_filename() -> Response:
+        """MIDI/WAV単体ダウンロードとバリエーションZIPが使うベースファイル名を更新する。
+
+        speed/transpose（PATCH /api/session/transform）と同様、ファイル全体に対して
+        1つだけの設定なので独立エンドポイントに分ける。空文字列（または空白のみ）を
+        送ると明示指定を解除し、アップロード時のファイル名（original_name）に戻る。
+        既に生成済みのバリエーションZIPは内部の各ファイル名が古いstemのまま残って
+        しまうため、ここで無効化して次回ダウンロード時に再生成させる（試聴用の
+        applied_path/audio_pathはファイル名の変更で内容が変わるわけではないので
+        invalidate_render()は使わず、variations_zip_pathだけを個別に無効化する）。
+        """
+        web_session.require_tracks()
+        body = request.get_json(silent=True) or {}
+        if "name" not in body:
+            raise WebValidationError("nameを指定してください")
+        raw_name = body["name"]
+        if not isinstance(raw_name, str):
+            raise WebValidationError("nameは文字列で指定してください")
+        new_stem = sanitize_stem(raw_name) if raw_name.strip() else ""
+        if new_stem != web_session.download_stem:
+            web_session.download_stem = new_stem
+            web_session.variations_zip_path = None
         return jsonify(**session_payload(web_session))
 
     @app.get("/api/pianoroll")
@@ -1088,7 +1132,7 @@ def create_app(
         if web_session.original_path is None or web_session.root is None:
             raise WebValidationError("MIDIファイルがアップロードされていません")
         applied_path = ensure_applied()
-        download_name = f"{web_session.original_name}_miditrack.mid"
+        download_name = f"{_effective_download_stem(web_session)}_miditrack.mid"
         return send_file(
             applied_path,
             mimetype="audio/midi",
@@ -1101,7 +1145,7 @@ def create_app(
         if web_session.root is None or web_session.original_path is None:
             raise WebValidationError("MIDIファイルがアップロードされていません")
         wav_path = ensure_render()
-        download_name = f"{web_session.original_name}_miditrack.wav"
+        download_name = f"{_effective_download_stem(web_session)}_miditrack.wav"
         return send_file(
             wav_path,
             mimetype="audio/wav",
@@ -1149,10 +1193,11 @@ def create_app(
                 # バッチ全体で1回だけ生成し全組み合わせで使い回す
                 # （_render_applied_midi()のchip_render_stems引数）。
                 shared_chip_stems = _render_chip_hardware(work_dir, "_chiprender")
+                download_stem = _effective_download_stem(web_session)
                 for speed, transpose in itertools.product(speeds, transposes):
                     label = _variation_label(speed, transpose)
-                    mid_out = work_dir / f"{web_session.original_name}_{label}.mid"
-                    wav_out = work_dir / f"{web_session.original_name}_{label}.wav"
+                    mid_out = work_dir / f"{download_stem}_{label}.mid"
+                    wav_out = work_dir / f"{download_stem}_{label}.wav"
                     _apply_to(mid_out, speed, transpose)
                     web_session.render_id += 1
                     _render_applied_midi(
@@ -1195,7 +1240,7 @@ def create_app(
             or not web_session.variations_zip_path.exists()
         ):
             raise WebValidationError("先に「バリエーションをまとめて生成」を実行してください")
-        download_name = f"{web_session.original_name}_variations.zip"
+        download_name = f"{_effective_download_stem(web_session)}_variations.zip"
         return send_file(
             web_session.variations_zip_path,
             mimetype="application/zip",

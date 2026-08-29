@@ -39,6 +39,7 @@ const state = {
   patchTimer: null,
   patchPromise: null,     // 送信中の設定PATCH。試聴開始時の競合を防ぐ。
   transformPatchTimer: null, // 全体の速度・ピッチ（PATCH /api/session/transform）用のデバウンス。
+  downloadFilenamePatchTimer: null, // ダウンロードファイル名（PATCH /api/session/filename）用のデバウンス。
   statusTimer: null,
   convertFields: [], // 変換パネルに描画中のオプションフィールド { name, type, input, conflicts }
   soundfontPayload: null, // 直近の /api/soundfonts レスポンス（hasGameSoundfont変化時の再描画用）
@@ -1306,6 +1307,7 @@ function updateSectionsReadiness() {
   $("#render-button").disabled = !ready;
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-wav-button").disabled = !(state.session && state.session.hasDownload);
+  $("#download-filename").disabled = !(state.session && state.session.hasDownload);
   document.querySelectorAll(".transform-controls button, .transform-controls input")
     .forEach((control) => { control.disabled = !ready; });
   // バリエーション一括生成はensure_render()を経由しないため事前の試聴レンダリングは
@@ -1339,6 +1341,14 @@ function renderTransformFields(payload) {
   $("#transform-transpose").value = String(transpose);
 }
 
+// セッションのダウンロードファイル名（downloadStem）をテキスト欄へ反映する。
+// 明示指定（downloadStem）が無ければ、アップロード時のファイル名（filename）を
+// 初期値として表示する。
+function renderDownloadFilenameField(payload) {
+  const stem = (payload && payload.downloadStem) || (payload && payload.filename) || "";
+  $("#download-filename").value = stem;
+}
+
 async function refreshFromSession(payload) {
   // 新しいMIDI/音源の読み込みでトラック構成自体が変わりうるため、
   // 古いセッションのトラック番号を指したソロ試聴状態は持ち越さない。
@@ -1350,6 +1360,7 @@ async function refreshFromSession(payload) {
   updateSectionsReadiness();
   renderConvertPanel(payload.source || null);
   renderTransformFields(payload);
+  renderDownloadFilenameField(payload);
   // hasGameSoundfontの変化を#soundfont-helpへ即座に反映する（新規fetchはしない）。
   if (state.soundfontPayload) {
     renderSoundfontOptions(state.soundfontPayload);
@@ -1398,6 +1409,29 @@ async function flushTransform() {
     updateSectionsReadiness();
     await loadPianoroll();
     showStatus("速度・ピッチを変更しました。もう一度「適用して試聴」を押してください。");
+  } catch (error) {
+    showStatus(error.message, "error");
+  }
+}
+
+function onDownloadFilenameChange() {
+  clearTimeout(state.downloadFilenamePatchTimer);
+  state.downloadFilenamePatchTimer = setTimeout(flushDownloadFilename, 250);
+}
+
+// #download-filenameの現在値をPATCH /api/session/filenameへ送る。送信結果を
+// state.sessionへ反映するだけでrenderDownloadFilenameField()は呼び直さない
+// （flushTransform()と同じ配慮 — 入力中のテキストを自分自身の送信結果で
+// 打ち消さないため）。
+async function flushDownloadFilename() {
+  const input = $("#download-filename");
+  try {
+    const response = await apiFetch("/api/session/filename", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: input.value }),
+    });
+    state.session = await response.json();
   } catch (error) {
     showStatus(error.message, "error");
   }
@@ -2027,7 +2061,8 @@ async function handleVariations() {
     const payload = await response.json();
     const contentsLabel = includeMidi ? "（WAV+MIDI）" : "（WAV）";
     showStatus(`${payload.items.length}件のバリエーション${contentsLabel}を生成しました。ダウンロードします…`);
-    const filename = `${(state.session && state.session.filename) || "miditrack"}_variations.zip`;
+    const stem = (state.session && (state.session.downloadStem || state.session.filename)) || "miditrack";
+    const filename = `${stem}_variations.zip`;
     await downloadFrom("/api/download/variations", filename);
   } catch (error) {
     showStatus(error.message, "error");
@@ -2099,6 +2134,7 @@ async function init() {
   $("#render-button").addEventListener("click", handleRender);
   $("#download-button").addEventListener("click", handleDownload);
   $("#download-wav-button").addEventListener("click", handleDownloadWav);
+  $("#download-filename").addEventListener("input", onDownloadFilenameChange);
   $("#variation-button").addEventListener("click", handleVariations);
   $("#convert-button").addEventListener("click", handleConvert);
   $("#convert-file-select").addEventListener("change", handleSelectFile);
