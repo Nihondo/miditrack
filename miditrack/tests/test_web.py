@@ -1452,6 +1452,35 @@ class TestWebApp(unittest.TestCase):
         # 変換後もsourceセクションは維持され、変換カードの状態が復元できる。
         self.assertIsNotNone(payload["source"])
 
+    def test_project_round_trip_preserves_converted_source_options(self) -> None:
+        self._upload_source("chip.nsf")
+        self.client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 1, "durationSeconds": 20, "forcePal": True}),
+        )
+        exported = self.client.post(
+            "/api/project/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "fast"}),
+        )
+        self.assertEqual(exported.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(exported.data)) as archive:
+            self.assertIn("source/uploads/chip.nsf", archive.namelist())
+
+        imported = self.client.post(
+            "/api/project/import",
+            headers=AUTH_HEADERS,
+            data={"project": (io.BytesIO(exported.data), "chip.miditrack")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(imported.status_code, 200)
+        source = imported.get_json()["session"]["source"]
+        self.assertEqual(source["format"], "nsf")
+        self.assertEqual(source["convertedOptions"]["songIndex"], 1)
+        self.assertEqual(source["convertedOptions"]["durationSeconds"], 20)
+        self.assertTrue(source["convertedOptions"]["forcePal"])
+
     def test_source_reconversion_uses_a_new_audio_cache_key(self) -> None:
         self._upload_source("chip.nsf")
         convert_body = json.dumps({"songIndex": 0})
@@ -3245,12 +3274,21 @@ class TestWebAppPreferences(unittest.TestCase):
         self.addCleanup(self._restore_env)
         self.app = create_app(token=TOKEN, session=WebSession())
         self.client = self.app.test_client()
+        self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
 
     def _restore_env(self) -> None:
         if self._env_backup is None:
             os.environ.pop("MIDITRACK_PREFERENCES_PATH", None)
         else:
             os.environ["MIDITRACK_PREFERENCES_PATH"] = self._env_backup
+
+    def _upload(self):
+        return self.client.post(
+            "/api/session",
+            headers=AUTH_HEADERS,
+            data={"midi": (io.BytesIO(build_fixture_bytes()), "fixture.mid")},
+            content_type="multipart/form-data",
+        )
 
     def test_get_preferences_defaults_to_empty(self) -> None:
         response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
@@ -3369,6 +3407,82 @@ class TestWebAppPreferences(unittest.TestCase):
         other_client = other_app.test_client()
         response = other_client.get("/api/preferences", headers=AUTH_HEADERS)
         self.assertEqual(response.get_json()["selectedSoundfont"], str(soundfont_path))
+
+    # --- プロジェクト保存・復元 ---
+
+    def test_project_round_trip_restores_editing_state(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}, "volumes": {"0": 140}}),
+        )
+        self.client.patch(
+            "/api/session/transform",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speed": 1.2, "transpose": 3}),
+        )
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "saved project"}),
+        )
+
+        exported = self.client.post(
+            "/api/project/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "quality"}),
+        )
+        self.assertEqual(exported.status_code, 200)
+        self.assertEqual(exported.mimetype, "application/vnd.miditrack.project+zip")
+        with zipfile.ZipFile(io.BytesIO(exported.data)) as archive:
+            self.assertEqual(set(archive.namelist()), {"manifest.json", "midi/original.mid"})
+            manifest = json.loads(archive.read("manifest.json"))
+        self.assertEqual(manifest["format"], "miditrack-project")
+        self.assertEqual(manifest["edits"]["assignments"], {"0": 30})
+        self.assertEqual(manifest["ui"]["renderMode"], "quality")
+
+        self.client.delete("/api/session", headers=AUTH_HEADERS)
+        imported = self.client.post(
+            "/api/project/import",
+            headers=AUTH_HEADERS,
+            data={"project": (io.BytesIO(exported.data), "saved.miditrack")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(imported.status_code, 200)
+        payload = imported.get_json()
+        self.assertEqual(payload["uiState"], {"renderMode": "quality"})
+        self.assertEqual(payload["warnings"], [])
+        session = payload["session"]
+        self.assertEqual(session["downloadStem"], "saved project")
+        self.assertEqual(session["tracks"][0]["assignedProgram"], 30)
+        self.assertEqual(session["tracks"][0]["volumePercent"], 140)
+        self.assertEqual(session["speed"], 1.2)
+        self.assertEqual(session["transpose"], 3)
+
+    def test_invalid_project_keeps_current_session(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/project/import",
+            headers=AUTH_HEADERS,
+            data={"project": (io.BytesIO(b"not a zip"), "broken.miditrack")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        current = self.client.get("/api/session", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(current["filename"], "fixture")
+        self.assertEqual(len(current["tracks"]), 2)
+
+    def test_project_controls_and_deferred_patches_are_wired(self) -> None:
+        html = self.client.get("/").get_data(as_text=True)
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+        self.assertIn('id="open-project-button"', html)
+        self.assertIn('id="save-project-button"', html)
+        self.assertIn('id="project-input"', html)
+        self.assertIn("function handleSaveProject()", javascript)
+        self.assertIn("function handleOpenProject(file)", javascript)
+        self.assertIn("await flushPendingDownloadFilename();", javascript)
+        self.assertIn('apiFetch("/api/project/import"', javascript)
 
 
 class TestResolveStartupSoundfontOverride(unittest.TestCase):

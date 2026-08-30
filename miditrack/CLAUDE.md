@@ -3054,3 +3054,21 @@ re-verified with a real `.spc` under this change, since `_plan_render_jobs()`
 splits `applied_path` — which `ensure_applied()` already produces with the
 transform baked in — so no new interaction exists beyond what
 `TestWebAppGameSoundfont`'s existing mocked tests already cover.
+
+## Project session archives
+
+`project.py` owns the versioned `.miditrack` ZIP container. A project stores
+the canonical prepared MIDI and edit-centric state only: source files and the
+last successful conversion settings (when applicable), track assignment /
+volume edits, transform, download filename, selected SoundFont path, and UI
+render mode. It deliberately excludes render cache, WAV output, variations,
+playback position, and purely presentational controls.
+
+`POST /api/project/export` is enabled only after a MIDI is prepared. The
+corresponding import endpoint extracts and validates a project into a
+candidate `WebSession`, then replaces the live session only after that work
+succeeds. Keep archive extraction strict: reject path traversal, symlinks,
+duplicate members, malformed manifests, and archive/member size-limit
+violations. Never auto-convert when loading; the stored canonical MIDI is the
+authoritative base. A missing external SoundFont path must be a non-fatal
+warning and fall back to the ordinary SoundFont resolution path.

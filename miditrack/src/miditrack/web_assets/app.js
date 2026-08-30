@@ -57,6 +57,7 @@ const state = {
   transformPatchTimer: null, // 全体の速度・ピッチ（PATCH /api/session/transform）用のデバウンス。
   transformPatchPromise: null,
   downloadFilenamePatchTimer: null, // ダウンロードファイル名（PATCH /api/session/filename）用のデバウンス。
+  downloadFilenamePatchPromise: null,
   statusTimer: null,
   convertFields: [], // 変換パネルに描画中のオプションフィールド { name, type, input, conflicts }
   soundfontPayload: null, // 直近の /api/soundfonts レスポンス（hasGameSoundfont変化時の再描画用）
@@ -1650,6 +1651,7 @@ function updateSectionsReadiness() {
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-wav-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-filename").disabled = !(state.session && state.session.hasDownload);
+  $("#save-project-button").disabled = !ready;
   document.querySelectorAll(".transform-controls button, .transform-controls input")
     .forEach((control) => { control.disabled = !ready; });
   // バリエーション一括生成はensure_render()を経由しないため事前の試聴レンダリングは
@@ -1703,7 +1705,7 @@ function renderDownloadFilenameField(payload) {
   $("#download-filename").value = stem;
 }
 
-async function refreshFromSession(payload) {
+async function refreshFromSession(payload, { restoreConvertedOptions = false } = {}) {
   cancelAutoRender();
   // 新しいMIDI/音源の読み込みでトラック構成自体が変わりうるため、
   // 古いセッションのトラック番号を指したソロ試聴状態は持ち越さない。
@@ -1718,7 +1720,10 @@ async function refreshFromSession(payload) {
   resetPianorollZoom();
   await renderTrackList();
   updateSectionsReadiness();
-  renderConvertPanel(payload.source || null);
+  renderConvertPanel(
+    payload.source || null,
+    restoreConvertedOptions ? payload.source?.convertedOptions || {} : null,
+  );
   renderTransformFields(payload);
   renderDownloadFilenameField(payload);
   // hasGameSoundfontの変化を#soundfont-helpへ即座に反映する（新規fetchはしない）。
@@ -1825,17 +1830,40 @@ function onDownloadFilenameChange() {
 // （flushTransform()と同じ配慮 — 入力中のテキストを自分自身の送信結果で
 // 打ち消さないため）。
 async function flushDownloadFilename() {
+  if (state.downloadFilenamePatchPromise) return state.downloadFilenamePatchPromise;
   const input = $("#download-filename");
-  try {
-    const response = await apiFetch("/api/session/filename", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: input.value }),
-    });
-    state.session = await response.json();
-  } catch (error) {
-    showStatus(error.message, "error");
+  const patchPromise = (async () => {
+    try {
+      const response = await apiFetch("/api/session/filename", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: input.value }),
+      });
+      state.session = await response.json();
+      return true;
+    } catch (error) {
+      showStatus(error.message, "error");
+      return false;
+    }
+  })();
+  state.downloadFilenamePatchPromise = patchPromise;
+  const didSucceed = await patchPromise;
+  if (state.downloadFilenamePatchPromise === patchPromise) {
+    state.downloadFilenamePatchPromise = null;
   }
+  return didSucceed;
+}
+
+async function flushPendingDownloadFilename() {
+  if (state.downloadFilenamePatchTimer !== null) {
+    clearTimeout(state.downloadFilenamePatchTimer);
+    state.downloadFilenamePatchTimer = null;
+    if (!(await flushDownloadFilename())) return false;
+  }
+  if (state.downloadFilenamePatchPromise && !(await state.downloadFilenamePatchPromise)) {
+    return false;
+  }
+  return state.downloadFilenamePatchTimer === null;
 }
 
 // files: FileList | File[]。.mid/.midi単体のみ既存のMIDIアップロードへ、
@@ -1995,7 +2023,7 @@ function updateConvertFieldConflicts() {
   }
 }
 
-function renderConvertPanel(source) {
+function renderConvertPanel(source, restoredConvertedOptions = null) {
   const panel = $("#convert-panel");
   const fileGroup = $("#convert-file-group");
   const fileSelect = $("#convert-file-select");
@@ -2010,7 +2038,9 @@ function renderConvertPanel(source) {
   // 対応するサーバー側の状態がない（「最後に変換した曲番号」はセッションに
   // 保持されない）ため、これをしないと変換のたびに曲が黙って先頭（0番）に
   // 戻り、次に「MIDIに変換」を押すと意図しない曲が変換されてしまう。
-  const previousSongIndex = songSelect.value;
+  const previousSongIndex = restoredConvertedOptions
+    ? String(restoredConvertedOptions.songIndex ?? "")
+    : songSelect.value;
 
   // 同じ理由で、秒数・PALタイミング・chipNoise等の各オプションの値も
   // 再構築前に読み取って保持しておく（フィールド名 -> 値）。これが無いと
@@ -2020,6 +2050,9 @@ function renderConvertPanel(source) {
   const previousFieldValues = {};
   for (const entry of state.convertFields) {
     previousFieldValues[entry.name] = readConvertFieldValue(entry);
+  }
+  if (restoredConvertedOptions) {
+    Object.assign(previousFieldValues, restoredConvertedOptions);
   }
 
   state.convertFields = [];
@@ -2608,10 +2641,10 @@ function setupPlaybackShortcut() {
   });
 }
 
-async function downloadFrom(path, fallbackName, busyMessage) {
+async function downloadFrom(path, fallbackName, busyMessage, options = {}) {
   if (busyMessage) setBusy(true, busyMessage);
   try {
-    const response = await apiFetch(path);
+    const response = await apiFetch(path, options);
     const blob = await response.blob();
     const disposition = response.headers.get("Content-Disposition") || "";
     const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
@@ -2624,8 +2657,10 @@ async function downloadFrom(path, fallbackName, busyMessage) {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
+    return true;
   } catch (error) {
     showStatus(error.message, "error");
+    return false;
   } finally {
     if (busyMessage) setBusy(false);
   }
@@ -2641,6 +2676,69 @@ function handleDownloadWav() {
     "miditrack_edited.wav",
     "最終WAVを生成中…",
   );
+}
+
+async function handleSaveProject() {
+  if (!state.session || state.session.tracks.length === 0) return;
+  setBusy(true, "プロジェクトを保存中…");
+  try {
+    const didSaveTracks = await flushPendingTrackSettings();
+    const didSaveTransform = await flushPendingTransform();
+    const didSaveFilename = await flushPendingDownloadFilename();
+    if (!didSaveTracks || !didSaveTransform || !didSaveFilename) return;
+    const stem = state.session.downloadStem || state.session.filename || "miditrack";
+    const didDownload = await downloadFrom(
+      "/api/project/export",
+      `${stem}.miditrack`,
+      "",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ renderMode: selectedRenderMode() }),
+      },
+    );
+    if (didDownload) showStatus("プロジェクトを保存しました。", "success");
+  } catch (error) {
+    showStatus(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function canReplaceCurrentSession() {
+  return !!(state.session && (state.session.tracks.length > 0 || state.session.source));
+}
+
+async function handleOpenProject(file) {
+  if (!file) return;
+  if (canReplaceCurrentSession() && !window.confirm("現在のセッションを置き換えます。保存していない変更は失われます。続けますか？")) {
+    $("#project-input").value = "";
+    return;
+  }
+  setBusy(true, "プロジェクトを読み込み中…");
+  const formData = new FormData();
+  formData.append("project", file);
+  try {
+    const response = await apiFetch("/api/project/import", { method: "POST", body: formData });
+    const payload = await response.json();
+    const renderMode = payload.uiState?.renderMode;
+    if (["fast", "quality"].includes(renderMode)) {
+      state.renderMode = renderMode;
+      const modeInput = $(`#render-mode-${renderMode}`);
+      if (modeInput) modeInput.checked = true;
+    }
+    resetPlayer();
+    await refreshFromSession(payload.session, { restoreConvertedOptions: true });
+    await loadSoundfonts();
+    if (payload.warnings?.length) showStatus(payload.warnings.join(" "));
+    else showStatus("プロジェクトを読み込みました。", "success");
+    $("#upload-card").open = true;
+  } catch (error) {
+    showStatus(error.message, "error");
+  } finally {
+    $("#project-input").value = "";
+    setBusy(false);
+  }
 }
 
 // "1.2, 0.8" のようなカンマ区切りテキストを数値配列にパースする。
@@ -2784,6 +2882,9 @@ async function init() {
   setupPlaybackControls();
   setupPlaybackShortcut();
   $("#reset-button").addEventListener("click", handleReset);
+  $("#open-project-button").addEventListener("click", () => $("#project-input").click());
+  $("#project-input").addEventListener("change", (event) => handleOpenProject(event.target.files?.[0]));
+  $("#save-project-button").addEventListener("click", handleSaveProject);
   document.querySelectorAll('input[name="render-mode"]')
     .forEach((control) => control.addEventListener("change", handleRenderModeChange));
   $("#download-button").addEventListener("click", handleDownload);

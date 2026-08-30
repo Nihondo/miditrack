@@ -34,7 +34,7 @@ try:
 except ImportError as import_error:  # pragma: no cover - exercised via cli.py's own guard
     raise ImportError("miditrack requires Flask") from import_error
 
-from . import convert, libvgm, midi, mix, nsf_chip, pianoroll, pitch_shift, preferences, render
+from . import convert, libvgm, midi, mix, nsf_chip, pianoroll, pitch_shift, preferences, project, render
 from .convert import SourceFormat
 from .errors import (
     ConvertError,
@@ -50,7 +50,9 @@ from .midi import TrackInfo
 ASSET_DIR = Path(__file__).with_name("web_assets")
 # .rsn/.vgz等の音源ファイルは.midより桁違いに大きくなりうるため32MBから引き上げてある。
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+MAX_PROJECT_UPLOAD_BYTES = 512 * 1024 * 1024
 ALLOWED_MIDI_EXTENSIONS = (".mid", ".midi")
+PROJECT_EXTENSION = ".miditrack"
 
 # トラック音源が実機チップレンダリング（原曲の音源をSoundFontではなく実機/
 # エミュレーションで鳴らす方式）を持つフォーマット。SPCの"game"はBRRサンプル
@@ -218,6 +220,9 @@ class WebSession:
     # nsf_chip.render_selection()は元のNSFファイルを毎回読み直すため、変換時と
     # 同じ曲番号(-t/--track)を再指定する必要があり、そのために保持する。
     source_song_index: int | None = None
+    # 最後にMIDIへ変換したときの検証済みオプション。変換前に画面で選んだだけの
+    # 値は保存しないため、プロジェクトを開いても基準MIDIとの対応が崩れない。
+    converted_options: dict[str, Any] = field(default_factory=dict)
     # ZIP展開・複数ファイル同時アップロードで見つかった変換候補一覧
     # （{"path": rootからの相対パス, "name": basename} のリスト）。
     # 単一ファイルのアップロード時も要素数1で入る。
@@ -268,6 +273,7 @@ class WebSession:
         self.chip_stem_path = None
         self.dac_stem_path = None
         self.game_soundfont_path = None
+        self.converted_options = {}
 
     def clear(self) -> None:
         """現在の一時ディレクトリと状態を破棄する。"""
@@ -281,6 +287,7 @@ class WebSession:
         self.source_metadata = {}
         self.source_songs = []
         self.source_song_index = None
+        self.converted_options = {}
         self.source_files = []
         self.source_m3u_texts = []
 
@@ -487,8 +494,23 @@ def track_payload(
 
 def soundfont_payload(session: WebSession, default_soundfont: Path | None) -> dict[str, Any]:
     selected = session.soundfont_override or default_soundfont
+    items = render.list_soundfonts()
+    if (
+        selected is not None
+        and render.is_soundfont_file(selected)
+        and all(item["path"] != str(selected) for item in items)
+    ):
+        items.insert(
+            0,
+            {
+                "path": str(selected),
+                "name": selected.name,
+                "dir": str(selected.parent),
+                "sizeBytes": selected.stat().st_size,
+            },
+        )
     return {
-        "items": render.list_soundfonts(),
+        "items": items,
         "selected": str(selected) if selected else None,
         "isOverride": session.soundfont_override is not None,
     }
@@ -511,6 +533,7 @@ def source_payload(session: WebSession) -> dict[str, Any] | None:
         "files": session.source_files,
         "activeFile": active_file,
         "hasPlaylist": len(session.source_m3u_texts) > 0,
+        "convertedOptions": session.converted_options,
     }
 
 
@@ -541,6 +564,64 @@ def session_payload(session: WebSession) -> dict[str, Any]:
         "hasDacStem": session.dac_stem_path is not None,
         "hasGameSoundfont": session.game_soundfont_path is not None,
         "source": source_payload(session),
+    }
+
+
+def _project_member_path(root: Path, member: str, label: str) -> Path:
+    """プロジェクト展開先配下のファイルだけを解決する。"""
+    if not isinstance(member, str) or not member:
+        raise WebValidationError(f"プロジェクトの{label}が不正です")
+    candidate = (root / member).resolve()
+    if candidate == root or root not in candidate.parents or not candidate.is_file():
+        raise WebValidationError(f"プロジェクトの{label}が見つかりません")
+    return candidate
+
+
+def _project_metadata_payload(
+    metadata: libvgm.LibvgmMetadata | nsf_chip.NsfChipMetadata | None,
+) -> dict[str, Any] | None:
+    """実機音源メタデータを既存loader互換のJSONへ直列化する。"""
+    if metadata is None:
+        return None
+    if isinstance(metadata, libvgm.LibvgmMetadata):
+        return {
+            "type": "vgm",
+            "payload": {
+                "version": 1,
+                "sampleCount": metadata.sample_count,
+                "tracks": [
+                    {
+                        "trackIndex": index,
+                        "libvgm": {
+                            "deviceType": target.device_type,
+                            "instance": target.instance,
+                            "mainMask": target.main_mask,
+                            "linkedMask": target.linked_mask,
+                            "groupId": target.group_id,
+                            "suggestedForHardwareMix": target.suggested,
+                        },
+                    }
+                    for index, target in sorted(metadata.targets.items())
+                ],
+            },
+        }
+    return {
+        "type": "nsf",
+        "payload": {
+            "version": 1,
+            "sampleCount": metadata.sample_count,
+            "tracks": [
+                {
+                    "trackIndex": index,
+                    "chipRender": {
+                        "channel": target.channel,
+                        "groupId": target.group_id,
+                        "suggestedForHardwareMix": target.suggested,
+                    },
+                }
+                for index, target in sorted(metadata.targets.items())
+            ],
+        },
     }
 
 
@@ -657,6 +738,230 @@ def create_app(
     def handle_large_upload(_error: RequestEntityTooLarge) -> tuple[Response, int]:
         return jsonify(error="ファイルのサイズが大きすぎます"), 413
 
+    def project_member_for_source(relative_path: str) -> str:
+        """通常アップロードと読込済みプロジェクトの両方で安定した保存名を返す。"""
+        if relative_path.split("/", 1)[0] == "source":
+            return relative_path
+        return f"source/{relative_path}"
+
+    def build_project_archive(render_mode: str) -> Path:
+        """現在の編集可能なセッションを`.miditrack`へ書き出す。"""
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("先にMIDIファイルを読み込んでください")
+        render_mode = _validate_render_mode(render_mode)
+        files: dict[str, Path] = {"midi/original.mid": web_session.original_path}
+        source_section: dict[str, Any] | None = None
+        if web_session.source_format is not None:
+            source_files: list[dict[str, str]] = []
+            source_members: dict[str, str] = {}
+            for entry in web_session.source_files:
+                raw_path = entry.get("path")
+                name = entry.get("name")
+                if not isinstance(raw_path, str) or not isinstance(name, str):
+                    raise WebValidationError("セッションの音源ファイル情報が不正です")
+                source_path = _project_member_path(web_session.root, raw_path, "音源ファイル")
+                member = project_member_for_source(raw_path)
+                files[member] = source_path
+                source_members[raw_path] = member
+                source_files.append({"path": member, "name": name})
+            active_file = None
+            if web_session.source_path is not None:
+                raw_active = web_session.source_path.relative_to(web_session.root).as_posix()
+                active_file = source_members.get(raw_active)
+                if active_file is None:
+                    active_file = project_member_for_source(raw_active)
+                    files[active_file] = _project_member_path(
+                        web_session.root, raw_active, "選択中の音源ファイル"
+                    )
+                    source_files.append({"path": active_file, "name": web_session.source_path.name})
+            source_section = {
+                "name": web_session.source_name,
+                "format": web_session.source_format,
+                "metadata": web_session.source_metadata,
+                "songs": web_session.source_songs,
+                "files": source_files,
+                "activeFile": active_file,
+                "playlists": web_session.source_m3u_texts,
+                "songIndex": web_session.source_song_index,
+                "convertedOptions": web_session.converted_options,
+            }
+
+        assets: dict[str, Any] = {"chipMetadata": _project_metadata_payload(web_session.chip_metadata)}
+        for key, path, prefix in (
+            ("chipStem", web_session.chip_stem_path, "assets/chip-stem.wav"),
+            ("dacStem", web_session.dac_stem_path, "assets/dac-stem.wav"),
+            ("gameSoundfont", web_session.game_soundfont_path, "assets/game-soundfont"),
+        ):
+            if path is not None and path.is_file():
+                member = prefix if prefix.endswith(".wav") else f"{prefix}{path.suffix.lower()}"
+                files[member] = path
+                assets[key] = member
+            else:
+                assets[key] = None
+
+        manifest = {
+            "format": project.PROJECT_FORMAT,
+            "version": project.PROJECT_VERSION,
+            "midi": {
+                "path": "midi/original.mid",
+                "originalName": web_session.original_name,
+                "downloadStem": web_session.download_stem,
+            },
+            "edits": {
+                "assignments": web_session.assignments,
+                "volumes": web_session.volumes,
+                "sources": web_session.track_sources,
+                "speed": web_session.speed_ratio,
+                "transpose": web_session.transpose_semitones,
+            },
+            "source": source_section,
+            "assets": assets,
+            "soundfontPath": str(web_session.soundfont_override) if web_session.soundfont_override else None,
+            "ui": {"renderMode": render_mode},
+        }
+        archive_path = web_session.root / f"{_effective_download_stem(web_session)}{PROJECT_EXTENSION}"
+        project.create_archive(archive_path, manifest, files)
+        return archive_path
+
+    def parse_project_index_map(raw: Any, label: str) -> dict[int, Any]:
+        """JSONオブジェクトのトラック番号キーを整数へ戻す。"""
+        if not isinstance(raw, dict):
+            raise WebValidationError(f"プロジェクトの{label}が不正です")
+        parsed: dict[int, Any] = {}
+        for key, value in raw.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                raise WebValidationError(f"プロジェクトの{label}のトラック番号が不正です: {key}") from None
+            if str(index) != str(key):
+                raise WebValidationError(f"プロジェクトの{label}のトラック番号が不正です: {key}")
+            parsed[index] = value
+        return parsed
+
+    def load_project_session(archive_path: Path) -> tuple[WebSession, dict[str, Any], list[str]]:
+        """アーカイブを別セッションへ復元し、成功時だけ呼び出し側が置換できるようにする。"""
+        project_root = Path(tempfile.mkdtemp(prefix="miditrack-project-")).resolve()
+        try:
+            extracted = project.extract_archive(archive_path, project_root)
+            manifest = extracted.manifest
+            raw_midi = manifest.get("midi")
+            raw_edits = manifest.get("edits")
+            if not isinstance(raw_midi, dict) or not isinstance(raw_edits, dict):
+                raise WebValidationError("プロジェクトのMIDIまたは編集情報が不正です")
+            original_path = _project_member_path(extracted.root, raw_midi.get("path"), "基準MIDI")
+            original_name = raw_midi.get("originalName")
+            if not isinstance(original_name, str) or not original_name:
+                raise WebValidationError("プロジェクトの元ファイル名が不正です")
+            midi_file, tracks = midi.analyze_midi_file(original_path)
+            candidate = WebSession(root=project_root)
+            candidate.load_midi(original_path, sanitize_stem(original_name), midi_file.ticks_per_beat, tracks)
+
+            raw_source = manifest.get("source")
+            if raw_source is not None:
+                if not isinstance(raw_source, dict):
+                    raise WebValidationError("プロジェクトの音源情報が不正です")
+                source_format = raw_source.get("format")
+                source_name = raw_source.get("name")
+                source_files = raw_source.get("files")
+                active_file = raw_source.get("activeFile")
+                if not isinstance(source_format, str) or not isinstance(source_name, str):
+                    raise WebValidationError("プロジェクトの音源情報が不正です")
+                convert.format_by_key(source_format)
+                if not isinstance(source_files, list) or not isinstance(active_file, str):
+                    raise WebValidationError("プロジェクトの音源ファイル情報が不正です")
+                candidate.source_format = source_format
+                candidate.source_name = sanitize_stem(source_name)
+                candidate.source_files = []
+                for entry in source_files:
+                    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("name"), str):
+                        raise WebValidationError("プロジェクトの音源ファイル情報が不正です")
+                    path = _project_member_path(extracted.root, entry["path"], "音源ファイル")
+                    candidate.source_files.append(
+                        {"path": path.relative_to(project_root).as_posix(), "name": entry["name"]}
+                    )
+                active_path = _project_member_path(extracted.root, active_file, "選択中の音源ファイル")
+                if active_path.relative_to(project_root).as_posix() not in {entry["path"] for entry in candidate.source_files}:
+                    raise WebValidationError("選択中の音源ファイルが一覧に含まれていません")
+                candidate.source_path = active_path
+                metadata = raw_source.get("metadata", {})
+                songs = raw_source.get("songs", [])
+                playlists = raw_source.get("playlists", [])
+                if not isinstance(metadata, dict) or not isinstance(songs, list) or not isinstance(playlists, list) or not all(isinstance(item, str) for item in playlists):
+                    raise WebValidationError("プロジェクトの音源詳細が不正です")
+                candidate.source_metadata = metadata
+                candidate.source_songs = songs
+                candidate.source_m3u_texts = playlists
+                song_index = raw_source.get("songIndex")
+                if song_index is not None and (isinstance(song_index, bool) or not isinstance(song_index, int)):
+                    raise WebValidationError("プロジェクトの曲番号が不正です")
+                candidate.source_song_index = song_index
+                converted_options = raw_source.get("convertedOptions", {})
+                if not isinstance(converted_options, dict):
+                    raise WebValidationError("プロジェクトの変換オプションが不正です")
+                candidate.converted_options = convert.validate_convert_options(
+                    convert.format_by_key(source_format), songs, converted_options
+                )
+
+            raw_assets = manifest.get("assets", {})
+            if not isinstance(raw_assets, dict):
+                raise WebValidationError("プロジェクトの追加資産情報が不正です")
+            raw_metadata = raw_assets.get("chipMetadata")
+            if raw_metadata is not None:
+                if not isinstance(raw_metadata, dict) or not isinstance(raw_metadata.get("type"), str) or not isinstance(raw_metadata.get("payload"), dict):
+                    raise WebValidationError("プロジェクトの実機音源メタデータが不正です")
+                metadata_path = project_root / ".miditrack-metadata.json"
+                metadata_path.write_text(json.dumps(raw_metadata["payload"]), encoding="utf-8")
+                if raw_metadata["type"] == "vgm":
+                    candidate.chip_metadata = libvgm.load_metadata(metadata_path, len(tracks))
+                elif raw_metadata["type"] == "nsf":
+                    candidate.chip_metadata = nsf_chip.load_metadata(metadata_path, len(tracks))
+                else:
+                    raise WebValidationError("未対応の実機音源メタデータです")
+            for key, attribute, label in (
+                ("chipStem", "chip_stem_path", "チップステム"),
+                ("dacStem", "dac_stem_path", "DACステム"),
+                ("gameSoundfont", "game_soundfont_path", "ゲームSoundFont"),
+            ):
+                value = raw_assets.get(key)
+                if value is not None:
+                    setattr(candidate, attribute, _project_member_path(extracted.root, value, label))
+
+            assignments = parse_project_index_map(raw_edits.get("assignments", {}), "音色設定")
+            volumes = parse_project_index_map(raw_edits.get("volumes", {}), "音量設定")
+            sources = parse_project_index_map(raw_edits.get("sources", {}), "音源設定")
+            candidate.assignments = midi.validate_assignments(tracks, assignments)
+            candidate.volumes = midi.validate_volumes(tracks, volumes)
+            validated_sources = _validate_track_sources(candidate, tracks, sources)
+            tracks_by_index = {track.index: track for track in tracks}
+            for track_index, source in validated_sources.items():
+                _set_track_source(candidate, tracks_by_index[track_index], source)
+            candidate.speed_ratio = midi.validate_speed_ratio(raw_edits.get("speed"))
+            candidate.transpose_semitones = midi.validate_transpose_semitones(raw_edits.get("transpose"))
+            download_stem = raw_midi.get("downloadStem", "")
+            if not isinstance(download_stem, str):
+                raise WebValidationError("プロジェクトのダウンロード名が不正です")
+            candidate.download_stem = sanitize_stem(download_stem) if download_stem.strip() else ""
+
+            warnings: list[str] = []
+            saved_soundfont = manifest.get("soundfontPath")
+            if saved_soundfont is not None:
+                if not isinstance(saved_soundfont, str):
+                    raise WebValidationError("プロジェクトのSoundFont参照が不正です")
+                soundfont_path = Path(saved_soundfont)
+                if render.is_soundfont_file(soundfont_path):
+                    candidate.soundfont_override = soundfont_path
+                else:
+                    warnings.append("保存されたSoundFontが見つからないため、既定を使用します。")
+
+            raw_ui = manifest.get("ui", {})
+            if not isinstance(raw_ui, dict):
+                raise WebValidationError("プロジェクトの画面設定が不正です")
+            ui_state = {"renderMode": _validate_render_mode(raw_ui.get("renderMode"))}
+            return candidate, ui_state, warnings
+        except Exception:
+            shutil.rmtree(project_root, ignore_errors=True)
+            raise
+
     @app.get("/")
     def index() -> Response:
         return send_file(ASSET_DIR / "index.html")
@@ -706,6 +1011,46 @@ def create_app(
         selected = web_session.soundfont_override
         preferences.save_preferences({"selectedSoundfont": str(selected) if selected else None})
         return jsonify(**soundfont_payload(web_session, soundfont))
+
+    @app.post("/api/project/export")
+    def export_project() -> Response:
+        """現在の編集可能なセッションを`.miditrack`としてダウンロードする。"""
+        web_session.require_tracks()
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            raise WebValidationError("プロジェクトの画面設定はオブジェクトで指定してください")
+        archive_path = build_project_archive(body.get("renderMode"))
+        download_name = f"{_effective_download_stem(web_session)}{PROJECT_EXTENSION}"
+        return send_file(
+            archive_path,
+            mimetype="application/vnd.miditrack.project+zip",
+            as_attachment=True,
+            download_name=download_name,
+            max_age=0,
+        )
+
+    @app.post("/api/project/import")
+    def import_project() -> Response:
+        """プロジェクトを別セッションへ検証復元してから、現在状態を置換する。"""
+        # Flask 3.1ではmultipart解析前にリクエスト単位の上限を変更できる。
+        request.max_content_length = MAX_PROJECT_UPLOAD_BYTES
+        upload = request.files.get("project")
+        if upload is None or not upload.filename:
+            raise WebValidationError(".miditrackファイルを選択してください")
+        if not upload.filename.lower().endswith(PROJECT_EXTENSION):
+            raise WebValidationError("拡張子が .miditrack のファイルを選択してください")
+        staging_root = Path(tempfile.mkdtemp(prefix="miditrack-project-upload-"))
+        try:
+            archive_path = staging_root / "project.miditrack"
+            upload.save(archive_path)
+            candidate, ui_state, warnings = load_project_session(archive_path)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+        # load_project_session()が成功するまで既存セッションへ一切触れない。
+        web_session.clear()
+        web_session.__dict__.update(candidate.__dict__)
+        return jsonify(session=session_payload(web_session), uiState=ui_state, warnings=warnings)
 
     @app.get("/api/session")
     def get_session() -> Response:
@@ -1795,6 +2140,7 @@ def create_app(
         # 必ずその後に代入する（順序を逆にすると今設定した値が消える）。
         web_session.chip_metadata = track_metadata
         web_session.source_song_index = options.get("songIndex")
+        web_session.converted_options = options
         if track_metadata is not None:
             # 新しいnsf2midi/vgm2midiではトラック選択"game"を優先し、旧noise/dac
             # ステムを同時に混ぜない。sidecarが無い旧converter/fakeでは従来の
