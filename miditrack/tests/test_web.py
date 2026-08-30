@@ -1070,12 +1070,22 @@ class TestWebApp(unittest.TestCase):
         self.client.post(
             "/api/variations",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
-            data=json.dumps({"speeds": [1.2], "transposes": [-2]}),
+            data=json.dumps({"speeds": [1.2, 0.8], "transposes": [-2, 0, 2]}),
         )
         response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
         archive = zipfile.ZipFile(io.BytesIO(response.data))
-        self.assertIn("fixture_x1.2_p-2.wav", archive.namelist())
-        self.assertIn("fixture_x1.2_p-2.mid", archive.namelist())
+        expected_stems = {
+            "fixture_p-2_x1.2",
+            "fixture_p+0_x1.2",
+            "fixture_p+2_x1.2",
+            "fixture_p-2_x0.8",
+            "fixture_p+0_x0.8",
+            "fixture_p+2_x0.8",
+        }
+        self.assertEqual(
+            set(archive.namelist()),
+            {f"{stem}.{suffix}" for stem in expected_stems for suffix in ("wav", "mid")},
+        )
 
     def test_variation_midi_carries_scaled_tempo_and_shifted_notes(self) -> None:
         self._upload()
@@ -1086,7 +1096,7 @@ class TestWebApp(unittest.TestCase):
         )
         response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
         archive = zipfile.ZipFile(io.BytesIO(response.data))
-        variation_midi = mido.MidiFile(file=io.BytesIO(archive.read("fixture_x2_p12.mid")))
+        variation_midi = mido.MidiFile(file=io.BytesIO(archive.read("fixture_p+12_x2.0.mid")))
         tempos = [
             m.tempo for track in variation_midi.tracks for m in track if m.type == "set_tempo"
         ]
@@ -1108,7 +1118,7 @@ class TestWebApp(unittest.TestCase):
         )
         response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
         archive = zipfile.ZipFile(io.BytesIO(response.data))
-        variation_midi = mido.MidiFile(file=io.BytesIO(archive.read("fixture_x1_p0.mid")))
+        variation_midi = mido.MidiFile(file=io.BytesIO(archive.read("fixture_p+0_x1.0.mid")))
         program_change = next(m for m in variation_midi.tracks[0] if m.type == "program_change")
         self.assertEqual(program_change.program, 30)
 

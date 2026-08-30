@@ -545,15 +545,16 @@ def session_payload(session: WebSession) -> dict[str, Any]:
 
 
 def _variation_label(speed: float, transpose: int) -> str:
-    """バリエーション1件分のファイル名ラベルを作る（例: "x1.2_p-2", "x1_p0"）。
+    """バリエーション1件分のファイル名ラベルを作る（例: "p-2_x1.2", "p+0_x1.0"）。
 
     pitch_shift.py._format_number()は再利用しない — あちらはpitch_shift.sh
     CLIの-s/-pへ渡す文字列を作る別の契約であり、ここは「ファイルシステム安全で
     人間可読なラベルを作る」という別の目的のため、向きを揃えると将来の
-    ドリフトリスクになる。整数値は"1.0"ではなく"1"と素直な表記にする。
+    ドリフトリスクになる。速度は常に小数第1位まで表示し、ピッチは正値と0にも
+    符号を付けることで、CLIの出力形式と揃える。
     """
-    speed_text = str(int(speed)) if float(speed).is_integer() else str(speed)
-    return f"x{speed_text}_p{transpose}"
+    speed_text = f"{speed:.1f}"
+    return f"p{transpose:+d}_x{speed_text}"
 
 
 def create_app(

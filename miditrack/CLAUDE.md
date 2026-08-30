@@ -567,7 +567,10 @@ output — the one `/api/download` returns — and is keyed to the *session's*
 speed/transpose, not any one batch combination's. `_apply_to()` takes an
 explicit `output_path`, so the batch writes each combination to
 `variations_work/{name}_x{speed}_p{transpose}.mid` and leaves
-`applied_path`/`apply_summary` completely untouched. This is what makes
+`applied_path`/`apply_summary` completely untouched. ZIP entries use the
+same externally documented `{name}_p{+/-semitones}_x{speed-to-one-decimal}`
+label for both WAV and MIDI (for example, `song_p+0_x1.0.wav`), so the pitch
+field always precedes the speed field and zero is unambiguous. This is what makes
 `test_variations_do_not_change_session_speed_and_transpose` pass: `/api/
 download` keeps returning the session's own transform after a batch run,
 never the last combination's.

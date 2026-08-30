@@ -73,12 +73,12 @@ for argument in "$@"; do output="$argument"; done
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("同時変換数: 3", result.stdout)
             expected = {
-                "song_x1.2_p-1.wav",
-                "song_x1.2_p1.wav",
-                "song_x0.8_p-1.wav",
-                "song_x0.8_p1.wav",
+                "song_p-1_x1.2.wav",
+                "song_p+1_x1.2.wav",
+                "song_p-1_x0.8.wav",
+                "song_p+1_x0.8.wav",
             }
-            self.assertEqual({path.name for path in folder.glob("song_x*.wav")}, expected)
+            self.assertEqual({path.name for path in folder.glob("song_p*.wav")}, expected)
 
     def test_rejects_non_positive_job_count(self) -> None:
         """同時変換数0は処理開始前に拒否する。"""
