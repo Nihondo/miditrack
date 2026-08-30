@@ -242,12 +242,14 @@ never shells out: this repository's own path contains a space and an `&`.
 **Why `run_pitch_shift()` diffs `work_dir`'s `*.wav` files before/after the
 subprocess call, rather than constructing the expected output filenames
 itself**: `pitch_shift.sh` builds each output name as
-`${STEM}_x${s}_p${p}.wav` using the *literal string* passed to `-s`/`-p`
-in its own shell arithmetic (awk formatting only affects the internal tempo
-ratio, not the filename). Reconstructing that exact string formatting in
-Python to predict filenames would be a second, drift-prone implementation
-of `pitch_shift.sh`'s own naming logic. Listing what's actually on disk
-after the run is both simpler and correct by construction. This matters
+`${STEM}_p${PITCH_LABEL}_x${SPEED_LABEL}.wav`, where `PITCH_LABEL`/
+`SPEED_LABEL` are themselves `awk`-formatted (`%+g` for pitch — always
+signed, e.g. `+0`/`+1`/`-2` — and `%.1f` for speed, e.g. `1` becomes `1.0`)
+rather than the literal string passed to `-s`/`-p`. Reconstructing that
+exact string formatting in Python to predict filenames would be a second,
+drift-prone implementation of `pitch_shift.sh`'s own naming logic. Listing
+what's actually on disk after the run is both simpler and correct by
+construction. This matters
 less now than it did for the old batch feature — `_synced_stem()` always
 calls with a single-element `[speed]`/`[transpose]` list, so the diff
 always yields exactly one file — but the guard against mistaking a

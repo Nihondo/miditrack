@@ -86,8 +86,8 @@ Options:
   pitch_shift.sh -s 1.2 -s 0.8 -p 0 song.m4a      # x1.2/x0.8 × p0 = 2ファイル
 
 出力ファイル（入力が song.m4a, デフォルト設定の場合）:
-  song_x1.2_p-2.wav   song_x1.2_p-1.wav   song_x1.2_p0.wav   song_x1.2_p1.wav   song_x1.2_p2.wav
-  song_x0.8_p-2.wav   song_x0.8_p-1.wav   song_x0.8_p0.wav   song_x0.8_p1.wav   song_x0.8_p2.wav
+  song_p-2_x1.2.wav   song_p-1_x1.2.wav   song_p+0_x1.2.wav   song_p+1_x1.2.wav   song_p+2_x1.2.wav
+  song_p-2_x0.8.wav   song_p-1_x0.8.wav   song_p+0_x0.8.wav   song_p+1_x0.8.wav   song_p+2_x0.8.wav
 
 依存: ffmpeg, rubberband-cli, curl（URL入力時）, yt-dlp（YouTube URL時）
 USAGE
@@ -249,8 +249,10 @@ if [[ "$VERBOSE" == true ]]; then
 fi
 for s in "${SPEEDS[@]}"; do
     TEMPO_RATIO=$(awk "BEGIN {printf \"%.6f\", 1 / $s}")
+    SPEED_LABEL=$(awk "BEGIN {printf \"%.1f\", $s}")
     for p in "${PITCHES[@]}"; do
-        OUTPUT="${STEM}_x${s}_p${p}.wav"
+        PITCH_LABEL=$(awk "BEGIN {printf \"%+g\", $p}")
+        OUTPUT="${STEM}_p${PITCH_LABEL}_x${SPEED_LABEL}.wav"
         step_line "速度 ${C_BOLD}${s}x${C_RESET} / ピッチ ${C_BOLD}${p}${C_RESET} → ${C_BOLD}$OUTPUT${C_RESET}"
         # 上のffmpeg呼び出しと同じ理由でRUBBERBAND_LOG_OPTSも安全展開する。
         rubberband "${RUBBERBAND_LOG_OPTS[@]+"${RUBBERBAND_LOG_OPTS[@]}"}" -t "$TEMPO_RATIO" -p "$p" "$TEMP_WAV" "$OUTPUT" &
