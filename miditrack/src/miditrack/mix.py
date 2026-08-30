@@ -36,7 +36,7 @@ STEM_GAIN = 0.55
 SPLIT_GAIN = 1.0
 
 
-def build_filter_complex(gains: Sequence[float]) -> str:
+def build_filter_complex(gains: Sequence[float], sample_rate: int = 44100) -> str:
     """各入力に個別のゲインを掛けてから単純加算(amix)する-filter_complex文字列を作る。
 
     normalize=0が必須: amixの既定(normalize=1)は入力数で割ってしまうため、
@@ -52,7 +52,7 @@ def build_filter_complex(gains: Sequence[float]) -> str:
         label = f"g{index}"
         labels.append(label)
         parts.append(
-            f"[{index}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+            f"[{index}:a]aformat=sample_fmts=fltp:sample_rates={sample_rate}:channel_layouts=stereo,"
             f"volume={gain}[{label}]"
         )
     joined_labels = "".join(f"[{label}]" for label in labels)
@@ -92,7 +92,12 @@ def resolve_ffmpeg_bin() -> str:
     raise MixError("ffmpeg が見つかりません。FFMPEG_BIN 環境変数か PATH を確認してください")
 
 
-def mix_wav(inputs: Sequence[tuple[Path, float]], out_wav: Path) -> None:
+def mix_wav(
+    inputs: Sequence[tuple[Path, float]],
+    out_wav: Path,
+    *,
+    sample_rate: int = 44100,
+) -> None:
     """(WAVパス, ゲイン) の列を単純加算して out_wav に書き出す。失敗時は MixError。
 
     2入力（fluidsynthのレンダリング結果 + 実機チップノイズステム）だけでなく、
@@ -103,7 +108,9 @@ def mix_wav(inputs: Sequence[tuple[Path, float]], out_wav: Path) -> None:
         raise MixError("ミックスには2つ以上の入力が必要です")
 
     bin_path = resolve_ffmpeg_bin()
-    filter_complex = build_filter_complex([gain for _path, gain in inputs])
+    filter_complex = build_filter_complex(
+        [gain for _path, gain in inputs], sample_rate=sample_rate
+    )
 
     argv = [bin_path, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
     for path, _gain in inputs:
@@ -116,7 +123,7 @@ def mix_wav(inputs: Sequence[tuple[Path, float]], out_wav: Path) -> None:
         "-c:a",
         "pcm_s16le",
         "-ar",
-        "44100",
+        str(sample_rate),
         "-ac",
         "2",
         str(out_wav),

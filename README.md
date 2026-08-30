@@ -24,7 +24,7 @@ Turn chiptune music — NES (`.nsf`), SNES (`.spc`/`.rsn`), or VGM (`.vgm`/`.vgz
    ```
    This opens a browser tab automatically. Optionally, symlink it onto your `PATH` once (`ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack`) so you can just type `miditrack` from anywhere afterward.
 4. **Drop a file** onto the upload area — a `.nsf`, `.spc`, `.rsn`, `.vgm`/`.vgz`, or an already-converted `.mid`.
-5. **Convert, listen, and download** — pick a song (if the file has more than one), click "MIDIに変換" (Convert to MIDI) if you started from a source file, then "適用して試聴" (Apply & Audition) to hear it, and download the `.mid` or `.wav` when you're happy.
+5. **Convert, listen, and download** — pick a song (if the file has more than one), click "MIDIに変換" (Convert to MIDI) if you started from a source file, choose fast or quality auditioning, then click "適用して試聴" (Apply & Audition). Download the `.mid` or final-quality `.wav` when you're happy.
 
 ## What You Can Do
 
@@ -35,6 +35,7 @@ Turn chiptune music — NES (`.nsf`), SNES (`.spc`/`.rsn`), or VGM (`.vgm`/`.vgz
 - **Hear the original chip/game sound instead of a generic SoundFont** — for tracks where it's available, switch a "SoundFont" row to "原曲の音源" (Original game sound) to hear the actual NES/SNES/chip hardware output instead of a synthesized approximation.
 - **Change the whole song's speed and pitch** — use the compact −/＋ controls on the right side of the audition toolbar to adjust the global speed multiplier and semitone transpose. The change is applied directly to the MIDI (no audio time-stretch artifacts) and reflected in every play, WAV download, and MIDI download until you change it back.
 - **Export a batch of speed/pitch variations** — expand the normally collapsed "バリエーションをまとめて生成" (Generate variations in bulk) disclosure to generate every combination of a few speed factors and semitone shifts as a single downloadable ZIP of WAV files, handy for game-development or remix use.
+- **Choose fast or final-quality auditioning** — Fast mode renders the full song at 22.05kHz for quick checks; Quality mode renders at 44.1kHz with the same processing used by the final WAV download. Completed renders are cached for the current session, so revisiting the same settings and mode is immediate.
 - **Play it back and download the result** — compact controls provide play/pause, one-second seeking, return-to-start, volume, and mute. A digital timer beside them shows elapsed/total time to one-tenth of a second. The zoomable piano roll follows playback after the playhead reaches the middle of its viewport; scrolling it yourself stops that follow mode. Download buttons save both the edited `.mid` and rendered `.wav`, and your original upload is never modified.
 - **Pick your own SoundFont** — choose which `.sf2`/`.sf3` bank to render with, right from the browser.
 
@@ -74,10 +75,10 @@ Most people only ever need `miditrack` — the three converters and two scripts 
 
 1. Select or drag a `.mid`/`.midi` file onto the upload area.
 2. The track list appears. Each editable track shows an instrument dropdown (pre-selected to whatever the file already specifies) and, for tracks with notes, a 0–200% volume slider. Long track names and non-editable reasons are shortened with an ellipsis to keep every row the same height; focus or point at a ⚠ button to read an instrument-change warning.
-3. Optionally pick a different **SoundFont** from the dropdown in the audition card.
+3. Optionally pick a different **SoundFont**, then choose **高速** (Fast, 22.05kHz) or **品質** (Quality, 44.1kHz) in the audition card. Quality mode matches the final WAV download.
 4. Optionally adjust the speed multiplier and/or semitone transpose with the compact −/＋ controls on the right side of the audition toolbar. You can also type a value directly into either control.
-5. Click "適用して試聴" (Apply & Audition) to render the result. Use the segmented playback controls or keyboard shortcuts to play, pause, and seek. The adjacent digital timer shows elapsed/total time to one-tenth of a second, followed by volume and mute controls. At zoom levels wider than the viewport, playback from the beginning starts auto-scrolling after the playhead reaches the midpoint. A manual horizontal scroll stops following.
-6. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) to save your work.
+5. Click "適用して試聴" (Apply & Audition) to use the selected mode. After a setting change, miditrack also starts preparing that mode after 500ms of inactivity; the button reuses the prepared result instead of rendering it twice. Use the segmented playback controls or keyboard shortcuts to play, pause, and seek. The adjacent digital timer shows elapsed/total time to one-tenth of a second, followed by volume and mute controls. At zoom levels wider than the viewport, playback from the beginning starts auto-scrolling after the playhead reaches the midpoint. A manual horizontal scroll stops following.
+6. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) to save your work. WAV download always uses the 44.1kHz quality render and reuses it when Quality mode has already prepared the same state.
 7. Optionally expand "バリエーションをまとめて生成" (Generate variations in bulk), enter comma-separated speed factors and semitone values, and click "バリエーションをZIPでダウンロード" (Download variations as ZIP) to get every combination as one ZIP.
 
 ### Starting from a source file (`.nsf`/`.spc`/`.rsn`/`.vgm`, a `.zip`, or several files at once)

@@ -574,13 +574,78 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .soundfont-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
 }
 
 .soundfont-row .program-select { min-width: 0; }
 .soundfont-row .button { white-space: nowrap; }
+
+.render-mode-field {
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.render-mode-options {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 2px solid var(--neutral-40);
+  border-radius: 8px;
+}
+
+.render-mode-input {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
+.render-mode-options label {
+  min-width: 56px;
+  min-height: 24px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--neutral-80);
+  background: var(--neutral-0);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.render-mode-options label + input + label {
+  border-left: 1px solid var(--neutral-40);
+}
+
+.render-mode-options input:checked + label {
+  color: var(--brand-dark);
+  background: var(--brand-light);
+}
+
+.render-mode-options input:focus-visible + label {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--brand-dark);
+  outline-offset: -2px;
+}
+
+.render-mode-options input:disabled + label {
+  color: var(--neutral-50);
+  cursor: default;
+}
 
 .playback-controls svg {
   width: 20px;

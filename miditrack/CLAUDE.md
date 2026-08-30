@@ -27,14 +27,15 @@ src/miditrack/
   gm.py                    the 128-name GM table + 16 families (single source of truth)
   midi.py                  track analysis, apply/save program changes and velocity-based volume
   pianoroll.py             read-only note/tempo extraction for the browser piano roll
-  render.py                midi2wav.sh resolution + safe subprocess invocation
+  render.py                midi2wav.sh resolution + safe subprocess invocation, with an explicit
+                            per-render sample rate
   convert.py               nsf2midi/spc2midi/vgm2midi resolution, -l parsing, safe invocation,
                             ZIP extraction (zip-slip guarded), gme-format m3u playlist parsing
   pitch_shift.py           pitch_shift.sh resolution + safe subprocess invocation, used only
                             to keep a chipNoise stem in sync with a MIDI-layer transform
                             (speed/pitch option validation itself lives in midi.py)
-  mix.py                   ffmpeg resolution + safe subprocess invocation, mixes an NSF/VGM
-                            hardware-noise stem into the fluidsynth render
+  mix.py                   ffmpeg resolution + safe subprocess invocation, resamples and mixes
+                            SoundFont parts and NSF/VGM hardware stems at the selected rate
   libvgm.py                validates VGM track/channel sidecars and invokes the pinned native
                             helper for a selected physical-channel mix
   preferences.py           favorite-instrument shortlist (pinned/usage) and the last-selected
@@ -83,9 +84,19 @@ as `mm:ss.t`, and runs its animation-frame refresh only while media is playing.
 Keep a tabular monospace fallback and fixed timer width so font swapping cannot
 shift adjacent controls. MIDI/WAV download buttons remain below the piano roll.
 
-The SoundFont select and adjacent Apply & Audition button retain their standard
-`.program-select` and `.button` heights. Center them vertically; do not stretch
-either control to make their outer boxes equal.
+The SoundFont row contains, in order, the `.program-select`, the fast/quality
+segmented choice, and the Apply & Audition `.button`. The segment shows only
+the two visible labels `高速`/`品質`; profile-rate explanations belong in the
+manual, not this compact toolbar. Its fieldset stretches to the row height so
+the outer segment exactly follows the Apply button's height without stretching
+the select or button themselves.
+
+The fast/quality segmented choice remains a native radio group with explicit
+`label[for]` associations. Its inputs use the dedicated `.render-mode-input`
+canonical 1px/`clip-path` hiding rule, not the shared `.visually-hidden` helper:
+that helper intentionally becomes visible while focused/active, which puts a
+radio back into the two-column grid during a click and breaks both layout and
+hit-testing. Keyboard focus is rendered on the adjacent visible label instead.
 
 Track colors have one browser-side source of truth: `getTrackColor(track.index,
 trackCount, opacity)`. Both the note rectangles and the color marker preceding
@@ -144,19 +155,63 @@ support for free, the same technique `tools/make_videos_web.py` already
 uses for video/audio scrubbing. This is deliberately "boring": it reuses
 existing, tested infrastructure instead of adding a new audio-synthesis
 dependency, at the cost of needing an explicit "Apply & Audition" click
-per change rather than instant feedback. For a chiptune-length source
-(seconds to a few minutes), `fluidsynth -F` (fast, non-realtime render)
-completes in well under a second in practice, so the click-to-hear latency
-is small.
+to activate a prepared result rather than instant feedback.
 
-Every completed render receives a process-lifetime-monotonic `render_id`,
-which appears in both `render-NNNN.wav` and `/api/audio?v=N`. MIDI re-conversion,
-plain MIDI replacement, source-file switching, and `WebSession.clear()` must
-invalidate the current `audio_path` without resetting that counter. Reusing
-`v=1` after a re-conversion lets an `<audio>` element reuse byte ranges cached
-for the previous WAV even though the server has replaced the file. A process
-restart may safely begin at zero because the launch authentication token in
-the media URL changes at the same time.
+Auditioning has two explicit profiles. `fast` is the default and produces a
+full-song, 16-bit stereo 22.05kHz WAV while preserving the existing reverb and
+chorus path. `quality` produces the same 44.1kHz render used by
+`GET /api/download/wav`; a matching quality audition is therefore reused for
+download, while a fast preview is never passed off as the final file.
+`render.render_wav()` and `mix.mix_wav()` both receive the profile sample rate
+explicitly, so split parts and the final ffmpeg mix cannot silently disagree.
+
+Every player-source change receives a process-lifetime-monotonic `render_id`,
+which is exposed through `/api/audio?v=N`. A cache hit for the source already
+active in the player keeps the existing id; activating a different cached
+source increments it so the browser cannot reuse byte ranges from another WAV.
+MIDI re-conversion, plain MIDI replacement, source-file switching, and
+`WebSession.clear()` must not reset the counter. A process restart may safely
+begin at zero because the launch authentication token in the media URL changes
+at the same time.
+
+## Why preview rendering uses a state cache and two external workers
+
+The full-render key is a SHA-256 digest of the MIDI generation, assignments,
+effective volumes, per-track sources, speed, transpose, source format/song and
+sample count, SoundFont/game-SoundFont/chip-stem path-size-mtime signatures,
+and the render profile/sample rate. `invalidate_render()` clears only the
+currently applied/player pointers; it deliberately retains completed entries,
+so repeating the same settings or returning to an earlier state is a cache hit.
+Changing only the download filename leaves both the applied MIDI and render
+cache intact. Uploading/reconverting MIDI clears the entire cache and advances
+the MIDI generation.
+
+The LRU lives under the session temporary directory and is bounded to 16
+entries and 256MiB total; `WebSession.clear()` removes it with the rest of the
+session. The same LRU also stores raw VGM/NSF hardware stems. Hardware channels
+left at their source volume are cached as the current selected set, preserving
+the emulator's non-linear combined mix. A channel whose volume was edited is
+cached individually before gain, so later gain-only edits remount the same raw
+WAV and run only the final mix. SoundFont choice and volume are intentionally
+absent from these raw-stem keys.
+
+Independent external jobs share one `ThreadPoolExecutor(max_workers=2)` per
+render. A game-derived SoundFont part and a GM SoundFont part overlap, and a
+VGM/NSF hardware-cache miss overlaps its independent FluidSynth job. FluidSynth
+internal `synth.cpu-cores` parallelism stays disabled: local measurements on
+the representative song were slower than keeping FluidSynth single-core and
+parallelizing independent outer jobs. MIDI application and track splitting
+remain serial, and ffmpeg runs once after every input is complete.
+
+The browser schedules `POST /api/render/prewarm` after 500ms without another
+relevant edit and sends the fetch with `priority: "low"` (unsupported browsers
+simply treat it as a normal fetch). Prewarming populates the selected profile's
+cache but never changes `audio_path` or autoplays. An explicit render for the
+same key joins via `render_lock` and then receives the cached result instead of
+starting a duplicate external render. `state_revision` is sampled before work
+and checked before publishing it; if settings changed during the render, the
+unpublished WAV is removed and the current state is retried, preventing mixed
+old/new state from entering the cache.
 
 ## Why WAV became a real download, not just an `<audio>` preview
 
@@ -170,20 +225,14 @@ drop into `make_videos.sh`'s working directory as the song's `*.wav`), not
 just something to audition and discard.
 
 `GET /api/download/wav` is deliberately symmetric with the existing
-`GET /api/download` (MIDI): both call a shared `ensure_*()` helper that
-performs the underlying work only if it hasn't already happened (apply
-assignments; render), rather than unconditionally redoing it. `ensure_applied()`
-and `ensure_render()` were extracted specifically so `POST /api/render`,
-`GET /api/download`, and `GET /api/download/wav` share one implementation of
-"has this already happened for the current assignments" instead of three
-copies that could drift — `WebSession.invalidate_render()` already clears
-`applied_path`/`apply_summary`/`audio_path` together on every assignment or
-SoundFont change, so "not yet applied" and "assignments changed since the
-last apply" are the same condition, and `ensure_applied()`/`ensure_render()`
-only need to check for `None`. `POST /api/render` itself still calls
-`invalidate_render()` unconditionally before `ensure_render()`, because a
-user clicking "適用して試聴" again should always regenerate — even when
-nothing changed — the same way it always did before this refactor.
+`GET /api/download` (MIDI): both call a shared `ensure_*()` helper. MIDI apply
+is reused until a content edit invalidates it; WAV download always asks
+`ensure_render("quality", activate_player=False)` for the final 44.1kHz
+profile. `POST /api/render` supplies the user's `fast`/`quality` selection and
+sets `activate_player=True`, while `POST /api/render/prewarm` supplies the same
+selection with `activate_player=False`. These three paths therefore share one
+cache/key/render implementation without letting a download or prewarm replace
+the currently playing source.
 
 The WAV download endpoint intentionally does **not** accept a query-string
 token the way `GET /api/audio` does: that exception exists only because
@@ -289,25 +338,18 @@ the old approach, and lets one control (`_apply_to()` + rendering) serve
 both the single-value control and the batch, instead of maintaining two
 separate mechanisms with two separate UIs.
 
-**Why `ensure_render()` was split into a locked wrapper and an unlocked
-body (`_render_applied_midi()`)**: the batch endpoint needs to render N
-combinations without going through `ensure_render()` itself, for three
-concrete reasons, each of which was a real blocker during design:
-`WebSession.render_lock` is not reentrant, so calling `ensure_render()`
-from inside a loop that already holds it would deadlock; `ensure_render()`
-has an early-return that reuses the existing `audio_path` once rendered
-once, which would make every iteration after the first a no-op; and
-`ensure_render()` unlinks the *previous* `audio_path` after rendering a new
-one, which would delete the previous iteration's own output from under it.
-`_render_applied_midi(applied_path, wav_path, *, render_id, speed,
-transpose, chip_render_stem=None)` is the actual rendering body (job
-planning, stem sync, mixing) with no opinion about locking, the current
-session's `audio_path`, or `render_id` bookkeeping — those three concerns
-now live solely in the thin `ensure_render()` wrapper, which the batch
-endpoint never calls. The batch instead takes `render_lock` itself, once,
-for the whole loop, and calls `_render_applied_midi()` directly per
-combination with its own dedicated output path — never touching
-`audio_path`, so the existing audition render survives a batch run intact.
+**Why `ensure_render()` remains a locked wrapper around the lower-level
+`_render_applied_midi()`**: the former owns state-key lookup, LRU insertion,
+state-revision validation, optional player activation, and render-id
+bookkeeping. The latter owns only job planning, external rendering, stem sync,
+and mixing for a caller-provided MIDI/output/profile. The batch endpoint needs
+to render N combinations that intentionally do not enter the audition LRU or
+change `audio_path`, so it takes the non-reentrant `render_lock` once and calls
+`_render_applied_midi(applied_path, wav_path, *, render_id, speed, transpose,
+sample_rate=44100, chip_render_stems=...)` directly for every combination.
+Calling `ensure_render()` from that loop would deadlock and would also collapse
+distinct batch combinations onto the session's single current state key. This
+separation keeps the existing audition source alive throughout a batch run.
 
 **Why `_apply_to()`/`_has_transform()`/`_synced_stem()` take speed/transpose
 as arguments instead of temporarily writing them onto `WebSession`**: the
@@ -1577,13 +1619,14 @@ their hardware audio through genuinely different mechanisms:
   by which point both modules have finished executing. Verified directly
   by importing `miditrack.convert` first and `miditrack.nsf_chip` first in
   separate fresh interpreter processes — both succeed.
-- **`render_selection(source_path, output_path, sample_count, targets,
-  track)` always re-invokes `nsf2midi --chip-render` against the
-  *original* `.nsf` file**, never a cached WAV, because the set of
-  selected channels can change at any point in the session (a track
-  flipped back to `"soundfont"` via `PATCH /api/session/tracks`) and the
-  only way to get a hardware-accurate combined render of an arbitrary
-  channel *subset* is one fresh emulation pass with everything else muted
+- **On a raw-stem cache miss,
+  `render_selection(source_path, output_path, sample_count, targets, track)`
+  re-invokes `nsf2midi --chip-render` against the *original* `.nsf` file.**
+  The Web layer caches that completed WAV by source generation, song, sample
+  count, and exact selected-channel set; returning to the same set therefore
+  avoids another emulation pass. A new set must still be rendered together,
+  because the only way to get a hardware-accurate combined render of an
+  arbitrary channel subset is one pass with everything else muted
   (see `nsf2midi/CLAUDE.md`'s explanation of why Noise/DPCM/Triangle and
   Square1/Square2 each share a non-linear mixing table, and therefore
   can't be rendered independently and summed). This is why `track` — the

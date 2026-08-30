@@ -179,6 +179,16 @@ class TestRenderWav(unittest.TestCase):
         self.assertEqual(argv[argv.index("-o") + 1], str(self.wav_path))
         self.assertEqual(argv[-1], str(self.mid_path))
 
+    def test_sample_rate_is_forwarded_to_midi2wav(self) -> None:
+        with mock.patch(
+            "miditrack.render.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            render.render_wav(
+                self.mid_path, self.wav_path, sample_rate=22050
+            )
+        (argv,), _ = mocked.call_args
+        self.assertEqual(argv[argv.index("-r") + 1], "22050")
+
     def test_space_and_ampersand_path_survives_unmangled(self) -> None:
         with mock.patch(
             "miditrack.render.subprocess.run", side_effect=self._fake_success_run()

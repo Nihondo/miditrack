@@ -108,14 +108,20 @@ def is_soundfont_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in _SOUNDFONT_EXTENSIONS
 
 
-def render_wav(midi_path: Path, wav_path: Path, soundfont: Path | None = None) -> None:
-    """midi_path の .mid を wav_path に .wav としてレンダリングする。失敗時は RenderError。"""
+def render_wav(
+    midi_path: Path,
+    wav_path: Path,
+    soundfont: Path | None = None,
+    *,
+    sample_rate: int = 44100,
+) -> None:
+    """midi_pathを指定サンプルレートのWAVへレンダリングする。失敗時はRenderError。"""
     bin_path = resolve_midi2wav_bin()
 
     argv = [bin_path, "-f"]
     if soundfont:
         argv += ["-s", str(soundfont)]
-    argv += ["-o", str(wav_path), str(midi_path)]
+    argv += ["-r", str(sample_rate), "-o", str(wav_path), str(midi_path)]
 
     try:
         result = subprocess.run(

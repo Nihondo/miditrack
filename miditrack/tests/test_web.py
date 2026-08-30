@@ -9,6 +9,8 @@ import io
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -18,7 +20,7 @@ import mido
 
 from miditrack import libvgm, mix, nsf_chip, preferences
 from miditrack.convert import SourceFormat
-from miditrack.errors import ConvertError
+from miditrack.errors import ConvertError, RenderError
 from miditrack.web import WebSession, create_app, resolve_startup_soundfont_override
 
 
@@ -216,6 +218,44 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
         self.assertEqual(response.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(response.headers.get("Referrer-Policy"), "no-referrer")
+
+    def test_render_mode_radios_stay_visually_hidden_while_focused(self) -> None:
+        html = self.client.get("/").get_data(as_text=True)
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+
+        self.assertIn('class="render-mode-input" type="radio"', html)
+        self.assertNotIn('class="visually-hidden" type="radio" name="render-mode"', html)
+        self.assertIn('label for="render-mode-fast"', html)
+        self.assertIn('label for="render-mode-quality"', html)
+        hidden_rule = css.split(".render-mode-input {", 1)[1].split("}", 1)[0]
+        self.assertIn("position: absolute !important", hidden_rule)
+        self.assertIn("clip-path: inset(50%) !important", hidden_rule)
+
+    def test_render_mode_toggle_is_compact_and_precedes_render_button(self) -> None:
+        html = self.client.get("/").get_data(as_text=True)
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+        soundfont_row = html.split('<div class="soundfont-row">', 1)[1].split(
+            '<p class="field-help" id="soundfont-help">', 1
+        )[0]
+
+        self.assertLess(
+            soundfont_row.index("soundfont-select"),
+            soundfont_row.index("render-mode-field"),
+        )
+        self.assertLess(
+            soundfont_row.index("render-mode-field"),
+            soundfont_row.index("render-button"),
+        )
+        self.assertIn('<label for="render-mode-fast">高速</label>', soundfont_row)
+        self.assertIn('<label for="render-mode-quality">品質</label>', soundfont_row)
+        self.assertNotIn("22.05kHzで素早く確認", html)
+        self.assertNotIn("最終WAVと同じ44.1kHz", html)
+        row_rule = css.split(".soundfont-row {", 1)[1].split("}", 1)[0]
+        field_rule = css.split(".render-mode-field {", 1)[1].split("}", 1)[0]
+        options_rule = css.split(".render-mode-options {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto auto", row_rule)
+        self.assertIn("align-self: stretch", field_rule)
+        self.assertIn("height: 100%", options_rule)
 
     # --- アップロード ---
 
@@ -667,14 +707,156 @@ class TestWebApp(unittest.TestCase):
         self.assertIn(".wav", response.headers.get("Content-Disposition", ""))
         self.assertEqual(len(self.render_calls), 1)
 
-    def test_download_wav_reuses_existing_render(self) -> None:
+    def test_download_wav_renders_quality_after_fast_preview(self) -> None:
         self._upload()
         self.client.post("/api/render", headers=AUTH_HEADERS)
         self.assertEqual(len(self.render_calls), 1)
         response = self.client.get("/api/download/wav", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
-        # 既にレンダリング済みなら再レンダリングしない。
+        # 既定の高速試聴(22.05kHz)は最終WAVとして流用せず、品質レンダーを行う。
+        self.assertEqual(len(self.render_calls), 2)
+
+    def test_download_wav_reuses_quality_preview(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/render",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "quality"}),
+        )
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(len(self.render_calls), 1)
+        response = self.client.get("/api/download/wav", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_render_modes_are_cached_independently(self) -> None:
+        self._upload()
+        fast = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        quality = self.client.post(
+            "/api/render",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "quality"}),
+        ).get_json()
+        fast_again = self.client.post(
+            "/api/render",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "fast"}),
+        ).get_json()
+
+        self.assertEqual(fast["sampleRate"], 22050)
+        self.assertEqual(quality["sampleRate"], 44100)
+        self.assertFalse(fast["cacheHit"])
+        self.assertFalse(quality["cacheHit"])
+        self.assertTrue(fast_again["cacheHit"])
+        self.assertEqual(len(self.render_calls), 2)
+
+    def test_repeated_render_reuses_same_mode_cache(self) -> None:
+        self._upload()
+        first = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        second = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        self.assertFalse(first["cacheHit"])
+        self.assertTrue(second["cacheHit"])
+        self.assertEqual(second["renderId"], first["renderId"])
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_render_cache_evicts_oldest_entry_after_sixteen_states(self) -> None:
+        self._upload()
+        session = self.app.config["MIDITRACK_SESSION"]
+        first_path: Path | None = None
+        for program in range(17):
+            self.client.patch(
+                "/api/session/tracks",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"assignments": {"0": program}}),
+            )
+            self.client.post("/api/render", headers=AUTH_HEADERS)
+            if first_path is None:
+                first_path = session.audio_path
+
+        self.assertEqual(len(session.render_cache), 16)
+        self.assertIsNotNone(first_path)
+        self.assertFalse(first_path.exists())
+
+    def test_new_upload_clears_render_cache_files(self) -> None:
+        self._upload()
+        self.client.post("/api/render", headers=AUTH_HEADERS)
+        session = self.app.config["MIDITRACK_SESSION"]
+        cached_path = session.audio_path
+        self.assertIsNotNone(cached_path)
+
+        self._upload()
+
+        self.assertEqual(len(session.render_cache), 0)
+        self.assertFalse(cached_path.exists())
+
+    def test_failed_render_is_not_cached_and_can_retry(self) -> None:
+        attempts = 0
+
+        def flaky_renderer(_mid_path, wav_path, _soundfont):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RenderError("temporary failure")
+            wav_path.write_bytes(b"R" * 200)
+
+        app = create_app(token=TOKEN, session=WebSession(), renderer=flaky_renderer)
+        client = app.test_client()
+        client.post(
+            "/api/session",
+            headers=AUTH_HEADERS,
+            data={"midi": (io.BytesIO(build_fixture_bytes()), "fixture.mid")},
+            content_type="multipart/form-data",
+        )
+
+        failed = client.post("/api/render", headers=AUTH_HEADERS)
+        recovered = client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        cached = client.post("/api/render", headers=AUTH_HEADERS).get_json()
+
+        self.assertEqual(failed.status_code, 502)
+        self.assertFalse(recovered["cacheHit"])
+        self.assertTrue(cached["cacheHit"])
+        self.assertEqual(attempts, 2)
+        app.config["MIDITRACK_SESSION"].clear()
+
+    def test_filename_change_does_not_invalidate_preview_cache(self) -> None:
+        self._upload()
+        self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "renamed"}),
+        )
+        response = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        self.assertTrue(response["cacheHit"])
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_prewarm_populates_selected_mode_cache_without_activating_audio(self) -> None:
+        self._upload()
+        prewarm = self.client.post(
+            "/api/render/prewarm",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "quality"}),
+        )
+        self.assertEqual(prewarm.status_code, 200)
+        self.assertFalse(
+            self.client.get("/api/session", headers=AUTH_HEADERS).get_json()["hasRender"]
+        )
+        render_response = self.client.post(
+            "/api/render",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "quality"}),
+        ).get_json()
+        self.assertTrue(render_response["cacheHit"])
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_render_rejects_unknown_mode(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/render",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "studio"}),
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_download_wav_without_upload_is_rejected(self) -> None:
         response = self.client.get("/api/download/wav", headers=AUTH_HEADERS)
@@ -1883,10 +2065,25 @@ class TestWebAppGameSoundfont(unittest.TestCase):
         self.render_calls: list[tuple[Path, Path, Path | None]] = []
         self.mix_calls: list[tuple[list[tuple[Path, float]], Path]] = []
         self.convert_calls: list[tuple[SourceFormat, Path, Path, dict]] = []
+        self.render_delay = 0.0
+        self.active_renderers = 0
+        self.max_active_renderers = 0
+        self.renderer_lock = threading.Lock()
 
         def fake_renderer(mid_path: Path, wav_path: Path, soundfont: Path | None) -> None:
-            self.render_calls.append((mid_path, wav_path, soundfont))
-            wav_path.write_bytes(b"D" * 200)
+            with self.renderer_lock:
+                self.active_renderers += 1
+                self.max_active_renderers = max(
+                    self.max_active_renderers, self.active_renderers
+                )
+            try:
+                self.render_calls.append((mid_path, wav_path, soundfont))
+                if self.render_delay:
+                    time.sleep(self.render_delay)
+                wav_path.write_bytes(b"D" * 200)
+            finally:
+                with self.renderer_lock:
+                    self.active_renderers -= 1
 
         def fake_mixer(inputs: list[tuple[Path, float]], out_wav: Path) -> None:
             self.mix_calls.append((inputs, out_wav))
@@ -1988,6 +2185,17 @@ class TestWebAppGameSoundfont(unittest.TestCase):
             {call[2] for call in self.render_calls},
             {session.game_soundfont_path, self.CLI_SOUNDFONT},
         )
+
+    def test_two_soundfont_parts_render_in_parallel(self) -> None:
+        self._upload_source_with_game_soundfont()
+        self._assign_track0()
+        self.render_delay = 0.05
+
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.render_calls), 2)
+        self.assertEqual(self.max_active_renderers, 2)
 
     def test_switching_back_to_game_keeps_volume_and_original_program(self) -> None:
         self._upload_source_with_game_soundfont()
@@ -2242,6 +2450,21 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         self.render_calls: list[tuple[Path, Path, Path | None]] = []
         self.render_note_counts: list[int] = []
         self.mix_calls: list[list[tuple[Path, float]]] = []
+        self.render_delay = 0.0
+        self.active_render_jobs = 0
+        self.max_active_render_jobs = 0
+        self.render_job_lock = threading.Lock()
+
+        def begin_render_job() -> None:
+            with self.render_job_lock:
+                self.active_render_jobs += 1
+                self.max_active_render_jobs = max(
+                    self.max_active_render_jobs, self.active_render_jobs
+                )
+
+        def end_render_job() -> None:
+            with self.render_job_lock:
+                self.active_render_jobs -= 1
 
         def fake_converter(_fmt, _source, output_path, _options):
             output_path.write_bytes(build_fixture_bytes())
@@ -2264,17 +2487,29 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             return None, None
 
         def fake_libvgm(source, output, sample_count, targets):
-            self.libvgm_calls.append((source, output, sample_count, targets))
-            output.write_bytes(b"L" * 200)
+            begin_render_job()
+            try:
+                self.libvgm_calls.append((source, output, sample_count, targets))
+                if self.render_delay:
+                    time.sleep(self.render_delay)
+                output.write_bytes(b"L" * 200)
+            finally:
+                end_render_job()
 
         def fake_renderer(mid_path, wav_path, soundfont):
-            self.render_calls.append((mid_path, wav_path, soundfont))
-            dry_midi = mido.MidiFile(mid_path)
-            self.render_note_counts.append(sum(
-                msg.type == "note_on" and msg.velocity > 0
-                for track in dry_midi.tracks for msg in track
-            ))
-            wav_path.write_bytes(b"D" * 200)
+            begin_render_job()
+            try:
+                self.render_calls.append((mid_path, wav_path, soundfont))
+                dry_midi = mido.MidiFile(mid_path)
+                self.render_note_counts.append(sum(
+                    msg.type == "note_on" and msg.velocity > 0
+                    for track in dry_midi.tracks for msg in track
+                ))
+                if self.render_delay:
+                    time.sleep(self.render_delay)
+                wav_path.write_bytes(b"D" * 200)
+            finally:
+                end_render_job()
 
         def fake_mixer(inputs, output):
             self.mix_calls.append(inputs)
@@ -2330,6 +2565,17 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         self.assertEqual(self.render_note_counts, [1])
         self.assertEqual(len(self.mix_calls[0]), 2)
 
+    def test_chip_and_fluidsynth_jobs_share_two_worker_pool(self) -> None:
+        self._convert(True)
+        self.render_delay = 0.05
+
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 1)
+        self.assertEqual(len(self.render_calls), 1)
+        self.assertEqual(self.max_active_render_jobs, 2)
+
     def test_source_patch_switches_a_supported_track(self) -> None:
         self._convert(False)
         response = self.client.patch(
@@ -2380,6 +2626,31 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         gains = [round(gain, 6) for _path, gain in self.mix_calls[0]]
         self.assertIn(round(mix.STEM_GAIN * 1.5, 6), gains)
         self.assertIn(round(mix.STEM_GAIN, 6), gains)
+
+    def test_changing_custom_volume_reuses_raw_chip_stems(self) -> None:
+        self._convert(False)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "sources": {"0": "game", "1": "game"},
+                "volumes": {"1": 150},
+            }),
+        )
+        self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(len(self.libvgm_calls), 2)
+
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"1": 120}}),
+        )
+        self.client.post("/api/render", headers=AUTH_HEADERS)
+
+        # 既定グループと個別チャンネルの選択集合は同じなので、生WAVは再利用される。
+        self.assertEqual(len(self.libvgm_calls), 2)
+        latest_gains = [round(gain, 6) for _path, gain in self.mix_calls[-1]]
+        self.assertIn(round(mix.STEM_GAIN * 1.2, 6), latest_gains)
 
     def test_all_custom_volume_game_tracks_render_individually_only(self) -> None:
         # 全チャンネルの音量を変更した場合、既定音量グループは空になり、

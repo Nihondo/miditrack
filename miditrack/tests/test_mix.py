@@ -139,6 +139,20 @@ class TestMixWav(unittest.TestCase):
         self.assertEqual(argv[argv.index("-ar") + 1], "44100")
         self.assertEqual(argv[argv.index("-ac") + 1], "2")
 
+    def test_preview_sample_rate_is_used_by_filter_and_output(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            mix.mix_wav(
+                [(self.dry_path, 0.80), (self.stem_path, 0.55)],
+                self.out_path,
+                sample_rate=22050,
+            )
+        (argv,), _ = mocked.call_args
+        filter_str = argv[argv.index("-filter_complex") + 1]
+        self.assertIn("sample_rates=22050", filter_str)
+        self.assertEqual(argv[argv.index("-ar") + 1], "22050")
+
     def test_space_and_ampersand_path_survives_unmangled(self) -> None:
         with self._patch_executable(), mock.patch(
             "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()

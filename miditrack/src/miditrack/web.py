@@ -8,15 +8,20 @@ tools/pixelart_web.py と同型の単一セッション・ローカルFlaskツ�
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import re
 import secrets
 import shutil
 import sys
 import tempfile
 import threading
+import time
 import webbrowser
 import zipfile
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -51,6 +56,13 @@ ALLOWED_MIDI_EXTENSIONS = (".mid", ".midi")
 # エミュレーションで鳴らす方式）を持つフォーマット。SPCの"game"はBRRサンプル
 # 由来SoundFontのバンク切り替えであり、これらとは別の仕組みなので含めない。
 CHIP_HARDWARE_SOURCE_FORMATS = ("vgm", "nsf")
+FAST_RENDER_MODE = "fast"
+QUALITY_RENDER_MODE = "quality"
+RENDER_SAMPLE_RATES = {FAST_RENDER_MODE: 22050, QUALITY_RENDER_MODE: 44100}
+RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
+RENDER_CACHE_MAX_ENTRIES = 16
+RENDER_CACHE_VERSION = 1
+RENDER_WORKERS = 2
 
 RendererFunc = Callable[[Path, Path, "Path | None"], None]
 ListSongsFunc = Callable[[SourceFormat, Path], "tuple[dict[str, Any], list[dict[str, Any]]]"]
@@ -63,6 +75,42 @@ LibvgmRendererFunc = Callable[
 NsfChipRendererFunc = Callable[
     [Path, Path, int, "list[nsf_chip.NsfChipTarget]", int], None
 ]
+
+
+@dataclass(frozen=True)
+class CachedAudio:
+    """セッション内LRUキャッシュに保持するWAVとサイズ。"""
+
+    path: Path
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class RenderOutcome:
+    """1回の試聴／最終レンダー要求の結果と計測値。"""
+
+    path: Path
+    mode: str
+    cache_key: str
+    cache_hit: bool
+    render_ms: int
+
+
+@dataclass(frozen=True)
+class ChipCacheMiss:
+    """生成が必要な実機音声キャッシュ1件を表す。"""
+
+    cache_key: str
+    indices: list[int]
+    path: Path
+
+
+@dataclass(frozen=True)
+class ChipHardwarePlan:
+    """実機音声のミックス入力と、まだ生成されていないキャッシュ項目。"""
+
+    inputs: list[tuple[Path, float]]
+    misses: list[ChipCacheMiss]
 
 
 @dataclass
@@ -99,6 +147,14 @@ class WebSession:
     applied_path: Path | None = None
     apply_summary: dict[str, int] | None = None
     audio_path: Path | None = None
+    current_render_key: str | None = None
+    current_render_mode: str | None = None
+    midi_revision: int = 0
+    state_revision: int = 0
+    render_cache: OrderedDict[str, CachedAudio] = field(
+        default_factory=OrderedDict, repr=False
+    )
+    render_cache_bytes: int = 0
     # ブラウザの音声キャッシュを確実に更新する世代番号。MIDI再変換やセッションの
     # clear()をまたいでもサーバープロセス中は単調増加させ、同じ/api/audio?v=Nを
     # 別内容へ再利用しない。プロセス再起動時は認証tokenも変わるため0開始で安全。
@@ -156,12 +212,22 @@ class WebSession:
     # ファイル切り替え（select-file）のたびに曲名解決へ再利用する。
     source_m3u_texts: list[str] = field(default_factory=list)
 
+    def clear_render_cache(self) -> None:
+        """試聴・最終WAV・実機ステムのセッション内キャッシュを破棄する。"""
+        for entry in self.render_cache.values():
+            entry.path.unlink(missing_ok=True)
+        self.render_cache.clear()
+        self.render_cache_bytes = 0
+        self.current_render_key = None
+        self.current_render_mode = None
+
     def reset_midi_state(self) -> None:
         """MIDI（原本・トラック解析・割り当て・レンダリング結果）だけを初期状態に戻す。
 
         root・soundfont_override・source_*系フィールドは触らない。clear()と
         load_midi()の両方から呼ばれる共通処理。
         """
+        self.clear_render_cache()
         if self.audio_path is not None:
             self.audio_path.unlink(missing_ok=True)
         if self.variations_zip_path is not None:
@@ -219,6 +285,8 @@ class WebSession:
         self.original_name = original_name
         self.ticks_per_beat = ticks_per_beat
         self.tracks = tracks
+        self.midi_revision += 1
+        self.state_revision += 1
 
     def replace(
         self,
@@ -244,7 +312,10 @@ class WebSession:
         self.applied_path = None
         self.apply_summary = None
         self.audio_path = None
+        self.current_render_key = None
+        self.current_render_mode = None
         self.variations_zip_path = None
+        self.state_revision += 1
 
     def require_tracks(self) -> list[TrackInfo]:
         if not self.tracks:
@@ -445,8 +516,9 @@ def session_payload(session: WebSession) -> dict[str, Any]:
         ],
         "speed": session.speed_ratio,
         "transpose": session.transpose_semitones,
-        "hasRender": session.audio_path is not None,
+        "hasRender": session.audio_path is not None and session.audio_path.exists(),
         "renderId": session.render_id,
+        "renderMode": session.current_render_mode,
         "hasDownload": session.original_path is not None,
         "hasChipStem": session.chip_stem_path is not None,
         "hasDacStem": session.dac_stem_path is not None,
@@ -482,13 +554,34 @@ def create_app(
     """テスト可能なmiditrackローカルWebアプリを生成する。"""
     launch_token = token or secrets.token_urlsafe(32)
     web_session = session or WebSession()
-    render_wav: RendererFunc = renderer or render.render_wav
     list_source_songs: ListSongsFunc = list_songs or convert.list_songs
     convert_to_midi: ConvertFunc = converter or convert.convert_to_midi
     run_pitch_shift: PitchShiftFunc = pitch_shifter or pitch_shift.run_pitch_shift
-    mix_wav: MixerFunc = mixer or mix.mix_wav
     render_libvgm: LibvgmRendererFunc = libvgm_renderer or libvgm.render_selection
     render_nsf_chip: NsfChipRendererFunc = nsf_chip_renderer or nsf_chip.render_selection
+
+    def render_wav(
+        midi_path: Path,
+        wav_path: Path,
+        selected_soundfont: Path | None,
+        sample_rate: int,
+    ) -> None:
+        """本番レンダラへsample_rateを渡し、従来の3引数テスト注入も維持する。"""
+        if renderer is not None:
+            renderer(midi_path, wav_path, selected_soundfont)
+            return
+        render.render_wav(
+            midi_path, wav_path, selected_soundfont, sample_rate=sample_rate
+        )
+
+    def mix_wav(
+        inputs: list[tuple[Path, float]], output_path: Path, sample_rate: int
+    ) -> None:
+        """本番ミキサーへsample_rateを渡し、従来の2引数テスト注入も維持する。"""
+        if mixer is not None:
+            mixer(inputs, output_path)
+            return
+        mix.mix_wav(inputs, output_path, sample_rate=sample_rate)
 
     app = Flask(__name__, static_folder=str(ASSET_DIR), static_url_path="/assets")
     app.config.update(
@@ -777,6 +870,108 @@ def create_app(
             **pianoroll.extract_notes(original_path, speed=speed, transpose=transpose)
         )
 
+    def _validate_render_mode(raw_mode: Any) -> str:
+        """APIから受け取った試聴モードを検証して返す。"""
+        mode = raw_mode if raw_mode is not None else FAST_RENDER_MODE
+        if mode not in RENDER_SAMPLE_RATES:
+            raise WebValidationError("renderModeはfastまたはqualityで指定してください")
+        return mode
+
+    def _path_signature(path: Path | None) -> tuple[str, int, int] | None:
+        """キャッシュキー用にファイルのパス・サイズ・更新時刻を返す。"""
+        if path is None:
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return (str(path), -1, -1)
+        return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+    def _render_state_key(mode: str) -> str:
+        """現在の編集状態とレンダープロファイルから決定論的なキーを作る。"""
+        metadata_sample_count = (
+            web_session.chip_metadata.sample_count
+            if web_session.chip_metadata is not None
+            else None
+        )
+        effective_soundfont = web_session.soundfont_override or soundfont
+        payload = {
+            "version": RENDER_CACHE_VERSION,
+            "midiRevision": web_session.midi_revision,
+            "assignments": sorted(web_session.assignments.items()),
+            "volumes": sorted(web_session.volumes.items()),
+            "sources": sorted(web_session.track_sources.items()),
+            "speed": web_session.speed_ratio,
+            "transpose": web_session.transpose_semitones,
+            "sourceFormat": web_session.source_format,
+            "sourceSongIndex": web_session.source_song_index,
+            "sampleCount": metadata_sample_count,
+            "soundfont": _path_signature(effective_soundfont),
+            "gameSoundfont": _path_signature(web_session.game_soundfont_path),
+            "chipStem": _path_signature(web_session.chip_stem_path),
+            "dacStem": _path_signature(web_session.dac_stem_path),
+            "mode": mode,
+            "sampleRate": RENDER_SAMPLE_RATES[mode],
+        }
+        encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _cache_lookup(cache_key: str) -> Path | None:
+        """LRUキャッシュから有効なWAVを返し、参照順を更新する。"""
+        entry = web_session.render_cache.get(cache_key)
+        if entry is None:
+            return None
+        if not entry.path.exists() or entry.path.stat().st_size <= 44:
+            web_session.render_cache.pop(cache_key, None)
+            web_session.render_cache_bytes -= entry.size_bytes
+            return None
+        web_session.render_cache.move_to_end(cache_key)
+        return entry.path
+
+    def _evict_render_cache(protected_paths: set[Path]) -> None:
+        """現在利用中のWAVを残し、件数・容量上限まで古いキャッシュを削除する。"""
+        while (
+            len(web_session.render_cache) > RENDER_CACHE_MAX_ENTRIES
+            or web_session.render_cache_bytes > RENDER_CACHE_MAX_BYTES
+        ):
+            evicted = False
+            for cache_key, entry in list(web_session.render_cache.items()):
+                if entry.path in protected_paths:
+                    continue
+                web_session.render_cache.pop(cache_key)
+                web_session.render_cache_bytes -= entry.size_bytes
+                entry.path.unlink(missing_ok=True)
+                evicted = True
+                break
+            if not evicted:
+                break
+
+    def _cache_store(
+        cache_key: str, path: Path, protected_paths: set[Path] | None = None
+    ) -> Path:
+        """完成済みWAVをLRUへ登録し、上限を超えた古い項目を削除する。"""
+        old_entry = web_session.render_cache.pop(cache_key, None)
+        if old_entry is not None:
+            web_session.render_cache_bytes -= old_entry.size_bytes
+            if old_entry.path != path:
+                old_entry.path.unlink(missing_ok=True)
+        entry = CachedAudio(path=path, size_bytes=path.stat().st_size)
+        web_session.render_cache[cache_key] = entry
+        web_session.render_cache_bytes += entry.size_bytes
+        protected = set(protected_paths or ())
+        protected.add(path)
+        if web_session.audio_path is not None:
+            protected.add(web_session.audio_path)
+        _evict_render_cache(protected)
+        return path
+
+    def _cache_output_path(kind: str, cache_key: str) -> Path:
+        """セッションキャッシュ内の衝突しないWAVパスを返す。"""
+        assert web_session.root is not None
+        cache_dir = web_session.root / "render-cache"
+        cache_dir.mkdir(exist_ok=True)
+        return cache_dir / f"{kind}-{cache_key[:24]}.wav"
+
     def _apply_to(output_path: Path, speed: float, transpose: int) -> dict[str, int]:
         """assignments・volumesを適用したMIDIをoutput_pathへ書き、summaryを返す。
 
@@ -821,13 +1016,20 @@ def create_app(
         """
         if web_session.root is None or web_session.original_path is None:
             raise WebValidationError("MIDIファイルがアップロードされていません")
-        if web_session.applied_path is None:
+        for _attempt in range(3):
+            if web_session.applied_path is not None:
+                return web_session.applied_path
+            state_revision = web_session.state_revision
             applied_path = web_session.root / "miditrack_edited.mid"
-            web_session.apply_summary = _apply_to(
+            apply_summary = _apply_to(
                 applied_path, web_session.speed_ratio, web_session.transpose_semitones
             )
+            if state_revision != web_session.state_revision:
+                continue
+            web_session.apply_summary = apply_summary
             web_session.applied_path = applied_path
-        return web_session.applied_path
+            return applied_path
+        raise WebValidationError("設定が連続して変更されたため、MIDIの適用をやり直してください")
 
     def _plan_render_jobs(
         applied_path: Path, gm_soundfont: Path | None, render_id: int
@@ -940,17 +1142,31 @@ def create_app(
                 web_session.source_song_index,
             )
 
-    def _render_chip_hardware(work_dir: Path, prefix: str) -> list[tuple[Path, float]]:
-        """VGM/NSFの実機チャンネルレンダリング選択に従い、選択チャンネルの
-        合成音声を生成する。音量が既定(100%)のチャンネルはまとめて1回、
+    def _chip_cache_key(indices: list[int]) -> str:
+        """選択チャンネル集合に対する実機生WAVのキャッシュキーを返す。"""
+        assert web_session.chip_metadata is not None
+        payload = {
+            "version": RENDER_CACHE_VERSION,
+            "midiRevision": web_session.midi_revision,
+            "source": _path_signature(web_session.source_path),
+            "format": web_session.source_format,
+            "songIndex": web_session.source_song_index,
+            "sampleCount": web_session.chip_metadata.sample_count,
+            "indices": sorted(indices),
+        }
+        encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        return "chip:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _plan_chip_hardware() -> ChipHardwarePlan:
+        """VGM/NSFの実機音声入力を決め、キャッシュミスを未実行のまま返す。
+
+        音量が既定(100%)のチャンネルはまとめて1回、
         音量を変更したチャンネルだけチャンネル単位で個別にレンダリングする —
         個別レンダリングはVGM/NSFの全曲再エミュレーションをチャンネルの数だけ
         繰り返すコストがあるため、実際に音量調整されたチャンネルだけに限定する
         （miditrack/CLAUDE.md「Why per-track volume on 'game' tracks only
         re-renders the channels whose volume actually changed」参照）。
-        speed/transposeに依存しないため、バリエーション一括生成
-        （POST /api/variations）は全組み合わせでこの結果を1回だけ生成して使い回す。
-        戻り値は(WAVパス, ゲイン)の列。選択が無ければ空リスト。
+        実行を分離することで、通常レンダーではFluidSynthと同じ最大2枠へ投入できる。
         """
         selected_chip_indices = (
             [
@@ -961,7 +1177,7 @@ def create_app(
             else []
         )
         if not selected_chip_indices or not web_session.chip_metadata:
-            return []
+            return ChipHardwarePlan(inputs=[], misses=[])
         if web_session.source_path is None:
             raise RenderError("原曲の音源の元ファイルがありません")
 
@@ -984,18 +1200,50 @@ def create_app(
         )
         custom_indices = sorted(set(selected_chip_indices) - set(default_indices))
 
-        results: list[tuple[Path, float]] = []
+        plans: list[tuple[list[int], float]] = []
         if default_indices:
-            stem_path = work_dir / f"{prefix}.wav"
-            _render_chip_targets(default_indices, stem_path)
-            results.append((stem_path, mix.STEM_GAIN))
+            plans.append((default_indices, mix.STEM_GAIN))
         for index in custom_indices:
-            stem_path = work_dir / f"{prefix}.track{index}.wav"
-            _render_chip_targets([index], stem_path)
             baseline_percent = baseline_for(index) or midi.DEFAULT_TRACK_VOLUME_PERCENT
             volume_percent = web_session.volumes.get(index, baseline_percent)
-            results.append((stem_path, mix.STEM_GAIN * volume_percent / baseline_percent))
-        return results
+            plans.append(
+                ([index], mix.STEM_GAIN * volume_percent / baseline_percent)
+            )
+
+        results: list[tuple[Path, float]] = []
+        misses: list[ChipCacheMiss] = []
+        for indices, gain in plans:
+            cache_key = _chip_cache_key(indices)
+            cached_path = _cache_lookup(cache_key)
+            if cached_path is None:
+                cached_path = _cache_output_path("chip", cache_key)
+                misses.append(ChipCacheMiss(cache_key, indices, cached_path))
+            results.append((cached_path, gain))
+        return ChipHardwarePlan(inputs=results, misses=misses)
+
+    def _store_chip_hardware(plan: ChipHardwarePlan) -> None:
+        """生成済みの実機音声キャッシュミスをLRUへ登録する。"""
+        protected = {path for path, _gain in plan.inputs}
+        for miss in plan.misses:
+            _cache_store(miss.cache_key, miss.path, protected)
+
+    def _render_chip_hardware(_work_dir: Path, _prefix: str) -> list[tuple[Path, float]]:
+        """実機音声を最大2並列で生成し、バリエーション生成向けに返す。"""
+        plan = _plan_chip_hardware()
+        try:
+            with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                futures = [
+                    executor.submit(_render_chip_targets, miss.indices, miss.path)
+                    for miss in plan.misses
+                ]
+                for future in futures:
+                    future.result()
+            _store_chip_hardware(plan)
+        except Exception:
+            for miss in plan.misses:
+                miss.path.unlink(missing_ok=True)
+            raise
+        return plan.inputs
 
     def _render_applied_midi(
         applied_path: Path,
@@ -1004,6 +1252,7 @@ def create_app(
         render_id: int,
         speed: float,
         transpose: int,
+        sample_rate: int = 44100,
         chip_render_stems: list[tuple[Path, float]] | None = None,
     ) -> None:
         """適用済みMIDI(applied_path)をwav_pathへレンダリングする。
@@ -1022,17 +1271,16 @@ def create_app(
         pitch_shift.shで同じ量だけ変換して同期を保つ（既定値のままなら通常
         ケースにrubberbandの依存を増やさないため一切呼ばない）。
 
-        chip_render_stemsを渡さなければ、この関数自身が_render_chip_hardware()を
-        呼んで一時ファイルとして扱う（終了時に削除）。渡された場合は呼び出し元が
-        所有するものとして削除しない — バリエーション一括生成
+        chip_render_stemsを渡さなければ、この関数自身が実機音声キャッシュを計画し、
+        キャッシュミスをFluidSynthと同じ最大2並列の実行枠へ投入する。渡された場合は
+        呼び出し元が所有するものとして再生成しない — バリエーション一括生成
         （POST /api/variations）が、speed/transposeに依存しないこの結果を
         全組み合わせで1回だけ生成して使い回すため。
         """
-        owns_chip_render_stems = chip_render_stems is None
-        if owns_chip_render_stems:
-            chip_render_stems = _render_chip_hardware(
-                web_session.root, f"render-{render_id:04d}.chiprender"
-            )
+        chip_plan = ChipHardwarePlan(inputs=[], misses=[])
+        if chip_render_stems is None:
+            chip_plan = _plan_chip_hardware()
+            chip_render_stems = chip_plan.inputs
 
         effective_soundfont = web_session.soundfont_override or soundfont
         jobs = _plan_render_jobs(applied_path, effective_soundfont, render_id)
@@ -1051,8 +1299,6 @@ def create_app(
         # 分割で新規に書いたgame.mid/gm.midだけをここに集め、パートWAVは下の
         # ループで追加する。
         temp_paths = [job_path for job_path, _sf in jobs if job_path != applied_path]
-        if owns_chip_render_stems:
-            temp_paths.extend(path for path, _gain in chip_render_stems)
         stem_sync_dir: Path | None = None
         try:
             if has_stem and has_transform:
@@ -1071,7 +1317,7 @@ def create_app(
                 ]
 
             if len(jobs) == 1 and not has_stem:
-                render_wav(jobs[0][0], wav_path, jobs[0][1])
+                render_wav(jobs[0][0], wav_path, jobs[0][1], sample_rate)
             else:
                 # 実機チップステム（ノイズ・DAC、どちらか片方または両方）と合成する
                 # 場合だけヘッドルームを取る（mix.DRY_GAIN）。ゲームSF2側とGM側の
@@ -1080,11 +1326,30 @@ def create_app(
                 # （mix.SPLIT_GAIN = 1.0）。
                 fluid_gain = mix.DRY_GAIN if has_stem else mix.SPLIT_GAIN
                 inputs: list[tuple[Path, float]] = []
+                render_parts: list[tuple[Path, Path | None, Path]] = []
                 for index, (job_mid, job_soundfont) in enumerate(jobs):
                     part_path = web_session.root / f"render-{render_id:04d}.part{index}.wav"
                     temp_paths.append(part_path)
-                    render_wav(job_mid, part_path, job_soundfont)
+                    render_parts.append((job_mid, job_soundfont, part_path))
                     inputs.append((part_path, fluid_gain))
+                with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                    chip_futures = [
+                        executor.submit(_render_chip_targets, miss.indices, miss.path)
+                        for miss in chip_plan.misses
+                    ]
+                    render_futures = [
+                        executor.submit(
+                            render_wav,
+                            job_mid,
+                            part_path,
+                            job_soundfont,
+                            sample_rate,
+                        )
+                        for job_mid, job_soundfont, part_path in render_parts
+                    ]
+                    for future in chip_futures + render_futures:
+                        future.result()
+                _store_chip_hardware(chip_plan)
                 if stem is not None:
                     inputs.append((stem, mix.STEM_GAIN))
                 if dac_stem is not None:
@@ -1093,41 +1358,84 @@ def create_app(
                 if len(inputs) == 1:
                     shutil.copyfile(inputs[0][0], wav_path)
                 else:
-                    mix_wav(inputs, wav_path)
+                    mix_wav(inputs, wav_path, sample_rate)
         finally:
+            for miss in chip_plan.misses:
+                if miss.cache_key not in web_session.render_cache:
+                    miss.path.unlink(missing_ok=True)
             for temp_path in temp_paths:
                 temp_path.unlink(missing_ok=True)
             if stem_sync_dir is not None:
                 shutil.rmtree(stem_sync_dir, ignore_errors=True)
 
-    def ensure_render() -> Path:
-        """試聴用WAVのパスを返す。未レンダリングならその場でレンダリングする。
+    def ensure_render(mode: str, *, activate_player: bool) -> RenderOutcome:
+        """指定モードのWAVをキャッシュから返すか生成する。
 
-        実処理は_render_applied_midi()に委ね、ここではロック取得・世代管理
-        （render_id採番・古いWAVの破棄）だけを担う。
+        activate_player=Trueの場合だけ/api/audioの現在音源とrender_idを更新する。
+        品質モードをactivateせず生成すれば、試聴状態を変えずに最終WAVとして
+        ダウンロードできる。
         """
         with web_session.render_lock:
-            applied_path = ensure_applied()
-            if web_session.audio_path is not None and web_session.audio_path.exists():
-                return web_session.audio_path
+            started_at = time.perf_counter()
+            for _attempt in range(3):
+                state_revision = web_session.state_revision
+                applied_path = ensure_applied()
+                state_key = _render_state_key(mode)
+                cache_key = f"render:{state_key}"
+                wav_path = _cache_lookup(cache_key)
+                cache_hit = wav_path is not None
+                generated_path: Path | None = None
 
-            web_session.render_id += 1
-            render_id = web_session.render_id
-            wav_path = web_session.root / f"render-{render_id:04d}.wav"
-            previous_audio = web_session.audio_path
+                if wav_path is None:
+                    web_session.render_id += 1
+                    work_id = web_session.render_id
+                    wav_path = _cache_output_path(mode, state_key)
+                    generated_path = wav_path
+                    try:
+                        _render_applied_midi(
+                            applied_path,
+                            wav_path,
+                            render_id=work_id,
+                            speed=web_session.speed_ratio,
+                            transpose=web_session.transpose_semitones,
+                            sample_rate=RENDER_SAMPLE_RATES[mode],
+                        )
+                    except Exception:
+                        generated_path.unlink(missing_ok=True)
+                        raise
 
-            _render_applied_midi(
-                applied_path,
-                wav_path,
-                render_id=render_id,
-                speed=web_session.speed_ratio,
-                transpose=web_session.transpose_semitones,
+                if state_revision != web_session.state_revision:
+                    if generated_path is not None:
+                        generated_path.unlink(missing_ok=True)
+                    continue
+
+                if generated_path is not None:
+                    _cache_store(cache_key, wav_path)
+                break
+            else:
+                raise WebValidationError(
+                    "設定が連続して変更されたため、レンダリングをやり直してください"
+                )
+
+            if activate_player:
+                is_new_player_source = (
+                    web_session.current_render_key != cache_key
+                    or web_session.audio_path != wav_path
+                )
+                if is_new_player_source and cache_hit:
+                    web_session.render_id += 1
+                web_session.audio_path = wav_path
+                web_session.current_render_key = cache_key
+                web_session.current_render_mode = mode
+
+            render_ms = round((time.perf_counter() - started_at) * 1000)
+            return RenderOutcome(
+                path=wav_path,
+                mode=mode,
+                cache_key=cache_key,
+                cache_hit=cache_hit,
+                render_ms=render_ms,
             )
-
-            if previous_audio is not None and previous_audio != wav_path:
-                previous_audio.unlink(missing_ok=True)
-            web_session.audio_path = wav_path
-        return wav_path
 
     @app.post("/api/render")
     def render_endpoint() -> Response:
@@ -1135,16 +1443,36 @@ def create_app(
         if web_session.root is None or web_session.original_path is None:
             raise WebValidationError("先にMIDIファイルをアップロードしてください")
 
-        # レンダリングは常に現在のassignmentsを反映すべきなので、既にapply済みでも
-        # 明示的に再適用してsummary（updated/inserted件数）を取り直す。
-        web_session.invalidate_render()
-        wav_path = ensure_render()
+        body = request.get_json(silent=True) or {}
+        mode = _validate_render_mode(body.get("renderMode"))
+        outcome = ensure_render(mode, activate_player=True)
 
         return jsonify(
             audioUrl=f"/api/audio?v={web_session.render_id}",
             renderId=web_session.render_id,
-            filename=wav_path.name,
+            filename=outcome.path.name,
+            renderMode=outcome.mode,
+            sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
+            cacheHit=outcome.cache_hit,
+            renderMs=outcome.render_ms,
             **(web_session.apply_summary or {}),
+        )
+
+    @app.post("/api/render/prewarm")
+    def prewarm_render_endpoint() -> Response:
+        """現在状態の試聴WAVを生成するが、プレイヤー音源は切り替えない。"""
+        web_session.require_tracks()
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+        body = request.get_json(silent=True) or {}
+        mode = _validate_render_mode(body.get("renderMode"))
+        outcome = ensure_render(mode, activate_player=False)
+        return jsonify(
+            status="ready",
+            renderMode=outcome.mode,
+            sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
+            cacheHit=outcome.cache_hit,
+            renderMs=outcome.render_ms,
         )
 
     @app.get("/api/audio")
@@ -1172,10 +1500,10 @@ def create_app(
     def get_download_wav() -> Response:
         if web_session.root is None or web_session.original_path is None:
             raise WebValidationError("MIDIファイルがアップロードされていません")
-        wav_path = ensure_render()
+        outcome = ensure_render(QUALITY_RENDER_MODE, activate_player=False)
         download_name = f"{_effective_download_stem(web_session)}_miditrack.wav"
         return send_file(
-            wav_path,
+            outcome.path,
             mimetype="audio/wav",
             as_attachment=True,
             download_name=download_name,

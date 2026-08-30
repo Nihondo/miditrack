@@ -18,6 +18,7 @@ const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
 const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 const PLAYBACK_SEEK_SECONDS = 1;
+const PREWARM_DELAY_MS = 500;
 
 const state = {
   session: null,          // 直近の /api/session (POST/PATCH/GET) レスポンス
@@ -58,6 +59,9 @@ const state = {
   isPianorollAutoFollowing: false,
   pianorollAutoScrollTarget: null,
   playbackTimeFrameId: null,
+  renderMode: "fast",
+  prewarmTimer: null,
+  prewarmGeneration: 0,
 };
 
 // サーバー側の設定ファイル（/api/preferences）からピン留め・使用回数を読み込み、
@@ -201,6 +205,48 @@ function audioUrl(renderId) {
   return `/api/audio?v=${renderId}&token=${encodeURIComponent(token)}`;
 }
 
+function selectedRenderMode() {
+  return document.querySelector('input[name="render-mode"]:checked')?.value || "fast";
+}
+
+function cancelPrewarm() {
+  clearTimeout(state.prewarmTimer);
+  state.prewarmTimer = null;
+  state.prewarmGeneration += 1;
+}
+
+function schedulePrewarm() {
+  cancelPrewarm();
+  if (!state.session || state.session.tracks.length === 0) return;
+  const generation = state.prewarmGeneration;
+  const renderMode = selectedRenderMode();
+  state.prewarmTimer = setTimeout(async () => {
+    state.prewarmTimer = null;
+    try {
+      await apiFetch("/api/render/prewarm", {
+        method: "POST",
+        priority: "low",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ renderMode }),
+      });
+    } catch (_error) {
+      // 事前生成は投機的処理。失敗しても明示クリック時に通常レンダーを試みる。
+    }
+    if (generation !== state.prewarmGeneration) return;
+  }, PREWARM_DELAY_MS);
+}
+
+function handleRenderModeChange(event) {
+  if (!event.target.checked) return;
+  state.renderMode = event.target.value;
+  resetPlayer();
+  if (state.session) state.session.hasRender = false;
+  updateSectionsReadiness();
+  schedulePrewarm();
+  const label = state.renderMode === "quality" ? "品質" : "高速";
+  showStatus(`試聴モードを${label}へ切り替えました。`);
+}
+
 // GM音色カタログを一度だけ取得し、16 <optgroup> のDocumentFragmentを構築する。
 // JS側にGM名をハードコードせず、常にサーバー側 gm.py を単一のソースとする。
 async function loadInstrumentOptions() {
@@ -288,6 +334,7 @@ async function handleSoundfontChange() {
       state.session.hasRender = false;
     }
     updateSectionsReadiness();
+    schedulePrewarm();
     showStatus("SoundFontを変更しました。もう一度「適用して試聴」を押してください。");
   } catch (error) {
     showStatus(error.message, "error");
@@ -870,6 +917,7 @@ async function flushPendingTrackSettings() {
       await renderTrackList();
       redrawPianorollStatic();
       resetPlayer();
+      schedulePrewarm();
       showStatus("設定を変更しました。もう一度「適用して試聴」を押してください。");
       return true;
     } catch (error) {
@@ -1308,6 +1356,8 @@ function updateSectionsReadiness() {
   $("#tracks-card").classList.toggle("ready", ready);
   $("#audition-card").classList.toggle("ready", ready);
   $("#render-button").disabled = !ready;
+  document.querySelectorAll('input[name="render-mode"]')
+    .forEach((control) => { control.disabled = !ready; });
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-wav-button").disabled = !(state.session && state.session.hasDownload);
   $("#download-filename").disabled = !(state.session && state.session.hasDownload);
@@ -1353,11 +1403,17 @@ function renderDownloadFilenameField(payload) {
 }
 
 async function refreshFromSession(payload) {
+  cancelPrewarm();
   // 新しいMIDI/音源の読み込みでトラック構成自体が変わりうるため、
   // 古いセッションのトラック番号を指したソロ試聴状態は持ち越さない。
   state.soloTrackIndex = null;
   state.soloVolumeSnapshot = null;
   state.session = payload;
+  if (["fast", "quality"].includes(payload.renderMode)) {
+    state.renderMode = payload.renderMode;
+    const modeInput = $(`#render-mode-${state.renderMode}`);
+    if (modeInput) modeInput.checked = true;
+  }
   resetPianorollZoom();
   await renderTrackList();
   updateSectionsReadiness();
@@ -1411,6 +1467,7 @@ async function flushTransform() {
     resetPlayer();
     updateSectionsReadiness();
     await loadPianoroll();
+    schedulePrewarm();
     showStatus("速度・ピッチを変更しました。もう一度「適用して試聴」を押してください。");
   } catch (error) {
     showStatus(error.message, "error");
@@ -1743,7 +1800,12 @@ async function handleConvert() {
 // 「適用して試聴」ボタンとトラック行のソロ試聴ボタンの両方が使う共通処理。
 // 呼び出し元がsetBusy()/エラー表示を担うため、ここでは行わない。
 async function renderAndLoadPlayer() {
-  const response = await apiFetch("/api/render", { method: "POST" });
+  cancelPrewarm();
+  const response = await apiFetch("/api/render", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ renderMode: selectedRenderMode() }),
+  });
   const payload = await response.json();
   const player = $("#player");
   player.src = audioUrl(payload.renderId);
@@ -1751,6 +1813,7 @@ async function renderAndLoadPlayer() {
   if (state.session) {
     state.session.hasRender = true;
     state.session.renderId = payload.renderId;
+    state.session.renderMode = payload.renderMode;
     state.session.hasDownload = true;
   }
   updateSectionsReadiness();
@@ -1762,11 +1825,13 @@ async function renderAndLoadPlayer() {
 async function handleRender() {
   clearTimeout(state.patchTimer);
   if (!(await flushPendingTrackSettings())) return;
-  setBusy(true, "レンダリング中…");
+  const isQuality = selectedRenderMode() === "quality";
+  setBusy(true, isQuality ? "試聴音声を準備中…（品質）" : "試聴音声を準備中…（高速）");
   try {
     const player = await renderAndLoadPlayer();
     player.play().catch(() => {});
-    showStatus("試聴の準備ができました。", "success");
+    const modeLabel = isQuality ? "品質" : "高速";
+    showStatus(`${modeLabel}モードの試聴準備ができました。`, "success");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -2022,7 +2087,11 @@ function handleDownload() {
 }
 
 function handleDownloadWav() {
-  return downloadFrom("/api/download/wav", "miditrack_edited.wav", "WAVを書き出し中…");
+  return downloadFrom(
+    "/api/download/wav",
+    "miditrack_edited.wav",
+    "最終WAVを生成中…",
+  );
 }
 
 // "1.2, 0.8" のようなカンマ区切りテキストを数値配列にパースする。
@@ -2135,6 +2204,8 @@ async function init() {
   setupPlaybackShortcut();
   $("#reset-button").addEventListener("click", handleReset);
   $("#render-button").addEventListener("click", handleRender);
+  document.querySelectorAll('input[name="render-mode"]')
+    .forEach((control) => control.addEventListener("change", handleRenderModeChange));
   $("#download-button").addEventListener("click", handleDownload);
   $("#download-wav-button").addEventListener("click", handleDownloadWav);
   $("#download-filename").addEventListener("input", onDownloadFilenameChange);

@@ -103,6 +103,15 @@
         <label class="field-label" for="soundfont-select">SoundFont</label>
         <div class="soundfont-row">
           <select id="soundfont-select" class="program-select" aria-describedby="soundfont-help"></select>
+          <fieldset class="render-mode-field">
+            <legend class="visually-hidden">試聴モード</legend>
+            <div class="render-mode-options">
+              <input class="render-mode-input" type="radio" name="render-mode" id="render-mode-fast" value="fast" checked>
+              <label for="render-mode-fast">高速</label>
+              <input class="render-mode-input" type="radio" name="render-mode" id="render-mode-quality" value="quality">
+              <label for="render-mode-quality">品質</label>
+            </div>
+          </fieldset>
           <button type="button" class="button primary" id="render-button">適用して試聴</button>
         </div>
         <p class="field-help" id="soundfont-help"></p>
