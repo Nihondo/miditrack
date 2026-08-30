@@ -19,6 +19,19 @@ const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 const PLAYBACK_SEEK_SECONDS = 1;
 const PREWARM_DELAY_MS = 500;
+const POINTER_FOCUS_CONTROL_SELECTOR = [
+  "select",
+  'input[type="radio"]',
+  'input[type="checkbox"]',
+  'input[type="range"]',
+  'input[type="file"]',
+].join(",");
+const POINTER_CHANGE_CONTROL_SELECTOR = [
+  "select",
+  'input[type="radio"]',
+  'input[type="checkbox"]',
+  'input[type="file"]',
+].join(",");
 
 const state = {
   session: null,          // 直近の /api/session (POST/PATCH/GET) レスポンス
@@ -59,6 +72,8 @@ const state = {
   isPianorollAutoFollowing: false,
   pianorollAutoScrollTarget: null,
   playbackTimeFrameId: null,
+  pendingPlaybackRatio: null,
+  pointerActivatedControl: null,
   renderMode: "fast",
   prewarmTimer: null,
   prewarmGeneration: 0,
@@ -239,7 +254,7 @@ function schedulePrewarm() {
 function handleRenderModeChange(event) {
   if (!event.target.checked) return;
   state.renderMode = event.target.value;
-  resetPlayer();
+  resetPlayer({ preservePosition: true });
   if (state.session) state.session.hasRender = false;
   updateSectionsReadiness();
   schedulePrewarm();
@@ -329,7 +344,7 @@ async function handleSoundfontChange() {
       body: JSON.stringify({ path }),
     });
     renderSoundfontOptions(await response.json());
-    resetPlayer();
+    resetPlayer({ preservePosition: true });
     if (state.session) {
       state.session.hasRender = false;
     }
@@ -862,6 +877,9 @@ async function enterSolo(trackIndex) {
     state.soloTrackIndex = null;
     showStatus(error.message, "error");
   } finally {
+    // 他トラックの音量が0になった（または解除で戻った）ため、
+    // ピアノロールの減光表示も現在のstate.sessionに合わせて描き直す。
+    redrawPianorollStatic();
     setBusy(false);
   }
 }
@@ -882,11 +900,13 @@ async function exitSolo() {
     state.session = await response.json();
     await renderTrackList();
     updateSectionsReadiness();
-    resetPlayer();
+    resetPlayer({ preservePosition: true });
     showStatus("ソロ試聴を解除しました。もう一度「適用して試聴」を押してください。");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
+    // enterSolo()と同じ理由でピアノロールを再描画する。
+    redrawPianorollStatic();
     setBusy(false);
   }
 }
@@ -916,7 +936,7 @@ async function flushPendingTrackSettings() {
       state.session = await response.json();
       await renderTrackList();
       redrawPianorollStatic();
-      resetPlayer();
+      resetPlayer({ preservePosition: true });
       schedulePrewarm();
       showStatus("設定を変更しました。もう一度「適用して試聴」を押してください。");
       return true;
@@ -1372,8 +1392,18 @@ function updateSectionsReadiness() {
   updatePlaybackControls();
 }
 
-function resetPlayer() {
+function rememberPlaybackPosition() {
   const player = $("#player");
+  if (!player.getAttribute("src")) return;
+  const duration = getPlaybackDuration();
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  state.pendingPlaybackRatio = Math.min(1, Math.max(0, player.currentTime / duration));
+}
+
+function resetPlayer({ preservePosition = false } = {}) {
+  const player = $("#player");
+  if (preservePosition) rememberPlaybackPosition();
+  else state.pendingPlaybackRatio = null;
   setPianorollAutoFollow(false);
   stopPlaybackTimeAnimation();
   player.removeAttribute("src");
@@ -1464,7 +1494,7 @@ async function flushTransform() {
       body: JSON.stringify({ speed, transpose }),
     });
     state.session = await response.json();
-    resetPlayer();
+    resetPlayer({ preservePosition: true });
     updateSectionsReadiness();
     await loadPianoroll();
     schedulePrewarm();
@@ -1796,6 +1826,29 @@ async function handleConvert() {
   }
 }
 
+// 旧レンダーで保存した曲中の進捗率を、新しいWAVのdurationへ換算して復元する。
+// 速度変更で曲長が変わっても、絶対秒ではなく音楽上の同じ位置を継続できる。
+async function restorePlaybackPosition(player) {
+  const ratio = state.pendingPlaybackRatio;
+  if (ratio === null) return;
+  if (player.readyState < 1) {
+    await new Promise((resolve) => {
+      const finish = () => {
+        player.removeEventListener("loadedmetadata", finish);
+        player.removeEventListener("error", finish);
+        resolve();
+      };
+      player.addEventListener("loadedmetadata", finish, { once: true });
+      player.addEventListener("error", finish, { once: true });
+    });
+  }
+  if (player.readyState < 1) return;
+  const duration = getPlaybackDuration();
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  state.pendingPlaybackRatio = null;
+  seekPlaybackTo(ratio * duration);
+}
+
 // POST /api/renderを呼び、結果を<audio>プレイヤーへセットする。
 // 「適用して試聴」ボタンとトラック行のソロ試聴ボタンの両方が使う共通処理。
 // 呼び出し元がsetBusy()/エラー表示を担うため、ここでは行わない。
@@ -1808,15 +1861,23 @@ async function renderAndLoadPlayer() {
   });
   const payload = await response.json();
   const player = $("#player");
-  player.src = audioUrl(payload.renderId);
-  player.load();
+  const nextAudioUrl = audioUrl(payload.renderId);
+  rememberPlaybackPosition();
   if (state.session) {
     state.session.hasRender = true;
     state.session.renderId = payload.renderId;
     state.session.renderMode = payload.renderMode;
     state.session.hasDownload = true;
   }
+  if (player.getAttribute("src") === nextAudioUrl) {
+    state.pendingPlaybackRatio = null;
+    updateSectionsReadiness();
+    return player;
+  }
+  player.src = nextAudioUrl;
+  player.load();
   updateSectionsReadiness();
+  await restorePlaybackPosition(player);
   updatePianorollInteraction();
   drawPianoroll();
   return player;
@@ -1992,13 +2053,6 @@ function setupPlaybackControls() {
       player.muted = false;
     }
   });
-  // マウス/タッチでスライダーを操作した直後もフォーカスが残り続け、以降のスペース/矢印
-  // キーがスライダー自身の既定動作に奪われグローバルの再生・シークショートカットへ届か
-  // なくなるため、ポインター操作の完了時のみblur()する。キーボードでの値変更（Tab移動
-  // 後の矢印キー操作）はpointerupを伴わないため、そちらの操作性は損なわない。
-  $("#player-volume").addEventListener("pointerup", (event) => {
-    event.target.blur();
-  });
   $("#player-mute").addEventListener("click", () => {
     if (player.muted) {
       if (player.volume === 0) player.volume = volumeBeforeMute;
@@ -2049,8 +2103,64 @@ function blurMouseActivatedButton(event) {
   if (target) target.blur();
 }
 
+// ポインターで選択系フォーム部品を操作した後だけフォーカスを解放し、Space/矢印の
+// グローバル再生操作へすぐ戻れるようにする。Tab/矢印/Spaceによるキーボード操作では
+// pointerdownが発生しないためフォーカスを維持し、ネイティブ操作を妨げない。
+// テキスト・数値入力は編集を続ける前提なので対象外。
+function resolvePointerControl(target) {
+  if (!(target instanceof Element)) return null;
+  const label = target.closest("label");
+  if (label?.control) return label.control;
+  return target.closest("select, input");
+}
+
+function rememberPointerControl(event) {
+  const control = resolvePointerControl(event.target);
+  state.pointerActivatedControl = control?.matches(POINTER_FOCUS_CONTROL_SELECTOR)
+    ? control
+    : null;
+}
+
+function blurPointerChangedControl(event) {
+  const control = event.target;
+  if (control !== state.pointerActivatedControl) return;
+  if (!control.matches(POINTER_CHANGE_CONTROL_SELECTOR)) return;
+  state.pointerActivatedControl = null;
+  control.blur();
+}
+
+function blurPointerReleasedRange(event) {
+  const control = resolvePointerControl(event.target);
+  if (
+    !control
+    || control !== state.pointerActivatedControl
+    || !control.matches('input[type="range"]')
+  ) return;
+  state.pointerActivatedControl = null;
+  control.blur();
+}
+
+function blurPointerClickedChoice(event) {
+  const control = resolvePointerControl(event.target);
+  if (control !== state.pointerActivatedControl) return;
+  if (event.target !== control) return;
+  if (!control.matches('input[type="radio"], input[type="checkbox"]')) return;
+  state.pointerActivatedControl = null;
+  control.blur();
+}
+
 function setupPlaybackShortcut() {
   document.addEventListener("click", blurMouseActivatedButton);
+  document.addEventListener("pointerdown", rememberPointerControl, true);
+  document.addEventListener("change", blurPointerChangedControl);
+  document.addEventListener("pointerup", blurPointerReleasedRange);
+  document.addEventListener("click", blurPointerClickedChoice);
+  document.addEventListener("pointercancel", () => {
+    state.pointerActivatedControl = null;
+  });
+  document.addEventListener("keydown", () => {
+    state.pointerActivatedControl = null;
+  }, true);
   document.addEventListener("keydown", (event) => {
     if (event.code !== "Space" || event.repeat) return;
     if (isPlaybackShortcutBlocked(event.target)) return;

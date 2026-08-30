@@ -63,7 +63,23 @@ to 20,000 notes on every `<audio>` `timeupdate`. Canvas resolution follows the
 device-pixel `ResizeObserver` size, while pointer coordinates remain in CSS
 pixels. Seeking is also keyboard-accessible through the focusable slider-style
 canvas. Muting only triggers a local static-layer redraw at lower opacity; it
-must not fetch `/api/pianoroll` again.
+must not fetch `/api/pianoroll` again. Solo audition goes through the exact
+same dimming, for the same reason: `enterSolo()`/`exitSolo()` write real
+`volumePercent: 0` values into every non-soloed track via the same
+`PATCH /api/session/tracks` mute already uses (see "Why per-track volume
+scales Note On velocity instead of sending CC7" below), so
+`redrawPianorollStatic()`'s `mutedIndices` check already treats them as
+muted correctly — both `enterSolo()` and `exitSolo()` just need to call
+`redrawPianorollStatic()` themselves (in a `finally`, so a failed PATCH
+still leaves the roll matching whatever `state.session` actually holds)
+instead of relying on `renderAndLoadPlayer()`'s own `drawPianoroll()`,
+which only repaints the playhead from the existing (now-stale) offscreen
+layer. There is deliberately no solo-specific highlight (a third opacity
+value, an outline, draw-order reordering): a non-soloed track dims to the
+identical 0.18 a manually muted track already uses, since solo's other
+tracks are, mechanically, just muted tracks — and a track muted before
+solo starts stays dimmed after solo ends, because `exitSolo()` restores
+the pre-solo snapshot rather than a flat "all unmuted" state.
 
 The dedicated playback buttons above the piano roll must call the same helpers
 as the global keyboard shortcuts: one-second back/forward matches Arrow
@@ -97,6 +113,23 @@ canonical 1px/`clip-path` hiding rule, not the shared `.visually-hidden` helper:
 that helper intentionally becomes visible while focused/active, which puts a
 radio back into the two-column grid during a click and breaks both layout and
 hit-testing. Keyboard focus is rendered on the adjacent visible label instead.
+
+Pointer-operated selection controls (`select`, radio, checkbox, range, and file
+inputs) release focus after their completed pointer interaction so global Space
+playback is immediately available again. This behavior must remain
+pointer-specific: controls reached or operated from the keyboard keep native
+focus and key behavior, while text and number inputs are excluded so editing is
+not interrupted. Ordinary buttons use the same policy by blurring only clicks
+whose `event.detail` identifies a pointer-produced activation.
+
+Invalidating an audition after an instrument, volume, source, SoundFont,
+speed/transpose, solo, or render-profile change stores the old playback
+position as a normalized song-progress ratio. Loading the next render restores
+that ratio after media metadata becomes available, which preserves the musical
+position even when speed changes the WAV duration. New MIDI/source uploads,
+source conversion, and full session reset deliberately clear the saved ratio.
+If the requested render URL is already active, the player source must not be
+reloaded and its exact current position remains unchanged.
 
 Track colors have one browser-side source of truth: `getTrackColor(track.index,
 trackCount, opacity)`. Both the note rectangles and the color marker preceding

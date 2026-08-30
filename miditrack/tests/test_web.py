@@ -257,6 +257,45 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("align-self: stretch", field_rule)
         self.assertIn("height: 100%", options_rule)
 
+    def test_pointer_selection_controls_release_focus_without_harming_keyboard_use(self) -> None:
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+        selector_block = javascript.split(
+            "const POINTER_FOCUS_CONTROL_SELECTOR = [", 1
+        )[1].split("].join", 1)[0]
+
+        for control_type in ("radio", "checkbox", "range", "file"):
+            self.assertIn(f'input[type="{control_type}"]', selector_block)
+        self.assertIn('"select"', selector_block)
+        self.assertNotIn('input[type="text"]', selector_block)
+        self.assertNotIn('input[type="number"]', selector_block)
+        self.assertIn(
+            'document.addEventListener("pointerdown", rememberPointerControl, true)',
+            javascript,
+        )
+        self.assertIn(
+            'document.addEventListener("change", blurPointerChangedControl)',
+            javascript,
+        )
+        self.assertIn(
+            'document.addEventListener("pointerup", blurPointerReleasedRange)',
+            javascript,
+        )
+        self.assertIn(
+            "!control\n    || control !== state.pointerActivatedControl",
+            javascript,
+        )
+        self.assertIn('if (event.detail === 0) return', javascript)
+
+    def test_render_reload_preserves_relative_playback_position(self) -> None:
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        self.assertIn("pendingPlaybackRatio: null", javascript)
+        self.assertIn("player.currentTime / duration", javascript)
+        self.assertIn("seekPlaybackTo(ratio * duration)", javascript)
+        self.assertIn("await restorePlaybackPosition(player)", javascript)
+        self.assertIn("resetPlayer({ preservePosition: true })", javascript)
+        self.assertIn("else state.pendingPlaybackRatio = null", javascript)
+
     # --- アップロード ---
 
     def test_upload_returns_track_payload(self) -> None:
