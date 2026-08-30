@@ -66,9 +66,10 @@ const state = {
   hideEmptyTracks: true, // ノート数0のトラックを一覧から隠すか（#hide-empty-tracksチェックボックスの状態）
   trackRenderId: 0,
   pianoroll: null,
-  pianorollBase: document.createElement("canvas"),
   pianorollLoadId: 0,
   pianorollSize: null,
+  pianorollTimelineWidth: 0,
+  pianorollScrollFrameId: null,
   isPianorollSeeking: false,
   pianorollPointerId: null,
   pianorollZoom: 1,
@@ -225,7 +226,7 @@ async function applyPendingPianorollReload() {
     updatePlaybackTime();
     updatePianorollInteraction();
     updatePianorollZoomControls();
-    drawPianoroll();
+    updatePianorollPlayhead();
   }
 }
 
@@ -426,7 +427,7 @@ async function renderGeneration(generation) {
     if (!isCurrentRenderGeneration(generation)) return null;
     clearRenderStale();
     updatePianorollInteraction();
-    drawPianoroll();
+    updatePianorollPlayhead();
     return player;
   } catch (error) {
     if (isCurrentRenderGeneration(generation)) showStatus(error.message, "error");
@@ -1266,12 +1267,10 @@ function setPianorollMessage(message, status = "") {
 
 function clearPianoroll(message = "MIDIを読み込むとここに表示されます。") {
   state.pianoroll = null;
-  state.pianorollBase.width = 0;
-  state.pianorollBase.height = 0;
   resetPianorollZoom();
   setPianorollMessage(message);
   updatePianorollInteraction();
-  drawPianoroll();
+  redrawPianorollStatic();
 }
 
 // 取得済みのペイロードをstate.pianorollへ反映して再描画する。loadPianoroll()と
@@ -1312,14 +1311,15 @@ function pianorollFieldOffsets(payload) {
   return Object.fromEntries(payload.fields.map((field, index) => [field, index]));
 }
 
-function drawPianorollGrid(context, width, height) {
+function drawPianorollGrid(context, width, height, timelineWidth, scrollLeft) {
   context.fillStyle = cssColor("--neutral-10", "#fafbfc");
   context.fillRect(0, 0, width, height);
   context.strokeStyle = cssColor("--neutral-30", "#ebecf0");
   context.lineWidth = 1;
   context.beginPath();
   for (let index = 1; index < 8; index += 1) {
-    const x = Math.round(width * index / 8) + 0.5;
+    const x = Math.round(timelineWidth * index / 8 - scrollLeft) + 0.5;
+    if (x < 0 || x > width) continue;
     context.moveTo(x, 0);
     context.lineTo(x, height);
   }
@@ -1332,7 +1332,10 @@ function drawPianorollGrid(context, width, height) {
 }
 
 function drawPianorollTrack(context, track, layout, mutedIndices) {
-  const { payload, offsets, width, height, minNote, noteSpan, trackCount } = layout;
+  const {
+    payload, offsets, width, height, timelineWidth, scrollLeft,
+    minNote, noteSpan, trackCount,
+  } = layout;
   context.fillStyle = getTrackColor(
     track.index,
     trackCount,
@@ -1342,8 +1345,9 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     const start = track.notes[offset + offsets.start];
     const duration = track.notes[offset + offsets.duration];
     const note = track.notes[offset + offsets.note];
-    const x = start / payload.durationSeconds * width;
-    const noteWidth = Math.max(1, duration / payload.durationSeconds * width);
+    const x = start / payload.durationSeconds * timelineWidth - scrollLeft;
+    const noteWidth = Math.max(1, duration / payload.durationSeconds * timelineWidth);
+    if (x > width || x + noteWidth < 0) continue;
     const y = height - ((note - minNote + 1) / noteSpan * height);
     context.fillRect(x, y, noteWidth, Math.max(1.5, height / noteSpan * 0.72));
   }
@@ -1352,44 +1356,51 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
 function redrawPianorollStatic() {
   const payload = state.pianoroll;
   const size = state.pianorollSize;
-  if (!payload || !size || size.width <= 0 || size.height <= 0) return;
-  const base = state.pianorollBase;
-  base.width = size.pixelWidth;
-  base.height = size.pixelHeight;
-  const context = base.getContext("2d");
+  if (!size || size.width <= 0 || size.height <= 0) return;
+  const canvas = $("#pianoroll-canvas");
+  const context = canvas.getContext("2d");
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  if (!payload) {
+    updatePianorollPlayhead();
+    return;
+  }
+  const scrollLeft = $("#pianoroll-scroll").scrollLeft;
+  const timelineWidth = state.pianorollTimelineWidth || size.width;
   context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-  drawPianorollGrid(context, size.width, size.height);
+  drawPianorollGrid(context, size.width, size.height, timelineWidth, scrollLeft);
   if (payload.noteCount > 0 && payload.durationSeconds > 0) {
     const mutedIndices = new Set((state.session?.tracks || [])
       .filter((track) => track.volumePercent === 0).map((track) => track.index));
     const layout = {
       payload, offsets: pianorollFieldOffsets(payload), width: size.width, height: size.height,
+      timelineWidth, scrollLeft,
       minNote: payload.minNote, noteSpan: payload.maxNote - payload.minNote + 3,
       trackCount: payload.tracks.length,
     };
     for (const track of payload.tracks) drawPianorollTrack(context, track, layout, mutedIndices);
   }
-  drawPianoroll();
+  updatePianorollPlayhead();
 }
 
-function drawPianoroll() {
-  const canvas = $("#pianoroll-canvas");
-  const context = canvas.getContext("2d");
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  if (state.pianorollBase.width > 0) context.drawImage(state.pianorollBase, 0, 0);
+// 再生中に毎フレーム動くのは2px幅のDOMレイヤーだけに限定する。transformは
+// レイアウトを再計算せずcompositorで処理でき、静的Canvasの再転送も発生しない。
+function updatePianorollPlayhead() {
+  const playhead = $("#pianoroll-playhead");
   const payload = state.pianoroll;
   const size = state.pianorollSize;
-  if (!payload || !size || payload.durationSeconds <= 0) return;
+  const timelineWidth = state.pianorollTimelineWidth;
+  if (!payload || !size || !timelineWidth || payload.durationSeconds <= 0) {
+    playhead.hidden = true;
+    updatePianorollAria();
+    return;
+  }
   const seconds = Math.min(payload.durationSeconds, getDisplayPlaybackSeconds());
-  context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-  context.strokeStyle = cssColor("--brand-dark", "#5674b9");
-  context.lineWidth = 2;
-  context.beginPath();
-  const x = seconds / payload.durationSeconds * size.width;
-  context.moveTo(x, 0);
-  context.lineTo(x, size.height);
-  context.stroke();
+  const progress = seconds / payload.durationSeconds;
+  const x = progress * timelineWidth - $("#pianoroll-scroll").scrollLeft;
+  const maximumX = Math.max(0, size.width - 2);
+  playhead.hidden = x < 0 || x > size.width;
+  playhead.style.transform = `translate3d(${Math.min(maximumX, Math.max(0, x))}px, 0, 0)`;
   updatePianorollAria(seconds);
 }
 
@@ -1431,9 +1442,9 @@ function scrollPianorollToStart() {
 
 function followPianorollPlayback() {
   if (!state.isPianorollAutoFollowing || !state.pianoroll?.durationSeconds) return;
+  if (!state.pianorollTimelineWidth) return;
   const scrollArea = $("#pianoroll-scroll");
-  const canvas = $("#pianoroll-canvas");
-  const canvasWidth = canvas.getBoundingClientRect().width;
+  const canvasWidth = state.pianorollTimelineWidth;
   const viewportHalf = scrollArea.clientWidth / 2;
   const progress = Math.min(1, activePlayer().currentTime / state.pianoroll.durationSeconds);
   const playheadX = progress * canvasWidth;
@@ -1445,7 +1456,16 @@ function followPianorollPlayback() {
   scrollArea.scrollLeft = target;
 }
 
+function schedulePianorollViewportRedraw() {
+  if (state.pianorollScrollFrameId !== null) return;
+  state.pianorollScrollFrameId = requestAnimationFrame(() => {
+    state.pianorollScrollFrameId = null;
+    redrawPianorollStatic();
+  });
+}
+
 function handlePianorollScroll() {
+  schedulePianorollViewportRedraw();
   const target = state.pianorollAutoScrollTarget;
   if (target !== null && Math.abs($("#pianoroll-scroll").scrollLeft - target) < 1) {
     state.pianorollAutoScrollTarget = null;
@@ -1455,20 +1475,22 @@ function handlePianorollScroll() {
 }
 
 function setPianorollZoom(zoom, shouldPreserveCenter = true) {
-  const canvas = $("#pianoroll-canvas");
+  const timeline = $("#pianoroll-timeline");
   const scrollArea = $("#pianoroll-scroll");
-  const previousWidth = canvas.getBoundingClientRect().width;
+  const previousWidth = timeline.getBoundingClientRect().width;
   const centerRatio = previousWidth > 0
     ? (scrollArea.scrollLeft + scrollArea.clientWidth / 2) / previousWidth
     : 0;
   state.pianorollZoom = zoom;
-  canvas.style.inlineSize = `${zoom * 100}%`;
+  timeline.style.inlineSize = `${zoom * 100}%`;
   updatePianorollZoomControls();
   requestAnimationFrame(() => {
-    const nextWidth = canvas.getBoundingClientRect().width;
+    const nextWidth = timeline.getBoundingClientRect().width;
+    state.pianorollTimelineWidth = nextWidth;
     scrollArea.scrollLeft = shouldPreserveCenter
       ? centerRatio * nextWidth - scrollArea.clientWidth / 2
       : 0;
+    redrawPianorollStatic();
   });
 }
 
@@ -1489,6 +1511,12 @@ function resetPianorollZoom() {
   setPianorollZoom(PIANOROLL_ZOOM_LEVELS[0], false);
 }
 
+function resizePianorollViewport() {
+  const viewport = $("#pianoroll-viewport");
+  const width = $("#pianoroll-scroll").clientWidth;
+  if (width > 0) viewport.style.inlineSize = `${width}px`;
+}
+
 function resizePianoroll(entry) {
   const canvas = $("#pianoroll-canvas");
   const rect = canvas.getBoundingClientRect();
@@ -1502,14 +1530,17 @@ function resizePianoroll(entry) {
     width: rect.width, height: rect.height, pixelWidth, pixelHeight,
     scaleX: pixelWidth / rect.width, scaleY: pixelHeight / rect.height,
   };
+  state.pianorollTimelineWidth = $("#pianoroll-timeline").getBoundingClientRect().width;
   redrawPianorollStatic();
 }
 
 function seekPianorollAt(clientX) {
   if (!state.session?.hasRender || !state.pianoroll) return;
   const canvas = $("#pianoroll-canvas");
+  const scrollArea = $("#pianoroll-scroll");
   const rect = canvas.getBoundingClientRect();
-  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const x = scrollArea.scrollLeft + clientX - rect.left;
+  const ratio = Math.min(1, Math.max(0, x / state.pianorollTimelineWidth));
   seekPlaybackTo(ratio * state.pianoroll.durationSeconds);
 }
 
@@ -1567,10 +1598,13 @@ function handlePianorollWheel(event) {
 function setupPianoroll() {
   const canvas = $("#pianoroll-canvas");
   const scrollArea = $("#pianoroll-scroll");
+  resizePianorollViewport();
   const resizeObserver = new ResizeObserver(([entry]) => resizePianoroll(entry));
+  const viewportObserver = new ResizeObserver(resizePianorollViewport);
   const supportsDevicePixels = typeof ResizeObserverEntry !== "undefined"
     && "devicePixelContentBoxSize" in ResizeObserverEntry.prototype;
   resizeObserver.observe(canvas, supportsDevicePixels ? { box: "device-pixel-content-box" } : {});
+  viewportObserver.observe(scrollArea);
   canvas.addEventListener("pointerdown", (event) => {
     if (!state.session?.hasRender || event.pointerType === "touch") return;
     state.isPianorollSeeking = true;
@@ -1648,7 +1682,7 @@ function resetPlayer() {
   updatePlaybackTime();
   updatePlaybackControls();
   updatePianorollInteraction();
-  drawPianoroll();
+  updatePianorollPlayhead();
 }
 
 // セッションのspeed/transposeを速度・ピッチ入力欄へ反映する。未指定（handleReset()の
@@ -2237,7 +2271,7 @@ async function runSwap(renderId, canCommit = () => true) {
     // rAFループの次フレームを待たず、乗り換えた直後の位置を即座に反映する。
     // 1フレーム（最大16ms程度）とはいえ待つ理由が無く、ここで描き直しておけば
     // 上のシーク調整と合わせてバーの見た目上のズレが実質ゼロになる。
-    drawPianoroll();
+    updatePianorollPlayhead();
     return activePlayer();
   } finally {
     state.isSwapping = false;
@@ -2391,7 +2425,7 @@ function updatePlayerVolume() {
 }
 
 function updatePlaybackProgress() {
-  drawPianoroll();
+  updatePianorollPlayhead();
   updatePlaybackTime();
   followPianorollPlayback();
 }

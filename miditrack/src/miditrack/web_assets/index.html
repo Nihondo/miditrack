@@ -211,19 +211,24 @@
       </div>
       <div class="pianoroll-card">
         <div class="pianoroll-scroll" id="pianoroll-scroll">
-          <canvas
-            id="pianoroll-canvas"
-            role="slider"
-            tabindex="0"
-            aria-label="ピアノロールの再生位置"
-            aria-orientation="horizontal"
-            aria-describedby="pianoroll-help pianoroll-status"
-            aria-disabled="true"
-            aria-valuemin="0"
-            aria-valuemax="0"
-            aria-valuenow="0"
-            aria-valuetext="0秒"
-          >ピアノロール表示。再生コントロールやキーボードでも再生位置を変更できます。</canvas>
+          <div class="pianoroll-timeline" id="pianoroll-timeline">
+            <div class="pianoroll-viewport" id="pianoroll-viewport">
+              <canvas
+                id="pianoroll-canvas"
+                role="slider"
+                tabindex="0"
+                aria-label="ピアノロールの再生位置"
+                aria-orientation="horizontal"
+                aria-describedby="pianoroll-help pianoroll-status"
+                aria-disabled="true"
+                aria-valuemin="0"
+                aria-valuemax="0"
+                aria-valuenow="0"
+                aria-valuetext="0秒"
+              >ピアノロール表示。再生コントロールやキーボードでも再生位置を変更できます。</canvas>
+              <span class="pianoroll-playhead" id="pianoroll-playhead" aria-hidden="true" hidden></span>
+            </div>
+          </div>
         </div>
         <p class="pianoroll-empty" id="pianoroll-empty">MIDIを読み込むとここに表示されます。</p>
         <div class="pianoroll-zoom" role="group" aria-label="ピアノロールの時間軸倍率">

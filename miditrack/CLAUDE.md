@@ -57,14 +57,20 @@ map; note pairing remains track-local because different tracks may share a MIDI
 channel. The response uses a server-described flat note schema (`stride` plus
 `fields`) and caps the globally earliest notes at 20,000 to bound response size.
 
-The browser caches the static note/grid layer in an offscreen canvas. Playback
-updates copy that layer and draw only the playhead, avoiding a full redraw of up
-to 20,000 notes on every `<audio>` `timeupdate`. Canvas resolution follows the
-device-pixel `ResizeObserver` size, while pointer coordinates remain in CSS
-pixels. Seeking is also keyboard-accessible through the focusable slider-style
-canvas. Muting only triggers a local static-layer redraw at lower opacity; it
-must not fetch `/api/pianoroll` again. Solo audition goes through the exact
-same dimming, for the same reason: `enterSolo()`/`exitSolo()` write real
+The browser keeps the full zoomed timeline as a lightweight scroll-width
+wrapper but renders only the visible horizontal slice into one sticky canvas.
+The canvas backing store follows the visible viewport's device-pixel
+`ResizeObserver` size, so 4x/8x zoom does not multiply canvas allocation by the
+zoom factor. Scroll events request at most one static repaint per animation
+frame, and `drawPianorollTrack()` culls notes outside that visible slice.
+Playback never repaints or copies the canvas: `#pianoroll-playhead` is a 2px DOM
+overlay whose compositor-friendly `translate3d()` is the only visual property
+updated by the playback rAF loop. Pointer coordinates remain in CSS pixels;
+seeking adds the native scroller's `scrollLeft` before dividing by the full
+timeline width. Seeking is also keyboard-accessible through the focusable
+slider-style canvas. Muting only triggers a local static redraw at lower
+opacity; it must not fetch `/api/pianoroll` again. Solo audition goes through
+the exact same dimming, for the same reason: `enterSolo()`/`exitSolo()` write real
 `volumePercent: 0` values into every non-soloed track via the same
 `PATCH /api/session/tracks` mute already uses (see "Why per-track volume
 scales Note On velocity instead of sending CC7" below), so
@@ -72,9 +78,9 @@ scales Note On velocity instead of sending CC7" below), so
 muted correctly — both `enterSolo()` and `exitSolo()` just need to call
 `redrawPianorollStatic()` themselves (in a `finally`, so a failed PATCH
 still leaves the roll matching whatever `state.session` actually holds)
-instead of relying on `renderAndLoadPlayer()`'s own `drawPianoroll()`,
-which only repaints the playhead from the existing (now-stale) offscreen
-layer. There is deliberately no solo-specific highlight (a third opacity
+instead of relying on the playback progress update, which only moves the DOM
+playhead and deliberately leaves the visible static slice untouched. There is
+deliberately no solo-specific highlight (a third opacity
 value, an outline, draw-order reordering): a non-soloed track dims to the
 identical 0.18 a manually muted track already uses, since solo's other
 tracks are, mechanically, just muted tracks — and a track muted before
@@ -175,11 +181,12 @@ reloaded and its exact current position remains unchanged.
 Track colors have one browser-side source of truth: `getTrackColor(track.index,
 trackCount, opacity)`. Both the note rectangles and the color marker preceding
 each track name must use it, so sorting rows cannot break the visual mapping.
-Piano-roll time-axis zoom changes the canvas CSS inline size through fixed zoom
-steps and relies on the surrounding native horizontal scroll container. The
-`ResizeObserver` rebuilds the device-pixel backing store at each size, and seek
-coordinates continue to use the canvas's full scrolled `getBoundingClientRect()`;
-do not map pointer positions against the visible scroll viewport instead.
+Piano-roll time-axis zoom changes `#pianoroll-timeline`'s CSS inline size through
+fixed zoom steps and relies on the surrounding native horizontal scroll
+container. `#pianoroll-viewport` remains sticky at the scroller's visible width,
+and the canvas backing store therefore remains constant across zoom levels.
+Seek coordinates are `(scrollLeft + clientX - canvas.left) / timelineWidth`;
+using only the visible canvas width would seek to the wrong time after panning.
 Playback that begins at zero enables auto-follow. The viewport remains at the
 start until the playhead reaches its midpoint, then scrolls to keep the
 playhead centered. Wheel, pointer, touch, scrollbar, or other manual horizontal
@@ -371,17 +378,17 @@ back before continuing), then self-corrected within a frame since
 `seekNextTo()` helpers — immediately after `next.play()` resolves, while
 `next.volume` is still `0` (so the reseek is silent), erasing the load/
 buffering-latency portion of the drift before the audible/visible fade ever
-starts. `runSwap()`'s tail also now calls `drawPianoroll()` directly right
-after the element swap, rather than waiting for the playback-time rAF loop's
-next frame to notice — cheap, and removes the last frame of lag.
+starts. `runSwap()`'s tail also now calls `updatePianorollPlayhead()` directly
+right after the element swap, rather than waiting for the playback-time rAF
+loop's next frame to notice — cheap, and removes the last frame of lag.
 
 Second, and the more visible of the two: a speed change (unlike a pure
 transpose) changes `durationSeconds` itself — `pianoroll.py`'s duration comes
 from the tempo map, which `_scaled_tempo()` divides by `speed`; transpose
 never touches it. `flushTransform()` used to call `loadPianoroll()`
 immediately on every transform edit, replacing `state.pianoroll` (and
-therefore the divisor `drawPianoroll()`'s `x = seconds / payload.durationSeconds
-* width` uses) the moment the `PATCH /api/session/transform` response came
+therefore the divisor `updatePianorollPlayhead()` uses to turn elapsed seconds
+into full-timeline progress) the moment the `PATCH /api/session/transform` response came
 back — independent of whether the audition audio itself had caught up yet.
 While playing, that response arrives well before the debounced auto-render's
 crossfade does, so for the whole gap in between, the bar's denominator
@@ -429,8 +436,8 @@ what's already on screen. `flushTransform()` now compares the just-submitted
 this PATCH) and passes the result as `schedulePianorollReload({
 needsNoteRedraw })`. When `false`, `applyPendingPianorollReload()` still
 updates `state.pianoroll` (so `durationSeconds` stays authoritative for the
-bar and for `seekPianorollAt()`) and repaints only the playhead via
-`drawPianoroll()`, but skips `redrawPianorollStatic()`'s per-note canvas
+bar and for `seekPianorollAt()`) and moves only the playhead via
+`updatePianorollPlayhead()`, but skips `redrawPianorollStatic()`'s per-note canvas
 loop and the now-pointless `setPianorollMessage()` truncation-status update
 entirely. `state.pendingPianorollNeedsRedraw` is OR-accumulated (never
 overwritten to `false`) across multiple pending reloads so a transpose edit
@@ -2000,7 +2007,10 @@ instruments/volumes while watching the render's result actually needs. The
 (`app.js`'s `setupFullscreenLayout()`); everything else is `app.css`. No
 DOM is added, removed, or reparented, and no rendering/playback/piano-roll
 drawing code is touched — this is deliberately scoped to a CSS relayout, the
-same "CSS/HTML switch only" boundary the user asked for.
+same "CSS/HTML switch only" boundary the user asked for. This describes the
+fullscreen toggle itself; the later zoom-performance fix added stable
+`#pianoroll-timeline`/`#pianoroll-viewport` wrappers inside the existing scroll
+area, without making fullscreen entry/exit perform DOM surgery.
 
 **Why `#audition-card` (the whole "3. 試聴" card, containing the SoundFont
 row, transport, piano roll, and download/variation controls) becomes
@@ -2020,17 +2030,21 @@ painting on `#audition-card` itself once it has no box — `body.is-fullscreen
 #audition-card:not(.ready) > *` re-applies the same opacity to each child
 directly so the "dim until a track list exists" behavior survives.
 
-**Why the piano-roll canvas needed no JS changes to resize correctly**:
-`setupPianoroll()`'s existing `ResizeObserver` (device-pixel-content-box)
-already re-derives `canvas.width`/`canvas.height` and calls
-`redrawPianorollStatic()` whenever the canvas's rendered box changes for
-*any* reason — it has no knowledge of *why* the box changed. Replacing
+**Why the piano-roll canvas still follows fullscreen resizing correctly**:
+`setupPianoroll()` observes the scroll viewport and the visible canvas. The
+first observer updates the sticky `#pianoroll-viewport` to the scroller's
+`clientWidth`; the device-pixel-content-box observer then re-derives
+`canvas.width`/`canvas.height` and calls `redrawPianorollStatic()` whenever that
+visible box changes. Replacing
 `.pianoroll-card`'s fixed `height: 380px` with `height: auto; min-height: 0`
 inside a `minmax(0, 1fr)` grid row lets the browser's own layout pass
 resize the box, and the existing observer callback does the rest. The
-horizontal zoom (`canvas.style.inlineSize = "N%"`, relative to the
-scrolling container's width) needed no change for the same reason: it was
-already expressed relative to its container, not an absolute pixel value.
+horizontal zoom changes the outer timeline's percentage width while the sticky
+viewport and physical canvas allocation remain tied to the visible scroller.
+Do not restore a full-timeline canvas: at a measured 2560px-wide fullscreen
+viewport, 4x previously created two 15056x1977 backing stores and copied one
+into the other every frame; the virtualized canvas is 3764x1977 at both 4x and
+8x.
 
 **Why the track table gets a role skeleton in the static HTML rather than
 JS-added roles alone**: the DAW layout turns `<table class="track-table">`

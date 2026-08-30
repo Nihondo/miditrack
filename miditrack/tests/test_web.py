@@ -263,6 +263,39 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("@keyframes render-spinner-rotate", css)
         self.assertNotIn("prefers-reduced-motion: reduce", css)
 
+    def test_pianoroll_playhead_does_not_recopy_large_canvas_each_frame(self) -> None:
+        """高倍率の再生ループが静的Canvas全体を再転送しないことを確認する。"""
+        html = self.client.get("/").get_data(as_text=True)
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        self.assertIn('id="pianoroll-timeline"', html)
+        self.assertIn('id="pianoroll-playhead"', html)
+        self.assertIn("function updatePianorollPlayhead()", javascript)
+        self.assertNotIn("pianorollBase", javascript)
+        self.assertIn("if (x > width || x + noteWidth < 0) continue;", javascript)
+        self.assertIn("function schedulePianorollViewportRedraw()", javascript)
+
+        progress_block = javascript.split("function updatePlaybackProgress() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("updatePianorollPlayhead();", progress_block)
+        self.assertNotIn("redrawPianorollStatic", progress_block)
+        self.assertNotIn("drawImage", progress_block)
+
+        zoom_block = javascript.split("function setPianorollZoom(", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn('const timeline = $("#pianoroll-timeline")', zoom_block)
+        self.assertIn("timeline.style.inlineSize", zoom_block)
+        self.assertIn('id="pianoroll-viewport"', html)
+        viewport_rule = css.split(".pianoroll-viewport {", 1)[1].split("}", 1)[0]
+        self.assertIn("position: sticky", viewport_rule)
+        self.assertIn('viewport.style.inlineSize = `${width}px`', javascript)
+        playhead_rule = css.split(".pianoroll-playhead {", 1)[1].split("}", 1)[0]
+        self.assertIn("pointer-events: none", playhead_rule)
+        self.assertIn("transform: translate3d", playhead_rule)
+
     def test_song_picker_is_shown_only_when_multiple_candidates_exist(self) -> None:
         """単一候補は隠しつつ、その曲番号を変換時に送ることを確認する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
