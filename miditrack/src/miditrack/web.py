@@ -63,6 +63,11 @@ RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
 RENDER_CACHE_MAX_ENTRIES = 16
 RENDER_CACHE_VERSION = 1
 RENDER_WORKERS = 2
+# /api/audio?v=Nがrender_idごとに解決できるWAVの保持件数。クロスフェード中は旧render_idの
+# 要素が引き続きこの音源へRangeリクエストを送り続けるため、invalidate_render()後も
+# ここに載っている間は消さない（LRU（render_cache）からの追い出し対象からも保護する）。
+# 上限は「同時に鳴りうる音源はたかだかA/B 2枚+ソロ切替の余裕」程度で十分なので小さく保つ。
+AUDIO_SOURCE_HISTORY_LIMIT = 4
 
 RendererFunc = Callable[[Path, Path, "Path | None"], None]
 ListSongsFunc = Callable[[SourceFormat, Path], "tuple[dict[str, Any], list[dict[str, Any]]]"]
@@ -159,6 +164,15 @@ class WebSession:
     # clear()をまたいでもサーバープロセス中は単調増加させ、同じ/api/audio?v=Nを
     # 別内容へ再利用しない。プロセス再起動時は認証tokenも変わるため0開始で安全。
     render_id: int = 0
+    # render_id -> そのidをactivateした時点のWAVパス。クロスフェード中、旧
+    # <audio>要素は新レンダリングがactivateされた後も自分のrender_id（?v=旧N）
+    # へRangeリクエストを送り続ける。get_audio()はこの辞書で解決し、audio_pathが
+    # 新音源へ差し替わっていても旧要素には旧音源のバイトを返し続ける。
+    # invalidate_render()では消さない（旧render_idを鳴らし続けるのがこの辞書の
+    # 存在理由）。reset_midi_state()（延いてはclear()）でだけ消す。
+    audio_sources: OrderedDict[int, Path] = field(
+        default_factory=OrderedDict, repr=False
+    )
     # 「速度・ピッチのバリエーション」で生成したZIP（WAV+MIDI）。ensure_render()と
     # 同じ入力（assignments/volumes/track_sources/soundfont等）から作られる派生物
     # なので、audio_pathと同じタイミング（reset_midi_state/invalidate_render）で
@@ -220,6 +234,9 @@ class WebSession:
         self.render_cache_bytes = 0
         self.current_render_key = None
         self.current_render_mode = None
+        # audio_sourcesが指すパスはすべてrender_cache由来なので、上のループで
+        # 既にunlink済み。ここでは辞書自体をクリアするだけでよい。
+        self.audio_sources.clear()
 
     def reset_midi_state(self) -> None:
         """MIDI（原本・トラック解析・割り当て・レンダリング結果）だけを初期状態に戻す。
@@ -962,6 +979,9 @@ def create_app(
         protected.add(path)
         if web_session.audio_path is not None:
             protected.add(web_session.audio_path)
+        # クロスフェード中に旧render_idへ引き続き応答する必要のあるWAVも、
+        # LRU追い出しの対象から外す（audio_sources自体の説明を参照）。
+        protected.update(web_session.audio_sources.values())
         _evict_render_cache(protected)
         return path
 
@@ -1427,6 +1447,13 @@ def create_app(
                 web_session.audio_path = wav_path
                 web_session.current_render_key = cache_key
                 web_session.current_render_mode = mode
+                # 今回activateされたrender_idがこのWAVを指すよう記録する。旧render_id
+                # 宛のリクエスト（クロスフェード中の旧<audio>要素）はget_audio()が
+                # この辞書で解決し、audio_pathが差し替わった後も旧音源を返し続ける。
+                web_session.audio_sources[web_session.render_id] = wav_path
+                web_session.audio_sources.move_to_end(web_session.render_id)
+                while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
+                    web_session.audio_sources.popitem(last=False)
 
             render_ms = round((time.perf_counter() - started_at) * 1000)
             return RenderOutcome(
@@ -1477,11 +1504,25 @@ def create_app(
 
     @app.get("/api/audio")
     def get_audio() -> Response:
-        if web_session.audio_path is None or not web_session.audio_path.exists():
+        # ?v=<render_id>はaudio_sourcesで解決する。クロスフェード中は旧<audio>要素が
+        # activate済みの新render_idより古いidへRangeリクエストを送り続けるため、
+        # audio_pathが新音源へ差し替わった後もその要素には旧音源のバイトを返す必要が
+        # ある。該当idが無い・既に破棄済み（reset_midi_state以降）の場合は、常に
+        # 「現在の音源」を意味するaudio_pathへ従来どおりフォールバックする。
+        audio_path = web_session.audio_path
+        requested = request.args.get("v")
+        if requested is not None:
+            try:
+                requested_id = int(requested)
+            except ValueError:
+                requested_id = None
+            if requested_id is not None:
+                candidate = web_session.audio_sources.get(requested_id)
+                if candidate is not None and candidate.exists():
+                    audio_path = candidate
+        if audio_path is None or not audio_path.exists():
             raise WebValidationError("先に「適用して試聴」を実行してください")
-        return send_file(
-            web_session.audio_path, mimetype="audio/wav", conditional=True, max_age=0
-        )
+        return send_file(audio_path, mimetype="audio/wav", conditional=True, max_age=0)
 
     @app.get("/api/download")
     def get_download() -> Response:

@@ -141,7 +141,13 @@
             <span class="playback-time-whole">00:00</span><span class="playback-time-dot">.</span><span class="playback-time-decimal">0</span>
           </span>
         </output>
-        <audio id="player" preload="metadata" hidden></audio>
+        <!-- 試聴用<audio>を2枚（A/B）持つ。再レンダリング完了時に、鳴っている方を止めずに
+             もう一方へ短時間のクロスフェードで乗り換えるため（app.jsのcrossfadeToRender()）。
+             常にどちらか一方だけが「現在の再生源」（state.activePlayerId）で、
+             再生系のイベントリスナーは両方に張り、event.targetが現在のactivePlayer()と
+             一致する場合だけ処理する。 -->
+        <audio id="player-a" preload="metadata" hidden></audio>
+        <audio id="player-b" preload="metadata" hidden></audio>
         <div class="transform-controls" role="group" aria-label="全体の速度・ピッチ・試聴音量">
           <div class="transform-control">
             <span class="transform-control-label">速度</span>

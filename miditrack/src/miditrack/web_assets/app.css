@@ -259,6 +259,11 @@ details[open] > summary.card-heading .disclosure-chevron { transform: rotate(180
 .reset-action { margin-left: auto; }
 .button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(86, 116, 185, 0.2); }
 .button:disabled { color: var(--neutral-60); background: var(--neutral-20); border-color: var(--neutral-30); box-shadow: none; cursor: not-allowed; }
+/* トラック設定・SoundFont・速度/ピッチ等の変更後、試聴音声がまだ追いついていない
+   （scheduleAutoRender()の完了待ち、または明示クリック待ち）ことを示す控えめな印。
+   markRenderStale()/clearRenderStale()（app.js）が付け外しする。音は止めないまま
+   変更したので、緊急性の高い警告ではなく軽い状態表示にとどめる。 */
+.button.is-stale:not(:disabled) { box-shadow: 0 0 0 2px var(--warning) inset; }
 
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 3px solid rgba(119, 153, 221, 0.32);

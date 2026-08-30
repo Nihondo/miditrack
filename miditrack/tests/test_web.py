@@ -287,14 +287,68 @@ class TestWebApp(unittest.TestCase):
         self.assertIn('if (event.detail === 0) return', javascript)
 
     def test_render_reload_preserves_relative_playback_position(self) -> None:
+        """再レンダリング後も音を止めずに乗り換える、A/Bクロスフェード実装の存在を確認する。
+
+        再生中のクロスフェードは実ブラウザでなければ検証できないため、ここでは
+        app.js自体の文字列を検査し、（1）設定変更が<audio>のsrc/再生に触れない
+        markRenderStale()経由になっていること、（2）crossfadeToRender()が曲長の
+        変化（速度変更）を跨いでも進捗率ベースで位置を復元すること、の2点を
+        リグレッションガードする。miditrack/CLAUDE.mdの
+        「Why render-then-play, not a live softsynth」も参照。
+        """
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
 
-        self.assertIn("pendingPlaybackRatio: null", javascript)
-        self.assertIn("player.currentTime / duration", javascript)
-        self.assertIn("seekPlaybackTo(ratio * duration)", javascript)
-        self.assertIn("await restorePlaybackPosition(player)", javascript)
-        self.assertIn("resetPlayer({ preservePosition: true })", javascript)
-        self.assertIn("else state.pendingPlaybackRatio = null", javascript)
+        # 設定変更はresetPlayer()（<audio>のsrcを外すハードリセット）ではなく、
+        # 再生を止めないmarkRenderStale()を経由する。
+        self.assertIn("function markRenderStale()", javascript)
+        self.assertIn("function scheduleAutoRender()", javascript)
+        self.assertNotIn("resetPlayer({ preservePosition: true })", javascript)
+
+        # crossfadeToRender()は絶対秒ではなく進捗率で位置を換算する
+        # （速度変更で曲長が変わっても音楽上の同じ位置を継続するため）。
+        self.assertIn("function crossfadeToRender(renderId)", javascript)
+        self.assertIn("async function runSwap(renderId)", javascript)
+        self.assertIn(
+            "if (!Number.isFinite(fromDuration) || fromDuration <= 0) return 0;",
+            javascript,
+        )
+        # ロード待ち・play()の起動待ちで進み続けたactiveの位置に合わせて、フェード
+        # 開始前（next.volumeがまだ0の間）にもう一度シークし直す。これが無いと
+        # 乗り換えの瞬間にピアノロールの再生位置バーが一瞬ずれて見える回帰を防ぐ。
+        self.assertIn("seekNextTo(currentRatio())", javascript)
+        self.assertEqual(javascript.count("seekNextTo(currentRatio())"), 2)
+
+    def test_speed_change_defers_pianoroll_duration_update_until_audio_catches_up(
+        self,
+    ) -> None:
+        """速度変更時のピアノロール再生位置バーの一瞬のズレ・不要な再描画を防ぐ実装を確認する。
+
+        pianoroll.pyのdurationSecondsは速度（tempoのスケール）だけで決まり、transposeでは
+        変わらない。再生中に速度を変えると、旧速度のまま鳴っている音の経過秒数を新しい
+        durationSecondsで割ることになり、クロスフェードで音が実際に切り替わるまでの間
+        再生位置バーがずれて見える回帰を防ぐ。また、速度のみの変更ではノートの相対位置
+        （x座標比率）は数学的に不変なので、static layerの再描画も不要であることを確認する。
+        miditrack/CLAUDE.mdの「Two follow-up fixes to the piano-roll playhead」も参照。
+        """
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        # フェッチと反映のタイミングを分離: 編集直後に裏で取得を始め、実際に音が
+        # 追いついた（またはそもそも再生していなかった）時点でだけ反映する。
+        self.assertIn("function schedulePianorollReload(", javascript)
+        self.assertIn("async function applyPendingPianorollReload()", javascript)
+        self.assertIn("state.pendingPianorollFetch = apiFetch(\"/api/pianoroll\")", javascript)
+
+        # 速度のみの変更（transpose不変）ではノートのstatic layerを再描画しない。
+        self.assertIn("needsNoteRedraw", javascript)
+        self.assertIn(
+            "const transposeChanged = !state.session || state.session.transpose !== transpose;",
+            javascript,
+        )
+        self.assertIn("schedulePianorollReload({ needsNoteRedraw: transposeChanged });", javascript)
+
+        # scheduleAutoRender()・renderAndLoadPlayer()のどちらも、クロスフェードが
+        # 実際に完了した後でだけ反映する。
+        self.assertGreaterEqual(javascript.count("await applyPendingPianorollReload();"), 2)
 
     # --- アップロード ---
 
@@ -1579,6 +1633,109 @@ class TestWebApp(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(len(payload["source"]["files"]), 1)
         self.assertFalse(payload["source"]["hasPlaylist"])
+
+
+class TestWebAppAudioSourceHistory(unittest.TestCase):
+    """/api/audio?v=<render_id>がrender_idごとに解決されることのテスト。
+
+    A/Bクロスフェード再生（app.jsのcrossfadeToRender()）は、新しいレンダリングが
+    activateされた後も、鳴り続けている旧<audio>要素が旧render_idへRangeリクエストを
+    送り続けることを前提にしている。get_audio()がaudio_pathだけを常に返す実装のままだと、
+    旧要素が新しいWAVのバイトを受け取ってしまい再生が壊れる。fake_rendererは呼び出し
+    回数を埋め込んだ内容・長さの異なるWAVを書くことで、この2つを判別できるようにする。
+    """
+
+    def setUp(self) -> None:
+        self.render_calls: list[Path] = []
+
+        def fake_renderer(mid_path: Path, wav_path: Path, soundfont: Path | None) -> None:
+            self.render_calls.append(wav_path)
+            marker = f"RENDER-{len(self.render_calls)}".encode()
+            wav_path.write_bytes(marker + b"0" * (100 * len(self.render_calls)))
+
+        self.fake_renderer = fake_renderer
+        self.app = create_app(token=TOKEN, session=WebSession(), renderer=fake_renderer)
+        self.client = self.app.test_client()
+        self.addCleanup(self._clear_session)
+
+    def _clear_session(self) -> None:
+        self.app.config["MIDITRACK_SESSION"].clear()
+
+    def _upload(self):
+        data = {"midi": (io.BytesIO(build_fixture_bytes()), "fixture.mid")}
+        return self.client.post(
+            "/api/session", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
+        )
+
+    def _render(self) -> int:
+        response = self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        return response.get_json()["renderId"]
+
+    def test_old_render_id_keeps_serving_its_own_wav_after_a_new_render(self) -> None:
+        self._upload()
+        first_id = self._render()
+        self.assertEqual(
+            self.client.get(f"/api/audio?v={first_id}", headers=AUTH_HEADERS).get_data(),
+            b"RENDER-1" + b"0" * 100,
+        )
+
+        # トラック設定を変えてinvalidate_render()し、内容の異なる2回目のレンダリングを行う。
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}}),
+        )
+        second_id = self._render()
+        self.assertNotEqual(first_id, second_id)
+
+        # 新しいrender_idは新しい内容を返す。
+        self.assertEqual(
+            self.client.get(f"/api/audio?v={second_id}", headers=AUTH_HEADERS).get_data(),
+            b"RENDER-2" + b"0" * 200,
+        )
+        # audio_pathが新音源へ差し替わった後も、旧render_idは旧音源のバイトを返し続ける
+        # （クロスフェード中の旧<audio>要素が引き続きこのURLへRangeリクエストを送るため）。
+        self.assertEqual(
+            self.client.get(f"/api/audio?v={first_id}", headers=AUTH_HEADERS).get_data(),
+            b"RENDER-1" + b"0" * 100,
+        )
+        # ?v無し（サーバー再起動直後の初回ロード等を想定）は常に現在の音源。
+        self.assertEqual(
+            self.client.get("/api/audio", headers=AUTH_HEADERS).get_data(),
+            b"RENDER-2" + b"0" * 200,
+        )
+
+    def test_unknown_render_id_falls_back_to_current_audio(self) -> None:
+        self._upload()
+        self._render()
+        response = self.client.get("/api/audio?v=999", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_data(), b"RENDER-1" + b"0" * 100)
+
+    def test_old_render_id_survives_range_request_after_a_new_render(self) -> None:
+        self._upload()
+        first_id = self._render()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}}),
+        )
+        self._render()
+
+        response = self.client.get(
+            f"/api/audio?v={first_id}", headers={**AUTH_HEADERS, "Range": "bytes=0-7"}
+        )
+        self.assertEqual(response.status_code, 206)
+        self.assertIn("bytes 0-7/108", response.headers.get("Content-Range", ""))
+        self.assertEqual(response.get_data(), b"RENDER-1")
+
+    def test_fresh_upload_clears_old_render_id_resolution(self) -> None:
+        self._upload()
+        first_id = self._render()
+        self._upload()  # reset_midi_state()を経由する新規アップロード。
+        response = self.client.get(f"/api/audio?v={first_id}", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
 
 
 class TestWebAppSourceVolume(unittest.TestCase):

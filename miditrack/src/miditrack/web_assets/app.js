@@ -19,6 +19,8 @@ const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 const PLAYBACK_SEEK_SECONDS = 1;
 const PREWARM_DELAY_MS = 500;
+// crossfadeToRender()が再生中の乗り換えに使う等パワークロスフェードの長さ（ms）。
+const CROSSFADE_MS = 120;
 const POINTER_FOCUS_CONTROL_SELECTOR = [
   "select",
   'input[type="radio"]',
@@ -72,17 +74,159 @@ const state = {
   isPianorollAutoFollowing: false,
   pianorollAutoScrollTarget: null,
   playbackTimeFrameId: null,
-  pendingPlaybackRatio: null,
-  // pendingPlaybackRatioと常にセットで更新する。<audio>のsrcを外している間も
-  // カウンタ・ピアノロールの再生位置バーへ「戻り先」の秒数をそのまま表示し続け、
-  // 再レンダリングが終わるまで表示が0へ戻って見えないようにするための値。
-  pendingPlaybackSeconds: null,
-  pendingPlaybackDurationSeconds: null,
   pointerActivatedControl: null,
   renderMode: "fast",
   prewarmTimer: null,
   prewarmGeneration: 0,
+  // A/Bクロスフェード再生（crossfadeToRender()）関連の状態。
+  // "a"|"b"のどちらの<audio>要素が現在の再生源かを指す。もう一方は次のレンダリング
+  // 結果を裏でロード・シークしておく待避先として使う。
+  activePlayerId: "a",
+  // ユーザーが#player-volume/#player-muteで指定した意図。<audio>要素自身の.volumeは
+  // クロスフェード中フレームごとに書き換わるため、UIとその真実の値はここに置き、
+  // 要素側は常にこのstateからの派生値として扱う（applyPlayerGains()参照）。
+  userVolume: 1,
+  isUserMuted: false,
+  // crossfadeToRender()の多重実行防止と、進行中フェードの追い越し検出用の世代番号。
+  isSwapping: false,
+  swapGeneration: 0,
+  // トラック設定・SoundFont・速度/ピッチ等を変更した後、まだ試聴音声へ反映されて
+  // いない（次のscheduleAutoRender()完了かユーザーの明示クリックを待っている）ことを
+  // 示す。markRenderStale()が立て、crossfadeToRender()の呼び出し完了時に下ろす。
+  isRenderStale: false,
+  // 速度/ピッチ変更で/api/pianorollの再取得（durationSeconds更新を含む）が必要だが、
+  // 再生中は音がまだ旧設定のまま鳴っているため今すぐは反映できない、という状態。
+  // schedulePianorollReload()が立て、実際に試聴音声が入れ替わった直後（またはその前に
+  // 一時停止された場合はその時点）でapplyPendingPianorollReload()が下ろす。
+  pendingPianorollReload: false,
+  // schedulePianorollReload()が裏で開始しておく/api/pianorollのfetch Promise。
+  // クロスフェード完了を待つ間に取得も終わらせておくことで、乗り換え直後の
+  // 反映が追加のネットワーク待ちを挟まず、ほぼ同期的に行える（詳細は
+  // schedulePianorollReload()/applyPendingPianorollReload()のコメントを参照）。
+  pendingPianorollFetch: null,
+  // trueなら、反映時にノート（static layer）も再描画する。速度のみの変更では
+  // 開始時刻・長さ・曲長がすべて同じ比率でスケールするため、キャンバス上の
+  // ノートの相対位置（x座標比率）は変わらず、再描画が不要（schedulePianorollReload()
+  // 参照）。複数の変更が重なった場合に備え、trueは反映するまでOR蓄積する。
+  pendingPianorollNeedsRedraw: false,
 };
+
+// --- A/Bクロスフェード再生（player-a / player-b） ---
+// 試聴用<audio>は2枚あり、state.activePlayerIdが指す一方だけが「現在の再生源」。
+// 既存コードの大部分は$("#player")の代わりにactivePlayer()を呼ぶだけでよく、
+// 挙動は今まで通り「今鳴っている（かもしれない）1枚」を指す。裏の1枚は
+// crossfadeToRender()が次のレンダリング結果のロード・シーク・フェードにだけ使う。
+
+function activePlayer() {
+  return $(state.activePlayerId === "a" ? "#player-a" : "#player-b");
+}
+
+function inactivePlayer() {
+  return $(state.activePlayerId === "a" ? "#player-b" : "#player-a");
+}
+
+function allPlayers() {
+  return [$("#player-a"), $("#player-b")];
+}
+
+function swapActivePlayer() {
+  state.activePlayerId = state.activePlayerId === "a" ? "b" : "a";
+}
+
+// crossfadeToRender()の呼び出しを直列化する。scheduleAutoRender()による自動乗り換えと
+// 「適用して試聴」ボタンの明示クリックがほぼ同時に発生しても、2つの呼び出しが同じ
+// 待避用<audio>要素（inactivePlayer()）へ同時に書き込んで壊れないようにするため。
+// resetPlayer()（ハードリセット）は直接この変数をリセットして進行中のキューを捨てる。
+let swapQueue = Promise.resolve();
+
+// #player-volume/#player-muteが表す「ユーザーの意図した音量」を、現在の
+// activePlayer()へ反映する。クロスフェード中はrunCrossfade()がフレームごとに
+// 両要素のvolumeを直接管理するため、ここでは触らない。
+function applyPlayerGains() {
+  if (state.isSwapping) return;
+  const gain = state.isUserMuted ? 0 : state.userVolume;
+  activePlayer().volume = gain;
+}
+
+// トラック設定・SoundFont・速度/ピッチ等の変更で試聴音声が実際の設定より古くなった
+// ことを示すだけの軽量な印。resetPlayer()と違い<audio>のsrcにも再生にも触れない
+// ため、鳴っている音は変更後もそのまま鳴り続ける。scheduleAutoRender()が拾って
+// 裏でレンダリングし、crossfadeToRender()で滑らかに乗り換えた時点でfalseに戻る。
+function markRenderStale() {
+  state.isRenderStale = true;
+  $("#render-button").classList.add("is-stale");
+}
+
+function clearRenderStale() {
+  state.isRenderStale = false;
+  $("#render-button").classList.remove("is-stale");
+}
+
+function isActivePlayerPlaying() {
+  const player = activePlayer();
+  return !player.paused && !player.ended && !!player.getAttribute("src");
+}
+
+// 速度変更はピアノロールのdurationSeconds（時間軸そのもの）を変える。再生中は
+// 鳴っている音がまだ旧設定のままなので、durationSecondsだけ先に新しい値へ切り替えると
+// 「seconds（旧設定のまま進む音の経過秒数）÷ 新しいdurationSeconds」で計算される
+// 再生位置バーのx座標が、音の実際の進み具合と無関係にずれて見える。そのため
+// 再生中はapplyPendingPianorollReload()を呼べる（＝試聴音声が新設定へ実際に
+// 切り替わった）瞬間まで反映を遅らせるが、フェッチ自体はここで裏で始めておく。
+// crossfadeToRender()の完了を待っている間に大抵は取得も終わるため、実際に適用する
+// 時点でネットワーク待ちがほぼ発生せず、「音は切り替わったのにピアノロールの時間軸は
+// まだ旧設定」という窓もほぼゼロになる。
+// needsNoteRedraw: このリロードが実際にノート（static layer）の再描画を要するか。
+// 速度のみの変更（transposeが同じ）ではdurationSecondsと全ノートのstart/duration
+// （秒）が同じ比率でスケールするだけなので、キャンバス上のx座標比率
+// （drawPianorollTrack()のstart/payload.durationSeconds）は数学的に不変であり、
+// 再描画してもピクセル単位で同じ絵になる。呼び出し元（flushTransform()）が
+// 実際にtransposeが変わったかどうかで判定する。
+function schedulePianorollReload({ needsNoteRedraw = true } = {}) {
+  const loadId = ++state.pianorollLoadId;
+  state.pendingPianorollReload = true;
+  // 複数の変更が反映待ちのまま重なった場合、どれか一つでも再描画を要していれば
+  // trueのままにする（後発の呼び出しがneedsNoteRedraw:falseでも取りこぼさない）。
+  state.pendingPianorollNeedsRedraw = state.pendingPianorollNeedsRedraw || needsNoteRedraw;
+  state.pendingPianorollFetch = apiFetch("/api/pianoroll")
+    .then((response) => response.json())
+    .then((payload) => ({ loadId, payload }))
+    .catch((error) => ({ loadId, error }));
+}
+
+// pendingPianorollReloadが立っていれば、schedulePianorollReload()が裏で進めておいた
+// フェッチの結果を反映する。呼び出し元は「今この瞬間に反映してよい」（試聴音声が
+// 実際に新設定へ切り替わった、または元々再生していなかった）と判断した後でこれを
+// 呼ぶ（flushTransform()の停止時分岐、scheduleAutoRender()のクロスフェード完了後・
+// 停止時分岐、renderAndLoadPlayer()のクロスフェード完了後）。
+async function applyPendingPianorollReload() {
+  if (!state.pendingPianorollReload) return;
+  state.pendingPianorollReload = false;
+  const needsNoteRedraw = state.pendingPianorollNeedsRedraw;
+  state.pendingPianorollNeedsRedraw = false;
+  const fetchPromise = state.pendingPianorollFetch;
+  state.pendingPianorollFetch = null;
+  if (!fetchPromise) return;
+  const result = await fetchPromise;
+  // 反映するより先に、さらに新しい編集やセッション読み込みで追い越されていたら捨てる。
+  if (result.loadId !== state.pianorollLoadId) return;
+  if (result.error) {
+    clearPianoroll("ピアノロールを読み込めませんでした。");
+    $("#pianoroll-status").textContent = result.error.message;
+    return;
+  }
+  if (needsNoteRedraw) {
+    applyPianorollPayload(result.payload);
+  } else {
+    // durationSeconds（と再生位置バーの計算に使う値）だけを更新し、既存の
+    // static layer（ノート・グリッド）は使い回す — 上のneedsNoteRedrawの説明を参照。
+    state.pianoroll = result.payload;
+    updatePlaybackTime();
+    updatePianorollInteraction();
+    updatePianorollZoomControls();
+    drawPianoroll();
+  }
+}
 
 // サーバー側の設定ファイル（/api/preferences）からピン留め・使用回数を読み込み、
 // stateへ反映する。起動時に一度だけinit()から呼ぶ。失敗時は「お気に入り機能が
@@ -229,40 +373,69 @@ function selectedRenderMode() {
   return document.querySelector('input[name="render-mode"]:checked')?.value || "fast";
 }
 
-function cancelPrewarm() {
+function cancelAutoRender() {
   clearTimeout(state.prewarmTimer);
   state.prewarmTimer = null;
   state.prewarmGeneration += 1;
 }
 
-function schedulePrewarm() {
-  cancelPrewarm();
+// トラック設定・SoundFont・速度/ピッチ・試聴モード等の変更から500ms操作が無かったら、
+// 裏で次の試聴音声を用意する。試聴中（activePlayer()が再生中）はそのままactivate
+// （POST /api/render）してcrossfadeToRender()で滑らかに乗り換え、擬似リアルタイム
+// 試聴に近づける。停止中は音源を切り替える理由が無いので、従来通りactivateしない
+// POST /api/render/prewarmに留める（無駄なrender_idの消費と、次に再生ボタンを
+// 押した時点で意図せず音源が切り替わることを避ける）。
+function scheduleAutoRender() {
+  cancelAutoRender();
   if (!state.session || state.session.tracks.length === 0) return;
   const generation = state.prewarmGeneration;
   const renderMode = selectedRenderMode();
   state.prewarmTimer = setTimeout(async () => {
     state.prewarmTimer = null;
     try {
-      await apiFetch("/api/render/prewarm", {
-        method: "POST",
-        priority: "low",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ renderMode }),
-      });
+      if (isActivePlayerPlaying()) {
+        const response = await apiFetch("/api/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ renderMode }),
+        });
+        const payload = await response.json();
+        if (generation !== state.prewarmGeneration) return;
+        if (state.session) {
+          state.session.hasRender = true;
+          state.session.renderId = payload.renderId;
+          state.session.renderMode = payload.renderMode;
+          state.session.hasDownload = true;
+        }
+        updateSectionsReadiness();
+        await crossfadeToRender(payload.renderId);
+        // 試聴音声が新設定へ切り替わった直後、今度こそ音とdurationSecondsの前提が
+        // 一致した状態でピアノロールを反映する（applyPendingPianorollReload()参照）。
+        await applyPendingPianorollReload();
+        if (generation === state.prewarmGeneration) clearRenderStale();
+      } else {
+        // 停止中に転じていた場合、鳴っている音は無いのでここで反映してよい
+        // （デバウンス待機中にユーザーが一時停止した場合の取りこぼし防止）。
+        await applyPendingPianorollReload();
+        await apiFetch("/api/render/prewarm", {
+          method: "POST",
+          priority: "low",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ renderMode }),
+        });
+      }
     } catch (_error) {
-      // 事前生成は投機的処理。失敗しても明示クリック時に通常レンダーを試みる。
+      // 自動レンダリングは投機的処理。失敗しても明示クリック時に通常レンダーを試みる。
     }
-    if (generation !== state.prewarmGeneration) return;
   }, PREWARM_DELAY_MS);
 }
 
 function handleRenderModeChange(event) {
   if (!event.target.checked) return;
   state.renderMode = event.target.value;
-  resetPlayer({ preservePosition: true });
-  if (state.session) state.session.hasRender = false;
+  markRenderStale();
   updateSectionsReadiness();
-  schedulePrewarm();
+  scheduleAutoRender();
   const label = state.renderMode === "quality" ? "品質" : "高速";
   showStatus(`試聴モードを${label}へ切り替えました。`);
 }
@@ -349,13 +522,10 @@ async function handleSoundfontChange() {
       body: JSON.stringify({ path }),
     });
     renderSoundfontOptions(await response.json());
-    resetPlayer({ preservePosition: true });
-    if (state.session) {
-      state.session.hasRender = false;
-    }
+    markRenderStale();
     updateSectionsReadiness();
-    schedulePrewarm();
-    showStatus("SoundFontを変更しました。もう一度「適用して試聴」を押してください。");
+    scheduleAutoRender();
+    showStatus("SoundFontを変更しました。");
   } catch (error) {
     showStatus(error.message, "error");
   }
@@ -905,8 +1075,9 @@ async function exitSolo() {
     state.session = await response.json();
     await renderTrackList();
     updateSectionsReadiness();
-    resetPlayer({ preservePosition: true });
-    showStatus("ソロ試聴を解除しました。もう一度「適用して試聴」を押してください。");
+    markRenderStale();
+    scheduleAutoRender();
+    showStatus("ソロ試聴を解除しました。");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -941,9 +1112,9 @@ async function flushPendingTrackSettings() {
       state.session = await response.json();
       await renderTrackList();
       redrawPianorollStatic();
-      resetPlayer({ preservePosition: true });
-      schedulePrewarm();
-      showStatus("設定を変更しました。もう一度「適用して試聴」を押してください。");
+      markRenderStale();
+      scheduleAutoRender();
+      showStatus("設定を変更しました。");
       return true;
     } catch (error) {
       showStatus(error.message, "error");
@@ -1075,6 +1246,21 @@ function clearPianoroll(message = "MIDIを読み込むとここに表示され�
   drawPianoroll();
 }
 
+// 取得済みのペイロードをstate.pianorollへ反映して再描画する。loadPianoroll()と
+// schedulePianorollReload()（フェッチと適用のタイミングを分離する版）の両方から
+// 呼ぶ共通の「適用」部分。
+function applyPianorollPayload(payload) {
+  state.pianoroll = payload;
+  updatePlaybackTime();
+  const status = payload.truncated
+    ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
+    : "";
+  setPianorollMessage(payload.noteCount > 0 ? "" : "表示できるノートがありません。", status);
+  redrawPianorollStatic();
+  updatePianorollInteraction();
+  updatePianorollZoomControls();
+}
+
 async function loadPianoroll() {
   const loadId = ++state.pianorollLoadId;
   if (!state.session || state.session.tracks.length === 0) {
@@ -1086,15 +1272,7 @@ async function loadPianoroll() {
     const response = await apiFetch("/api/pianoroll");
     const payload = await response.json();
     if (loadId !== state.pianorollLoadId) return;
-    state.pianoroll = payload;
-    updatePlaybackTime();
-    const status = payload.truncated
-      ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
-      : "";
-    setPianorollMessage(payload.noteCount > 0 ? "" : "表示できるノートがありません。", status);
-    redrawPianorollStatic();
-    updatePianorollInteraction();
-    updatePianorollZoomControls();
+    applyPianorollPayload(payload);
   } catch (error) {
     if (loadId !== state.pianorollLoadId) return;
     clearPianoroll("ピアノロールを読み込めませんでした。");
@@ -1229,7 +1407,7 @@ function followPianorollPlayback() {
   const canvas = $("#pianoroll-canvas");
   const canvasWidth = canvas.getBoundingClientRect().width;
   const viewportHalf = scrollArea.clientWidth / 2;
-  const progress = Math.min(1, $("#player").currentTime / state.pianoroll.durationSeconds);
+  const progress = Math.min(1, activePlayer().currentTime / state.pianoroll.durationSeconds);
   const playheadX = progress * canvasWidth;
   if (playheadX <= viewportHalf) return;
   const maximumScroll = Math.max(0, canvasWidth - scrollArea.clientWidth);
@@ -1315,7 +1493,7 @@ function seekPianorollAt(clientX) {
 // 素通しし、通常のカーソル移動（キャレット移動）を妨げない。
 // Cmd+←は通常の1秒戻しではなく、先頭（0秒）へ即座に戻す。
 function handleSeekKeydown(event) {
-  if (!state.session?.hasRender || !state.pianoroll || !$("#player").getAttribute("src")) return;
+  if (!state.session?.hasRender || !state.pianoroll || !activePlayer().getAttribute("src")) return;
   if (isPlaybackShortcutBlocked(event.target)) return;
   let target = null;
   if (event.metaKey && event.key === "ArrowLeft") {
@@ -1328,7 +1506,7 @@ function handleSeekKeydown(event) {
       PageUp: 10,
     };
     if (keySteps[event.key] !== undefined) {
-      target = $("#player").currentTime + keySteps[event.key];
+      target = activePlayer().currentTime + keySteps[event.key];
     }
     else if (event.key === "Home") target = 0;
     else if (event.key === "End") target = getPlaybackDuration();
@@ -1371,7 +1549,11 @@ function setupPianoroll() {
     scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
   }
   scrollArea.addEventListener("scroll", handlePianorollScroll, { passive: true });
-  $("#player").addEventListener("loadedmetadata", updatePianorollInteraction);
+  // A/Bどちらの要素がloadedmetadataを発火してもupdatePianorollInteraction()自体は
+  // activePlayer()（今のactivePlayerId）から読み直すだけなので、両方に張って構わない。
+  for (const player of allPlayers()) {
+    player.addEventListener("loadedmetadata", updatePianorollInteraction);
+  }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawPianorollStatic);
   updatePianorollZoomControls();
 }
@@ -1397,30 +1579,24 @@ function updateSectionsReadiness() {
   updatePlaybackControls();
 }
 
-function rememberPlaybackPosition() {
-  const player = $("#player");
-  if (!player.getAttribute("src")) return;
-  const duration = getPlaybackDuration();
-  if (!Number.isFinite(duration) || duration <= 0) return;
-  state.pendingPlaybackRatio = Math.min(1, Math.max(0, player.currentTime / duration));
-  state.pendingPlaybackSeconds = player.currentTime;
-  state.pendingPlaybackDurationSeconds = duration;
-}
-
-function clearPendingPlaybackPosition() {
-  state.pendingPlaybackRatio = null;
-  state.pendingPlaybackSeconds = null;
-  state.pendingPlaybackDurationSeconds = null;
-}
-
-function resetPlayer({ preservePosition = false } = {}) {
-  const player = $("#player");
-  if (preservePosition) rememberPlaybackPosition();
-  else clearPendingPlaybackPosition();
+// 両方の<audio>を完全に停止・空にし、進行中のクロスフェードがあれば打ち切る。
+// MIDI/音源の差し替え・変換・全体リセットなど、試聴音声そのものが無効になる場面
+// でだけ呼ぶ。トラック設定・SoundFont・速度/ピッチ等の編集はmarkRenderStale()を
+// 使い、鳴っている音を止めない（crossfadeToRender()が新しいレンダリング結果を
+// 用意でき次第、滑らかに乗り換える）。
+function resetPlayer() {
+  state.swapGeneration += 1;
+  state.isSwapping = false;
+  swapQueue = Promise.resolve();
+  for (const player of allPlayers()) {
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+  }
+  state.activePlayerId = "a";
+  clearRenderStale();
   setPianorollAutoFollow(false);
   stopPlaybackTimeAnimation();
-  player.removeAttribute("src");
-  player.load();
   updatePlaybackTime();
   updatePlaybackControls();
   updatePianorollInteraction();
@@ -1446,7 +1622,7 @@ function renderDownloadFilenameField(payload) {
 }
 
 async function refreshFromSession(payload) {
-  cancelPrewarm();
+  cancelAutoRender();
   // 新しいMIDI/音源の読み込みでトラック構成自体が変わりうるため、
   // 古いセッションのトラック番号を指したソロ試聴状態は持ち越さない。
   state.soloTrackIndex = null;
@@ -1500,6 +1676,10 @@ async function flushTransform() {
     showStatus("速度・ピッチには数値を入力してください", "error");
     return;
   }
+  // トランスポーズが実際に変わるかどうかで、ピアノロールのノート再描画が要るかを
+  // 判定する（schedulePianorollReload()のneedsNoteRedrawコメント参照）。PATCH送信前の
+  // state.session（＝現在表示中の値）と比較する。
+  const transposeChanged = !state.session || state.session.transpose !== transpose;
   try {
     const response = await apiFetch("/api/session/transform", {
       method: "PATCH",
@@ -1507,11 +1687,22 @@ async function flushTransform() {
       body: JSON.stringify({ speed, transpose }),
     });
     state.session = await response.json();
-    resetPlayer({ preservePosition: true });
+    markRenderStale();
     updateSectionsReadiness();
-    await loadPianoroll();
-    schedulePrewarm();
-    showStatus("速度・ピッチを変更しました。もう一度「適用して試聴」を押してください。");
+    // durationSecondsの更新自体は速度変更でも必要（再生位置バー・シークの分母）だが、
+    // 再生中に今すぐ反映すると、まだ旧速度のまま鳴っている音の経過秒数を新しい
+    // durationSecondsで割ることになり、再生位置バーが一瞬ずれて見える（クロスフェードで
+    // 音が実際に切り替わるまでの間、表示と音の前提がずれるため）。フェッチ自体は
+    // 常にここで始め、反映のタイミングだけ再生状態で変える。
+    schedulePianorollReload({ needsNoteRedraw: transposeChanged });
+    if (isActivePlayerPlaying()) {
+      // 反映はscheduleAutoRender()の自動クロスフェードが完了した直後まで遅らせる
+      // （applyPendingPianorollReload()参照）。停止中に転じた場合はそちら側で拾う。
+    } else {
+      await applyPendingPianorollReload();
+    }
+    scheduleAutoRender();
+    showStatus("速度・ピッチを変更しました。");
   } catch (error) {
     showStatus(error.message, "error");
   }
@@ -1839,58 +2030,165 @@ async function handleConvert() {
   }
 }
 
-// 旧レンダーで保存した曲中の進捗率を、新しいWAVのdurationへ換算して復元する。
-// 速度変更で曲長が変わっても、絶対秒ではなく音楽上の同じ位置を継続できる。
-async function restorePlaybackPosition(player) {
-  const ratio = state.pendingPlaybackRatio;
-  if (ratio === null) return;
-  if (player.readyState < 1) {
-    await new Promise((resolve) => {
-      const finish = () => {
-        player.removeEventListener("loadedmetadata", finish);
-        player.removeEventListener("error", finish);
-        resolve();
-      };
-      player.addEventListener("loadedmetadata", finish, { once: true });
-      player.addEventListener("error", finish, { once: true });
-    });
-  }
-  if (player.readyState < 1) return;
-  const duration = getPlaybackDuration();
-  if (!Number.isFinite(duration) || duration <= 0) return;
-  clearPendingPlaybackPosition();
-  seekPlaybackTo(ratio * duration);
+// loadedmetadata/errorのどちらかが発火するまで待つ小さなヘルパー。
+// crossfadeToRender()が待避用<audio>のメタデータ読込を待つのに使う。
+function waitForLoadOutcome(element) {
+  if (element.readyState >= 1) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      element.removeEventListener("loadedmetadata", finish);
+      element.removeEventListener("error", finish);
+      resolve();
+    };
+    element.addEventListener("loadedmetadata", finish, { once: true });
+    element.addEventListener("error", finish, { once: true });
+  });
 }
 
-// POST /api/renderを呼び、結果を<audio>プレイヤーへセットする。
+// from（フェードアウトする側）とto（フェードインする側）の音量を、等パワー
+// カーブ（cos/sin）でCROSSFADE_MSかけて入れ替える。state.userVolume/isUserMutedを
+// 上限として使うため、フェード中にユーザーが音量を変えても違和感のない範囲に収まる。
+// generationが変わったら（新しいcrossfadeToRender()呼び出しに追い越されたら）即座に
+// 打ち切る。
+function runCrossfade(from, to, generation) {
+  return new Promise((resolve) => {
+    const gain = state.isUserMuted ? 0 : state.userVolume;
+    const startedAt = performance.now();
+    const step = () => {
+      if (generation !== state.swapGeneration) {
+        resolve();
+        return;
+      }
+      const t = Math.min(1, (performance.now() - startedAt) / CROSSFADE_MS);
+      const angle = (t * Math.PI) / 2;
+      from.volume = gain * Math.cos(angle);
+      to.volume = gain * Math.sin(angle);
+      if (t >= 1) {
+        resolve();
+        return;
+      }
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+// crossfadeToRender()の実処理。swapQueueで直列化されるので、呼び出し時点の
+// activePlayer()/inactivePlayer()は常に一貫している。
+async function runSwap(renderId) {
+  const generation = ++state.swapGeneration;
+  state.isSwapping = true;
+  try {
+    const active = activePlayer();
+    const next = inactivePlayer();
+    const nextUrl = audioUrl(renderId);
+
+    // 既に鳴っている（または直前に読み込んだ）音源と同一なら何もしない。
+    if (active.getAttribute("src") === nextUrl) return active;
+
+    const wasPlaying = !active.paused && !active.ended && !!active.getAttribute("src");
+    // 速度変更等で曲長が変わっても音楽上の同じ位置を継続するため、絶対秒ではなく
+    // 曲全体に対する進捗率で換算する。activeはこの後もawaitのたびに再生され続けるので、
+    // ratioは使う直前に毎回activeの最新currentTimeから求め直す（呼び出し箇所を参照）。
+    const fromDuration = getPlaybackDuration();
+    const currentRatio = () => {
+      if (!Number.isFinite(fromDuration) || fromDuration <= 0) return 0;
+      return Math.min(1, Math.max(0, (active.currentTime || 0) / fromDuration));
+    };
+
+    next.src = nextUrl;
+    next.load();
+    await waitForLoadOutcome(next);
+    if (generation !== state.swapGeneration) return activePlayer();
+
+    const nextDuration = Number.isFinite(next.duration) ? next.duration : fromDuration;
+    const seekNextTo = (ratio) => {
+      if (!Number.isFinite(nextDuration)) return;
+      next.currentTime = Math.min(nextDuration, Math.max(0, ratio * nextDuration));
+    };
+    // 一度目のシーク: play()をactiveに近い位置から開始させ、無関係な区間をバッファ
+    // させないため。waitForLoadOutcome()のネットワーク待ちの間もactiveは進み続けて
+    // いるので、この時点のratioはあくまで暫定値。
+    seekNextTo(currentRatio());
+
+    let didStartPlaying = false;
+    if (wasPlaying) {
+      next.volume = 0;
+      try {
+        await next.play();
+        // play()の起動待ち（バッファリング）でもactiveはさらに進んでいる。フェードで
+        // 音量を上げ始める前、nextがまだ無音のこのタイミングでもう一度シークし直す
+        // ことで、ここまでの待ち時間による遅れをフェード開始前に解消する。これを
+        // 省くと、フェード完了・入れ替えの瞬間にnextがactiveより数十ms遅れたまま
+        // 表示に反映され、ピアノロールの再生位置バーが一瞬戻ってから正しい位置へ
+        // 戻るように見える（ユーザー報告のバグ）。
+        seekNextTo(currentRatio());
+        didStartPlaying = true;
+      } catch (_error) {
+        // 自動再生がブロックされた場合はフェード無しの即差し替えへフォールバックする。
+      }
+    }
+    if (generation !== state.swapGeneration) {
+      next.pause();
+      next.removeAttribute("src");
+      next.load();
+      return activePlayer();
+    }
+
+    if (didStartPlaying) {
+      await runCrossfade(active, next, generation);
+    } else {
+      next.volume = state.isUserMuted ? 0 : state.userVolume;
+    }
+    if (generation !== state.swapGeneration) return activePlayer();
+
+    active.pause();
+    active.removeAttribute("src");
+    active.load();
+    swapActivePlayer();
+    updatePlaybackControls();
+    // rAFループの次フレームを待たず、乗り換えた直後の位置を即座に反映する。
+    // 1フレーム（最大16ms程度）とはいえ待つ理由が無く、ここで描き直しておけば
+    // 上のシーク調整と合わせてバーの見た目上のズレが実質ゼロになる。
+    drawPianoroll();
+    return activePlayer();
+  } finally {
+    state.isSwapping = false;
+  }
+}
+
+// 現在鳴っている（かもしれない）試聴音声を止めずに、renderIdのWAVへ乗り換える。
+// 再生中なら短時間の等パワークロスフェードで、停止中（または初回読み込み）なら
+// 位置を保ったまま即座に差し替える。戻り値は乗り換え完了後のactivePlayer()。
+function crossfadeToRender(renderId) {
+  const task = swapQueue.then(() => runSwap(renderId), () => runSwap(renderId));
+  swapQueue = task.catch(() => {});
+  return task;
+}
+
+// POST /api/renderを呼び、結果をcrossfadeToRender()経由で試聴プレイヤーへ反映する。
 // 「適用して試聴」ボタンとトラック行のソロ試聴ボタンの両方が使う共通処理。
 // 呼び出し元がsetBusy()/エラー表示を担うため、ここでは行わない。
 async function renderAndLoadPlayer() {
-  cancelPrewarm();
+  cancelAutoRender();
   const response = await apiFetch("/api/render", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ renderMode: selectedRenderMode() }),
   });
   const payload = await response.json();
-  const player = $("#player");
-  const nextAudioUrl = audioUrl(payload.renderId);
-  rememberPlaybackPosition();
   if (state.session) {
     state.session.hasRender = true;
     state.session.renderId = payload.renderId;
     state.session.renderMode = payload.renderMode;
     state.session.hasDownload = true;
   }
-  if (player.getAttribute("src") === nextAudioUrl) {
-    clearPendingPlaybackPosition();
-    updateSectionsReadiness();
-    return player;
-  }
-  player.src = nextAudioUrl;
-  player.load();
   updateSectionsReadiness();
-  await restorePlaybackPosition(player);
+  const player = await crossfadeToRender(payload.renderId);
+  // scheduleAutoRender()の自動クロスフェードより先にここへ来た場合
+  // （デバウンス待ち中の明示クリック等）に備え、こちらでも同様に適用する。
+  await applyPendingPianorollReload();
+  clearRenderStale();
   updatePianorollInteraction();
   drawPianoroll();
   return player;
@@ -1926,10 +2224,12 @@ function isPlaybackShortcutBlocked(target) {
 
 // スペースキー1回分の再生・一時停止トグル。未レンダリング（またはトラック設定変更後で
 // 再レンダリングが必要）な状態で再生しようとした場合は、「適用して試聴」ボタンと同じ
-// handleRender()を呼んでレンダリングしてから再生する。
+// handleRender()を呼んでレンダリングしてから再生する。トラック設定等の変更後も
+// activePlayer()のsrcは維持される（markRenderStale()はsrcを外さない）ため、
+// このhandleRender()フォールバックは実質「一度も試聴していない」場合だけ通る。
 async function togglePlayback() {
   if ($("#render-button").disabled || document.body.classList.contains("busy")) return;
-  const player = $("#player");
+  const player = activePlayer();
   if (!player.paused) {
     player.pause();
     return;
@@ -1945,30 +2245,20 @@ async function togglePlayback() {
 // audio.durationはメタデータ読込前にNaNとなるため、常に利用できる
 // ピアノロールの曲長をフォールバックとして使う。
 function getPlaybackDuration() {
-  const playerDuration = $("#player").duration;
+  const playerDuration = activePlayer().duration;
   if (Number.isFinite(playerDuration)) return playerDuration;
   return state.pianoroll?.durationSeconds || 0;
 }
 
-// カウンタとピアノロールの再生位置バーが表示すべき秒数。<audio>にsrcが
-// 無い間（設定変更で再生が無効化され、次のレンダリング待ちの間）は
-// player.currentTimeが0に戻ってしまうため、代わりにrememberPlaybackPosition()
-// が覚えておいた戻り先の秒数を表示し続け、再レンダリングが終わるまで表示だけ
-// 0へ「リセット」して見えることを避ける。
+// カウンタとピアノロールの再生位置バーが表示すべき秒数。activePlayer()は
+// トラック設定等の変更後もsrcを維持したまま鳴り続ける（markRenderStale()参照）ため、
+// 単純に現在のactivePlayer()から読むだけでよい。
 function getDisplayPlaybackSeconds() {
-  const player = $("#player");
-  if (player.getAttribute("src")) return player.currentTime || 0;
-  return state.pendingPlaybackSeconds ?? 0;
+  return activePlayer().currentTime || 0;
 }
 
-// 総時間側も同じ理由でrememberPlaybackPosition()時点の実際のWAV長を使う。
-// getPlaybackDuration()のフォールバック（ピアノロールの音符ベースの曲長見積り）は
-// フェードやリバーブテールを含む実際のレンダリング結果より短いことがあり、そちらを
-// 使うと戻り先の秒数がこの見積り値へ切り詰められて表示されてしまう。
 function getDisplayPlaybackDuration() {
-  const player = $("#player");
-  if (player.getAttribute("src")) return getPlaybackDuration();
-  return state.pendingPlaybackDurationSeconds ?? getPlaybackDuration();
+  return getPlaybackDuration();
 }
 
 // 秒以下の桁を「.」と数字それぞれ別spanにして視覚的な間隔を空けるため、
@@ -1999,7 +2289,7 @@ function startPlaybackTimeAnimation() {
   const updateTime = () => {
     state.playbackTimeFrameId = null;
     updatePlaybackProgress();
-    const player = $("#player");
+    const player = activePlayer();
     if (!player.paused && !player.ended) {
       state.playbackTimeFrameId = requestAnimationFrame(updateTime);
     }
@@ -2014,16 +2304,17 @@ function stopPlaybackTimeAnimation() {
   updatePlaybackProgress();
 }
 
+// #player-volume/#player-muteの表示は常にstate.userVolume/isUserMutedを真実の値とする
+// （<audio>要素自身の.volumeはクロスフェード中フレームごとに書き換わるため参照しない）。
 function updatePlayerVolume() {
-  const player = $("#player");
-  const volumePercent = Math.round(player.volume * 100);
+  const volumePercent = Math.round(state.userVolume * 100);
   const volumeSlider = $("#player-volume");
   const muteButton = $("#player-mute");
   volumeSlider.value = String(volumePercent);
   volumeSlider.setAttribute("aria-valuetext", `${volumePercent}%`);
   $("#player-volume-value").textContent = `${volumePercent}%`;
-  muteButton.setAttribute("aria-pressed", String(player.muted));
-  muteButton.setAttribute("aria-label", player.muted ? "ミュートを解除" : "ミュート");
+  muteButton.setAttribute("aria-pressed", String(state.isUserMuted));
+  muteButton.setAttribute("aria-label", state.isUserMuted ? "ミュートを解除" : "ミュート");
 }
 
 function updatePlaybackProgress() {
@@ -2033,7 +2324,7 @@ function updatePlaybackProgress() {
 }
 
 function seekPlaybackTo(seconds) {
-  const player = $("#player");
+  const player = activePlayer();
   if (!state.session?.hasRender || !player.getAttribute("src")) return;
   const target = Math.min(getPlaybackDuration(), Math.max(0, seconds));
   player.currentTime = target;
@@ -2045,11 +2336,11 @@ function seekPlaybackTo(seconds) {
 }
 
 function seekPlaybackBy(seconds) {
-  seekPlaybackTo($("#player").currentTime + seconds);
+  seekPlaybackTo(activePlayer().currentTime + seconds);
 }
 
 function updatePlaybackControls() {
-  const player = $("#player");
+  const player = activePlayer();
   const isReady = !!(state.session && state.session.tracks.length > 0);
   const isBusy = document.body.classList.contains("busy");
   const canSeek = isReady && !!state.session.hasRender && !!player.getAttribute("src") && !isBusy;
@@ -2067,9 +2358,22 @@ function updatePlaybackControls() {
   updatePlayerVolume();
 }
 
+// A/Bどちらの<audio>要素で発火したイベントも同じハンドラへ束ねるが、
+// event.targetが「今のactivePlayer()」と一致する場合だけ処理する。これが無いと、
+// クロスフェード中に裏で再生を開始したinactivePlayer()側の'play'や、乗り換え完了後に
+// 停止・空にした旧activePlayer()側の'pause'/'emptied'が、今まさに鳴っている新しい
+// activePlayer()の状態を巻き戻してしまう（例: rAFループの停止）。
+function onActivePlayerEvent(eventName, handler) {
+  for (const player of allPlayers()) {
+    player.addEventListener(eventName, (event) => {
+      if (event.target !== activePlayer()) return;
+      handler(event);
+    });
+  }
+}
+
 function setupPlaybackControls() {
-  const player = $("#player");
-  let volumeBeforeMute = player.volume || 1;
+  applyPlayerGains();
   $("#playback-backward").addEventListener(
     "click",
     () => seekPlaybackBy(-PLAYBACK_SEEK_SECONDS),
@@ -2081,48 +2385,42 @@ function setupPlaybackControls() {
   $("#playback-start").addEventListener("click", () => seekPlaybackTo(0));
   $("#playback-toggle").addEventListener("click", togglePlayback);
   $("#player-volume").addEventListener("input", (event) => {
-    player.volume = Number(event.target.value) / 100;
-    if (player.volume > 0) {
-      volumeBeforeMute = player.volume;
-      player.muted = false;
-    }
+    state.userVolume = Number(event.target.value) / 100;
+    if (state.userVolume > 0) state.isUserMuted = false;
+    applyPlayerGains();
+    updatePlayerVolume();
   });
   $("#player-mute").addEventListener("click", () => {
-    if (player.muted) {
-      if (player.volume === 0) player.volume = volumeBeforeMute;
-      player.muted = false;
-    } else {
-      if (player.volume > 0) volumeBeforeMute = player.volume;
-      player.muted = true;
-    }
+    state.isUserMuted = !state.isUserMuted;
+    applyPlayerGains();
+    updatePlayerVolume();
   });
-  player.addEventListener("play", () => {
-    if (player.currentTime <= 0.05) {
+  onActivePlayerEvent("play", (event) => {
+    if (event.target.currentTime <= 0.05) {
       setPianorollAutoFollow(true);
       scrollPianorollToStart();
     }
     startPlaybackTimeAnimation();
     updatePlaybackControls();
   });
-  player.addEventListener("pause", () => {
+  onActivePlayerEvent("pause", () => {
     stopPlaybackTimeAnimation();
     updatePlaybackControls();
   });
-  player.addEventListener("ended", () => {
+  onActivePlayerEvent("ended", () => {
     setPianorollAutoFollow(false);
     stopPlaybackTimeAnimation();
     updatePlaybackControls();
   });
-  player.addEventListener("emptied", () => {
+  onActivePlayerEvent("emptied", () => {
     setPianorollAutoFollow(false);
     stopPlaybackTimeAnimation();
     updatePlaybackControls();
   });
   for (const eventName of ["loadedmetadata", "durationchange"]) {
-    player.addEventListener(eventName, updatePlaybackControls);
+    onActivePlayerEvent(eventName, updatePlaybackControls);
   }
-  player.addEventListener("timeupdate", updatePlaybackProgress);
-  player.addEventListener("volumechange", updatePlayerVolume);
+  onActivePlayerEvent("timeupdate", updatePlaybackProgress);
   updatePlaybackControls();
 }
 

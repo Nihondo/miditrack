@@ -187,8 +187,11 @@ already uses), and serves that WAV to an `<audio>` element with
 support for free, the same technique `tools/make_videos_web.py` already
 uses for video/audio scrubbing. This is deliberately "boring": it reuses
 existing, tested infrastructure instead of adding a new audio-synthesis
-dependency, at the cost of needing an explicit "Apply & Audition" click
-to activate a prepared result rather than instant feedback.
+dependency. The A/B crossfade layer described below (see "Why an A/B
+`<audio>` pair, not a live softsynth, closes the remaining gap") hides most
+of the latency this design implies, but an explicit "Apply & Audition"
+click (or Space) is still what starts playback the very first time in a
+session, since nothing has rendered yet at that point.
 
 Auditioning has two explicit profiles. `fast` is the default and produces a
 full-song, 16-bit stereo 22.05kHz WAV while preserving the existing reverb and
@@ -206,6 +209,166 @@ MIDI re-conversion, plain MIDI replacement, source-file switching, and
 `WebSession.clear()` must not reset the counter. A process restart may safely
 begin at zero because the launch authentication token in the media URL changes
 at the same time.
+
+## Why an A/B `<audio>` pair, not a live softsynth, closes the remaining gap
+
+The section above explains why `miditrack` renders full WAVs instead of
+driving a live softsynth. That leaves one real UX cost: every track edit
+used to call `resetPlayer()`, which stripped the `<audio>` element's `src`
+and stopped playback outright, so a user tweaking a volume slider while a
+song played heard it cut to silence, then had to click "Apply & Audition"
+again and wait for the render before hearing anything. `index.html` now
+carries two `<audio>` elements, `#player-a`/`#player-b`; `app.js`'s
+`state.activePlayerId` names whichever one is the current playback source,
+and `activePlayer()`/`inactivePlayer()` are the only places the rest of the
+code needs to know that. Editing a track, the SoundFont, speed/pitch, or the
+fast/quality toggle now calls `markRenderStale()` instead of `resetPlayer()`
+— it flags the "適用して試聴" button (`.is-stale`, `app.css`) and leaves
+`state.session.hasRender` alone, but never touches either `<audio>` element,
+so whatever was already playing keeps playing through the edit.
+
+`scheduleAutoRender()` (the renamed, extended `schedulePrewarm()`) still
+debounces 500ms after the last edit, but now branches on whether
+`activePlayer()` is actually playing: paused, it behaves exactly as before —
+`POST /api/render/prewarm` populates the cache without touching the player;
+playing, it calls the activating `POST /api/render` and hands the result to
+`crossfadeToRender(renderId)`, which is also what the explicit "Apply &
+Audition" click and the solo-audition button call via `renderAndLoadPlayer()`.
+`crossfadeToRender()` loads the new WAV into `inactivePlayer()`, seeks it to
+the **same song-progress ratio** `active.currentTime` was at (not the same
+absolute second — this is what keeps position musically correct across a
+speed change, the same ratio-based reasoning "Speed/pitch is a MIDI-layer
+edit" below relies on for `POST /api/variations`), starts it muted, and only
+then ramps `from`/`to` volume through an equal-power (cos/sin) curve over
+`CROSSFADE_MS` (120ms) before pausing and emptying the old element and
+flipping `state.activePlayerId`. If nothing was playing, the same function
+takes a "no fade" branch: seek, swap, done — this is also what makes a
+speed/pitch change preserve position even while paused, without a separate
+code path. Calls are serialized through a `swapQueue` promise chain so an
+auto-render's crossfade and a manual click landing close together can't
+write into the same `inactivePlayer()` at once; `resetPlayer()` (still used
+for MIDI/source replacement and the full reset button, where playback
+genuinely must stop) bumps `state.swapGeneration` and discards the queue
+outright.
+
+This only works if `GET /api/audio?v=N` keeps answering **the WAV that
+render_id actually pointed to**, even after a newer render has activated and
+moved `WebSession.audio_path` on. Before this feature `get_audio()` ignored
+`?v=` entirely and always served `audio_path` — harmless when only one
+`<audio>` element ever existed, but wrong the moment a still-playing old
+element keeps issuing Range requests against its own `?v=<old id>` while a
+new id is already active. `WebSession.audio_sources` (`web.py`) is a small
+`OrderedDict[render_id, Path]`, capped at `AUDIO_SOURCE_HISTORY_LIMIT = 4`,
+populated in `ensure_render()`'s `activate_player` branch at the same point
+`render_id` itself is finalized. `get_audio()` resolves `?v=` against this
+dict first and only falls back to `audio_path` when the id is absent or
+already evicted — the same fallback an unknown/omitted `v` always got.
+`_cache_store()`'s LRU eviction protects every path still listed in
+`audio_sources`, not just the current `audio_path`, so a render that is only
+still relevant because an old `<audio>` element is fading out can't be
+evicted out from under it. The dict deliberately has a different lifecycle
+than `audio_path`: `invalidate_render()` leaves it alone (an old render_id
+must keep resolving while its element fades), while `reset_midi_state()`
+(and therefore `clear()`) empties it, since a fresh MIDI makes every prior
+render meaningless. Verified against a live, non-mocked `create_app()`
+server (`.venv/bin/miditrack`, real `fluidsynth`, real browser via Chrome
+DevTools): changing a track's render mode mid-playback produced a real,
+audible-in-the-timeline crossfade — `player-b` (fast-mode, `?v=1`) and
+`player-a` (quality-mode, `?v=2`) overlapped for ~160ms with position
+continuous across the swap (`b`'s `currentTime≈1.15s` to `a`'s
+`currentTime≈1.13s`, matching the ratio-based reseek), and the network log
+showed `?v=1` and `?v=2` each still resolving to their own WAV's bytes after
+the swap. A paused-state edit was confirmed to only ever call
+`POST /api/render/prewarm`, never move `activePlayer()`'s `src`.
+
+**Two follow-up fixes to the piano-roll playhead specifically, both reported
+by hand-testing after the above landed:**
+
+First, `runSwap()` originally sampled `active.currentTime` exactly once, at
+the very start, to compute the song-progress ratio it seeks `next` to. That
+ratio is correct at the moment it's read, but `active` keeps playing in real
+time through `waitForLoadOutcome(next)` (network + decode) and `next.play()`'s
+own buffering start-up — both real, if usually small, delays — so by the time
+the fade actually begins, `next`'s seeked position had already fallen tens of
+milliseconds behind `active`'s current one. That gap became momentarily
+visible right at the swap instant (the piano-roll playhead briefly snapping
+back before continuing), then self-corrected within a frame since
+`activePlayer()` is re-read fresh every frame. `runSwap()` now re-samples
+`active.currentTime` a second time — via the local `currentRatio()`/
+`seekNextTo()` helpers — immediately after `next.play()` resolves, while
+`next.volume` is still `0` (so the reseek is silent), erasing the load/
+buffering-latency portion of the drift before the audible/visible fade ever
+starts. `runSwap()`'s tail also now calls `drawPianoroll()` directly right
+after the element swap, rather than waiting for the playback-time rAF loop's
+next frame to notice — cheap, and removes the last frame of lag.
+
+Second, and the more visible of the two: a speed change (unlike a pure
+transpose) changes `durationSeconds` itself — `pianoroll.py`'s duration comes
+from the tempo map, which `_scaled_tempo()` divides by `speed`; transpose
+never touches it. `flushTransform()` used to call `loadPianoroll()`
+immediately on every transform edit, replacing `state.pianoroll` (and
+therefore the divisor `drawPianoroll()`'s `x = seconds / payload.durationSeconds
+* width` uses) the moment the `PATCH /api/session/transform` response came
+back — independent of whether the audition audio itself had caught up yet.
+While playing, that response arrives well before the debounced auto-render's
+crossfade does, so for the whole gap in between, the bar's denominator
+already reflected the *new* speed while its numerator
+(`getDisplayPlaybackSeconds()`) was still the *old*-speed audio's real
+elapsed time — a mismatch with no relationship to the small per-swap drift
+fixed above, lasting the full ~500ms-debounce-plus-render window rather than
+one frame. `flushTransform()` now calls the new `schedulePianorollReload()`
+instead of `loadPianoroll()` whenever `isActivePlayerPlaying()` is true: it
+bumps `state.pianorollLoadId` (the same generation counter `loadPianoroll()`
+itself uses, so a newer edit or an unrelated pianoroll load correctly
+supersedes an in-flight one) and kicks off the `GET /api/pianoroll` fetch
+immediately, but stores the *promise* in `state.pendingPianorollFetch`
+rather than applying it. `applyPendingPianorollReload()` — called after
+`crossfadeToRender()` resolves in both `scheduleAutoRender()`'s playing
+branch and `renderAndLoadPlayer()`, and also in `scheduleAutoRender()`'s
+not-playing branch in case the user paused during the debounce — awaits
+that stored promise and applies it (via the extracted `applyPianorollPayload()`,
+shared with `loadPianoroll()`) only once the audition audio has actually
+caught up to the new setting. Because the fetch was started back when the
+edit landed rather than when the crossfade finishes, it has almost always
+already resolved by the time it's applied, so the apply step adds no
+further network wait and the mismatch window collapses to effectively
+nothing. `flushTransform()` calls `schedulePianorollReload()`
+unconditionally (the fetch itself is cheap and its freshest `durationSeconds`
+is wanted either way) and only branches on `isActivePlayerPlaying()` for
+*when* to apply it — immediately, via `applyPendingPianorollReload()`, when
+not playing (there is no audio to desync from, matching the piano roll's
+documented independence from rendering; see "Why the piano roll is
+independent from rendering and track sorting" above), or deferred to the
+crossfade otherwise.
+
+**A third, unrelated optimization on the same path, prompted by a direct
+question ("do the notes actually change when only speed changes?")**: a pure
+speed change scales `pianoroll.py`'s tempo map, which scales *every* note's
+start time, duration, and the overall `durationSeconds` by the exact same
+factor (`_scaled_tempo()` divides every tempo event by `speed`, so any two
+absolute times keep the same ratio regardless of how many tempo-change events
+the file has — see "Why tempo is scaled, not replaced" below). Since
+`drawPianorollTrack()` only ever positions a note at `start / durationSeconds
+* width`, that ratio is mathematically invariant under a speed-only change:
+redrawing the static note layer after one produces pixel-identical output to
+what's already on screen. `flushTransform()` now compares the just-submitted
+`transpose` against `state.session.transpose` (the value in effect before
+this PATCH) and passes the result as `schedulePianorollReload({
+needsNoteRedraw })`. When `false`, `applyPendingPianorollReload()` still
+updates `state.pianoroll` (so `durationSeconds` stays authoritative for the
+bar and for `seekPianorollAt()`) and repaints only the playhead via
+`drawPianoroll()`, but skips `redrawPianorollStatic()`'s per-note canvas
+loop and the now-pointless `setPianorollMessage()` truncation-status update
+entirely. `state.pendingPianorollNeedsRedraw` is OR-accumulated (never
+overwritten to `false`) across multiple pending reloads so a transpose edit
+followed by a speed-only edit, both still unapplied when the crossfade
+lands, doesn't drop the redraw the transpose edit actually earned. Note that
+this is a presentation-layer optimization only — `durationSeconds` itself is
+still always re-fetched from the server (`pianoroll.py`'s
+`_scaled_tempo()`/rounding) rather than approximated client-side by scaling
+the old value, since a client-side approximation could drift from the
+authoritative value for a file with many tempo-change events, and
+`seekPianorollAt()` needs that value to be exact, not merely close.
 
 ## Why preview rendering uses a state cache and two external workers
 
@@ -1936,6 +2099,38 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 python -m compileall -q src tests
 bash -n miditrack.sh
 ```
+
+`test_web.py`'s `TestWebAppAudioSourceHistory` covers the `?v=<render_id>`
+resolution the A/B crossfade player depends on (see "Why an A/B `<audio>`
+pair..." above): its injected `fake_renderer` embeds the call count into
+both the WAV's content and its length, so a test can tell "the bytes for
+render_id 1" apart from "the bytes for render_id 2" by more than just which
+disk path was hit. It asserts an old `render_id` keeps serving its own WAV
+(full body and via a `Range` request) after a second, content-different
+render has activated and moved `audio_path`; that an unknown/omitted `v`
+falls back to the current `audio_path`; and that a fresh MIDI upload (going
+through `reset_midi_state()`) makes the old `render_id` 400 again. The
+`app.js`-literal-string half of this regression guard, `test_web.py`'s
+`test_render_reload_preserves_relative_playback_position`, was rewritten
+alongside the crossfade feature: it no longer greps for the old
+`resetPlayer({ preservePosition: true })`/`pendingPlaybackRatio` mechanism
+(replaced outright — see below) and instead asserts `markRenderStale()`/
+`scheduleAutoRender()` exist and that `crossfadeToRender()`'s position
+handoff is ratio-based (`const ratio = Number.isFinite(fromDuration) &&
+fromDuration > 0`), not absolute-seconds-based.
+
+Beyond the mocked/string-literal tests above, the A/B crossfade itself was
+verified against a live, non-mocked `create_app()` server launched via
+`./miditrack.sh --no-browser` (real `fluidsynth`) and driven through Chrome
+DevTools: starting playback, then changing the fast/quality toggle mid-song,
+produced a real ~160ms equal-power crossfade between `#player-a` and
+`#player-b` with `currentTime` continuous across the swap (sampled every
+80ms via `requestAnimationFrame`-adjacent polling), and the network log
+showed both `?v=1` and `?v=2` continuing to resolve to their own WAV's bytes
+after the swap — the exact scenario `TestWebAppAudioSourceHistory` guards at
+the HTTP layer. A second run confirmed the paused-state path never calls the
+activating `POST /api/render`, only `POST /api/render/prewarm`, and never
+moves `activePlayer()`'s `src`.
 
 `tests/test_gm.py`, `test_midi.py`, `test_render.py`, `test_convert.py`,
 `test_pitch_shift.py`, and `test_preferences.py` need no real MIDI file,
