@@ -1544,6 +1544,26 @@ function handleSeekKeydown(event) {
   seekPlaybackTo(target);
 }
 
+// ピアノロール上にマウス/トラックパッドがある間、縦方向のホイール操作で
+// 再生位置を送り・戻しできるようにする。横方向の操作（Shift+ホイールや
+// トラックパッドの横スワイプ）は#pianoroll-scrollの既存の横スクロール
+// （タイムラインのパン）に任せ、そちらだけ確実に動いている場合は
+// preventDefault()しない — |deltaX| > |deltaY|ならこの関数は何もせず
+// 通常のブラウザのスクロール処理へ委ねる。
+// 符号は既存のPageUp(+10秒=前方)/PageDown(-10秒=後方)の向きに合わせる
+// （WheelEventの仕様上、上スクロール=deltaY負、下スクロール=deltaY正）。
+// deltaYをそのまま秒数に使うとマウスホイール1クリック分（多くの環境で
+// ±100前後）がPLAYBACK_SEEK_SECONDS（1秒）とだいたい釣り合うが、
+// トラックパッドの連続した小さなdeltaYでもなめらかにスクラブできるよう
+// 固定ステップではなく比例スケールにする。
+function handlePianorollWheel(event) {
+  if (!state.session?.hasRender || !state.pianoroll) return;
+  if (!activePlayer().getAttribute("src")) return;
+  if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  event.preventDefault();
+  seekPlaybackBy(-(event.deltaY / 100) * PLAYBACK_SEEK_SECONDS);
+}
+
 function setupPianoroll() {
   const canvas = $("#pianoroll-canvas");
   const scrollArea = $("#pianoroll-scroll");
@@ -1570,6 +1590,7 @@ function setupPianoroll() {
   };
   canvas.addEventListener("pointerup", finishSeek);
   canvas.addEventListener("pointercancel", finishSeek);
+  canvas.addEventListener("wheel", handlePianorollWheel, { passive: false });
   document.addEventListener("keydown", handleSeekKeydown);
   $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
   $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));

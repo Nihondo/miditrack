@@ -81,6 +81,48 @@ tracks are, mechanically, just muted tracks — and a track muted before
 solo starts stays dimmed after solo ends, because `exitSolo()` restores
 the pre-solo snapshot rather than a flat "all unmuted" state.
 
+**Added: mouse-wheel seeking while hovering the piano roll.** `#pianoroll-canvas`
+gained a `wheel` listener (`handlePianorollWheel()`, registered
+`{ passive: false }` so it can call `preventDefault()`) alongside the
+existing `pointerdown`/`pointermove` click-and-drag seek handlers. It only
+acts when `|deltaY| >= |deltaX|` — a vertically-dominant wheel gesture,
+which is otherwise inert here since `#pianoroll-scroll` is
+`overflow-y: hidden` (nothing to scroll vertically) — and calls the existing
+`seekPlaybackBy()` (already shared with the back/forward buttons and
+Arrow-key shortcuts) with `-(event.deltaY / 100) * PLAYBACK_SEEK_SECONDS`.
+A horizontally-dominant gesture (Shift+wheel, or a trackpad's native
+horizontal swipe) is left completely alone — the handler returns before
+touching `preventDefault()` or reading `deltaY` at all — so panning the
+zoomed-in timeline via `#pianoroll-scroll`'s native horizontal scroll
+keeps working exactly as before. The sign matches this app's existing
+Page Up (`+10`, forward) / Page Down (`-10`, backward) convention in
+`handleSeekKeydown()` — `deltaY` is negative for an "upward" wheel/trackpad
+gesture by the DOM spec, the same direction Page Up already means "forward"
+for — rather than assuming scroll-down-is-forward, which some other apps
+use but this codebase doesn't. Scaling by `/100` (rather than a fixed step
+per event) makes a typical mouse wheel's one-notch `deltaY` (~100 in most
+browsers/OSes) roughly equal to one `PLAYBACK_SEEK_SECONDS` (1s) tap, while
+a trackpad's many small continuous pixel-mode `deltaY` events during one
+swipe accumulate into a smooth scrub rather than a series of jumpy 1-second
+hops. No new auto-follow-disable call was needed: the event still bubbles
+from the canvas up to `#pianoroll-scroll` (`preventDefault()` stops the
+default scroll action, not propagation), where the pre-existing `wheel`
+listener already calls `setPianorollAutoFollow(false)` — confirmed live,
+not just by reading the code, since a bubbling assumption is exactly the
+kind of thing that's easy to get backwards. Verified against a live,
+non-mocked `create_app()` server via dispatched `WheelEvent`s (Chrome
+DevTools MCP has no built-in wheel/scroll gesture, so a synthetic
+`new WheelEvent(...)` was dispatched directly at the canvas — behaviorally
+identical to a real trackpad/mouse event for a listener that only reads
+`deltaX`/`deltaY`): `deltaY: -300` moved a paused player from `0s` to `3s`
+(and `-500` from `0s` to `10s`, matching duration-clamped math),
+`deltaY: +100` from `0s` stayed clamped at `0s` (`seekPlaybackBy()`'s
+existing clamp), a `deltaX: 200 / deltaY: 10` event left `currentTime`
+unchanged with `defaultPrevented: false`, and `state.isPianorollAutoFollowing`
+flipped to `false` after a vertical-wheel dispatch. Confirmed working
+identically in both the normal wizard layout and the fullscreen DAW layout
+above, since both reuse the same `#pianoroll-canvas`/`setupPianoroll()`.
+
 The dedicated playback buttons above the piano roll must call the same helpers
 as the global keyboard shortcuts: one-second back/forward matches Arrow
 Left/Right, return-to-start matches Home or Command+Left, and play/pause matches
