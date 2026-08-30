@@ -73,6 +73,11 @@ const state = {
   pianorollAutoScrollTarget: null,
   playbackTimeFrameId: null,
   pendingPlaybackRatio: null,
+  // pendingPlaybackRatioと常にセットで更新する。<audio>のsrcを外している間も
+  // カウンタ・ピアノロールの再生位置バーへ「戻り先」の秒数をそのまま表示し続け、
+  // 再レンダリングが終わるまで表示が0へ戻って見えないようにするための値。
+  pendingPlaybackSeconds: null,
+  pendingPlaybackDurationSeconds: null,
   pointerActivatedControl: null,
   renderMode: "fast",
   prewarmTimer: null,
@@ -1170,7 +1175,7 @@ function drawPianoroll() {
   const payload = state.pianoroll;
   const size = state.pianorollSize;
   if (!payload || !size || payload.durationSeconds <= 0) return;
-  const seconds = Math.min(payload.durationSeconds, $("#player").currentTime || 0);
+  const seconds = Math.min(payload.durationSeconds, getDisplayPlaybackSeconds());
   context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
   context.strokeStyle = cssColor("--brand-dark", "#5674b9");
   context.lineWidth = 2;
@@ -1196,7 +1201,7 @@ function updatePianorollInteraction() {
   const canSeek = !!(state.session?.hasRender && state.pianoroll?.durationSeconds > 0);
   canvas.classList.toggle("is-seekable", canSeek);
   canvas.setAttribute("aria-disabled", String(!canSeek));
-  updatePianorollAria($("#player").currentTime || 0);
+  updatePianorollAria(getDisplayPlaybackSeconds());
 }
 
 function updatePianorollZoomControls() {
@@ -1398,12 +1403,20 @@ function rememberPlaybackPosition() {
   const duration = getPlaybackDuration();
   if (!Number.isFinite(duration) || duration <= 0) return;
   state.pendingPlaybackRatio = Math.min(1, Math.max(0, player.currentTime / duration));
+  state.pendingPlaybackSeconds = player.currentTime;
+  state.pendingPlaybackDurationSeconds = duration;
+}
+
+function clearPendingPlaybackPosition() {
+  state.pendingPlaybackRatio = null;
+  state.pendingPlaybackSeconds = null;
+  state.pendingPlaybackDurationSeconds = null;
 }
 
 function resetPlayer({ preservePosition = false } = {}) {
   const player = $("#player");
   if (preservePosition) rememberPlaybackPosition();
-  else state.pendingPlaybackRatio = null;
+  else clearPendingPlaybackPosition();
   setPianorollAutoFollow(false);
   stopPlaybackTimeAnimation();
   player.removeAttribute("src");
@@ -1845,7 +1858,7 @@ async function restorePlaybackPosition(player) {
   if (player.readyState < 1) return;
   const duration = getPlaybackDuration();
   if (!Number.isFinite(duration) || duration <= 0) return;
-  state.pendingPlaybackRatio = null;
+  clearPendingPlaybackPosition();
   seekPlaybackTo(ratio * duration);
 }
 
@@ -1870,7 +1883,7 @@ async function renderAndLoadPlayer() {
     state.session.hasDownload = true;
   }
   if (player.getAttribute("src") === nextAudioUrl) {
-    state.pendingPlaybackRatio = null;
+    clearPendingPlaybackPosition();
     updateSectionsReadiness();
     return player;
   }
@@ -1937,6 +1950,27 @@ function getPlaybackDuration() {
   return state.pianoroll?.durationSeconds || 0;
 }
 
+// カウンタとピアノロールの再生位置バーが表示すべき秒数。<audio>にsrcが
+// 無い間（設定変更で再生が無効化され、次のレンダリング待ちの間）は
+// player.currentTimeが0に戻ってしまうため、代わりにrememberPlaybackPosition()
+// が覚えておいた戻り先の秒数を表示し続け、再レンダリングが終わるまで表示だけ
+// 0へ「リセット」して見えることを避ける。
+function getDisplayPlaybackSeconds() {
+  const player = $("#player");
+  if (player.getAttribute("src")) return player.currentTime || 0;
+  return state.pendingPlaybackSeconds ?? 0;
+}
+
+// 総時間側も同じ理由でrememberPlaybackPosition()時点の実際のWAV長を使う。
+// getPlaybackDuration()のフォールバック（ピアノロールの音符ベースの曲長見積り）は
+// フェードやリバーブテールを含む実際のレンダリング結果より短いことがあり、そちらを
+// 使うと戻り先の秒数がこの見積り値へ切り詰められて表示されてしまう。
+function getDisplayPlaybackDuration() {
+  const player = $("#player");
+  if (player.getAttribute("src")) return getPlaybackDuration();
+  return state.pendingPlaybackDurationSeconds ?? getPlaybackDuration();
+}
+
 // 秒以下の桁を「.」と数字それぞれ別spanにして視覚的な間隔を空けるため、
 // 一つのtextContentへ丸ごと書き込まず、内訳ごとに差分更新する。「.」自体は
 // 常に固定文字なのでHTML側の静的テキストのまま更新しない。
@@ -1949,10 +1983,10 @@ function applyPlaybackClock(container, seconds) {
 }
 
 function updatePlaybackTime() {
-  const player = $("#player");
-  const current = Math.min(getPlaybackDuration(), Math.max(0, player.currentTime || 0));
+  const duration = getDisplayPlaybackDuration();
+  const current = Math.min(duration, Math.max(0, getDisplayPlaybackSeconds()));
   applyPlaybackClock($("#playback-current-time"), current);
-  applyPlaybackClock($("#playback-duration"), getPlaybackDuration());
+  applyPlaybackClock($("#playback-duration"), duration);
 }
 
 // <audio>のtimeupdateはブラウザ依存の粗い間隔（数Hz程度）でしか発火せず、
