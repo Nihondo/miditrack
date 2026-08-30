@@ -55,6 +55,7 @@ const state = {
   patchTimer: null,
   patchPromise: null,     // 送信中の設定PATCH。試聴開始時の競合を防ぐ。
   transformPatchTimer: null, // 全体の速度・ピッチ（PATCH /api/session/transform）用のデバウンス。
+  transformPatchPromise: null,
   downloadFilenamePatchTimer: null, // ダウンロードファイル名（PATCH /api/session/filename）用のデバウンス。
   statusTimer: null,
   convertFields: [], // 変換パネルに描画中のオプションフィールド { name, type, input, conflicts }
@@ -76,8 +77,10 @@ const state = {
   playbackTimeFrameId: null,
   pointerActivatedControl: null,
   renderMode: "fast",
-  prewarmTimer: null,
-  prewarmGeneration: 0,
+  autoRenderTimer: null,
+  renderGeneration: 0,
+  renderTask: null,
+  renderTaskGeneration: null,
   // A/Bクロスフェード再生（crossfadeToRender()）関連の状態。
   // "a"|"b"のどちらの<audio>要素が現在の再生源かを指す。もう一方は次のレンダリング
   // 結果を裏でロード・シークしておく待避先として使う。
@@ -91,8 +94,8 @@ const state = {
   isSwapping: false,
   swapGeneration: 0,
   // トラック設定・SoundFont・速度/ピッチ等を変更した後、まだ試聴音声へ反映されて
-  // いない（次のscheduleAutoRender()完了かユーザーの明示クリックを待っている）ことを
-  // 示す。markRenderStale()が立て、crossfadeToRender()の呼び出し完了時に下ろす。
+  // いないことを示す。再生操作はこの状態のまま旧音源を鳴らさず、最新レンダーの
+  // 完了を待つ。
   isRenderStale: false,
   // 速度/ピッチ変更で/api/pianorollの再取得（durationSeconds更新を含む）が必要だが、
   // 再生中は音がまだ旧設定のまま鳴っているため今すぐは反映できない、という状態。
@@ -133,8 +136,8 @@ function swapActivePlayer() {
   state.activePlayerId = state.activePlayerId === "a" ? "b" : "a";
 }
 
-// crossfadeToRender()の呼び出しを直列化する。scheduleAutoRender()による自動乗り換えと
-// 「適用して試聴」ボタンの明示クリックがほぼ同時に発生しても、2つの呼び出しが同じ
+// crossfadeToRender()の呼び出しを直列化する。連続編集からの自動乗り換えと
+// 再生操作による最新レンダーのロードがほぼ同時に発生しても、2つの呼び出しが同じ
 // 待避用<audio>要素（inactivePlayer()）へ同時に書き込んで壊れないようにするため。
 // resetPlayer()（ハードリセット）は直接この変数をリセットして進行中のキューを捨てる。
 let swapQueue = Promise.resolve();
@@ -154,12 +157,10 @@ function applyPlayerGains() {
 // 裏でレンダリングし、crossfadeToRender()で滑らかに乗り換えた時点でfalseに戻る。
 function markRenderStale() {
   state.isRenderStale = true;
-  $("#render-button").classList.add("is-stale");
 }
 
 function clearRenderStale() {
   state.isRenderStale = false;
-  $("#render-button").classList.remove("is-stale");
 }
 
 function isActivePlayerPlaying() {
@@ -198,7 +199,7 @@ function schedulePianorollReload({ needsNoteRedraw = true } = {}) {
 // フェッチの結果を反映する。呼び出し元は「今この瞬間に反映してよい」（試聴音声が
 // 実際に新設定へ切り替わった、または元々再生していなかった）と判断した後でこれを
 // 呼ぶ（flushTransform()の停止時分岐、scheduleAutoRender()のクロスフェード完了後・
-// 停止時分岐、renderAndLoadPlayer()のクロスフェード完了後）。
+// ensureLatestRender()のレンダー完了後）。
 async function applyPendingPianorollReload() {
   if (!state.pendingPianorollReload) return;
   state.pendingPianorollReload = false;
@@ -373,61 +374,98 @@ function selectedRenderMode() {
   return document.querySelector('input[name="render-mode"]:checked')?.value || "fast";
 }
 
+function setRenderSpinner(isVisible) {
+  $("#render-spinner").hidden = !isVisible;
+}
+
+function clearAutoRenderTimer() {
+  clearTimeout(state.autoRenderTimer);
+  state.autoRenderTimer = null;
+}
+
 function cancelAutoRender() {
-  clearTimeout(state.prewarmTimer);
-  state.prewarmTimer = null;
-  state.prewarmGeneration += 1;
+  clearAutoRenderTimer();
+  state.renderGeneration += 1;
+  setRenderSpinner(false);
+}
+
+function isCurrentRenderGeneration(generation) {
+  return generation === state.renderGeneration;
+}
+
+function applyRenderPayload(payload) {
+  if (!state.session) return;
+  state.session.hasRender = true;
+  state.session.renderId = payload.renderId;
+  state.session.renderMode = payload.renderMode;
+  state.session.hasDownload = true;
+  updateSectionsReadiness();
+}
+
+// 指定世代の試聴音声を生成し、停止中は無音で、再生中はクロスフェードで差し替える。
+// 後発の編集に追い越された応答は、プレイヤーへ反映しない。
+async function renderGeneration(generation) {
+  const renderMode = selectedRenderMode();
+  if (!state.session || state.session.tracks.length === 0) return null;
+  if (isCurrentRenderGeneration(generation)) setRenderSpinner(true);
+  try {
+    const response = await apiFetch("/api/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ renderMode }),
+    });
+    const payload = await response.json();
+    if (!isCurrentRenderGeneration(generation)) return null;
+    applyRenderPayload(payload);
+    const player = await crossfadeToRender(
+      payload.renderId,
+      () => isCurrentRenderGeneration(generation),
+    );
+    if (!isCurrentRenderGeneration(generation)) return null;
+    await applyPendingPianorollReload();
+    if (!isCurrentRenderGeneration(generation)) return null;
+    clearRenderStale();
+    updatePianorollInteraction();
+    drawPianoroll();
+    return player;
+  } catch (error) {
+    if (isCurrentRenderGeneration(generation)) showStatus(error.message, "error");
+    throw error;
+  } finally {
+    if (isCurrentRenderGeneration(generation)) setRenderSpinner(false);
+  }
+}
+
+// 同じ編集世代なら、自動処理・再生操作・ソロ試聴で1つのレンダーを共有する。
+function requestRenderGeneration(generation) {
+  if (
+    state.renderTask
+    && state.renderTaskGeneration === generation
+  ) {
+    return state.renderTask;
+  }
+  const task = renderGeneration(generation);
+  state.renderTask = task;
+  state.renderTaskGeneration = generation;
+  task.finally(() => {
+    if (state.renderTask === task) {
+      state.renderTask = null;
+      state.renderTaskGeneration = null;
+    }
+  }).catch(() => {});
+  return task;
 }
 
 // トラック設定・SoundFont・速度/ピッチ・試聴モード等の変更から500ms操作が無かったら、
-// 裏で次の試聴音声を用意する。試聴中（activePlayer()が再生中）はそのままactivate
-// （POST /api/render）してcrossfadeToRender()で滑らかに乗り換え、擬似リアルタイム
-// 試聴に近づける。停止中は音源を切り替える理由が無いので、従来通りactivateしない
-// POST /api/render/prewarmに留める（無駄なrender_idの消費と、次に再生ボタンを
-// 押した時点で意図せず音源が切り替わることを避ける）。
-function scheduleAutoRender() {
+// 最新状態を自動レンダーする。停止中でもWAVをプレイヤーへロードするが、自動再生はしない。
+function scheduleAutoRender(delay = PREWARM_DELAY_MS) {
   cancelAutoRender();
   if (!state.session || state.session.tracks.length === 0) return;
-  const generation = state.prewarmGeneration;
-  const renderMode = selectedRenderMode();
-  state.prewarmTimer = setTimeout(async () => {
-    state.prewarmTimer = null;
-    try {
-      if (isActivePlayerPlaying()) {
-        const response = await apiFetch("/api/render", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ renderMode }),
-        });
-        const payload = await response.json();
-        if (generation !== state.prewarmGeneration) return;
-        if (state.session) {
-          state.session.hasRender = true;
-          state.session.renderId = payload.renderId;
-          state.session.renderMode = payload.renderMode;
-          state.session.hasDownload = true;
-        }
-        updateSectionsReadiness();
-        await crossfadeToRender(payload.renderId);
-        // 試聴音声が新設定へ切り替わった直後、今度こそ音とdurationSecondsの前提が
-        // 一致した状態でピアノロールを反映する（applyPendingPianorollReload()参照）。
-        await applyPendingPianorollReload();
-        if (generation === state.prewarmGeneration) clearRenderStale();
-      } else {
-        // 停止中に転じていた場合、鳴っている音は無いのでここで反映してよい
-        // （デバウンス待機中にユーザーが一時停止した場合の取りこぼし防止）。
-        await applyPendingPianorollReload();
-        await apiFetch("/api/render/prewarm", {
-          method: "POST",
-          priority: "low",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ renderMode }),
-        });
-      }
-    } catch (_error) {
-      // 自動レンダリングは投機的処理。失敗しても明示クリック時に通常レンダーを試みる。
-    }
-  }, PREWARM_DELAY_MS);
+  const generation = state.renderGeneration;
+  state.autoRenderTimer = setTimeout(() => {
+    state.autoRenderTimer = null;
+    requestRenderGeneration(generation).catch(() => {});
+  }, delay);
 }
 
 function handleRenderModeChange(event) {
@@ -436,8 +474,6 @@ function handleRenderModeChange(event) {
   markRenderStale();
   updateSectionsReadiness();
   scheduleAutoRender();
-  const label = state.renderMode === "quality" ? "品質" : "高速";
-  showStatus(`試聴モードを${label}へ切り替えました。`);
 }
 
 // GM音色カタログを一度だけ取得し、16 <optgroup> のDocumentFragmentを構築する。
@@ -525,7 +561,6 @@ async function handleSoundfontChange() {
     markRenderStale();
     updateSectionsReadiness();
     scheduleAutoRender();
-    showStatus("SoundFontを変更しました。");
   } catch (error) {
     showStatus(error.message, "error");
   }
@@ -622,46 +657,35 @@ function isBulkApplyEvent(event) {
 // Cmd/Ctrlを押しながらの音源選択で、他の全トラックの音源セレクトも同じ値に
 // 揃える。選択肢が無い（その値を持たない）行や、既に同じ値の行はスキップする。
 function applySourceToAllTracks(value, originIndex) {
-  let appliedCount = 0;
   for (const row of state.trackRows) {
     if (!row.sourceSelect || row.index === originIndex) continue;
     if (row.sourceSelect.value === value) continue;
     if (!Array.from(row.sourceSelect.options).some((option) => option.value === value)) continue;
     row.sourceSelect.value = value;
     row.sourceSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    appliedCount += 1;
   }
-  if (appliedCount > 0) showStatus(`他${appliedCount}トラックの音源も揃えました。`);
 }
 
 // Cmd/Ctrlを押しながらの楽器選択で、編集可能な他の全トラックの楽器も同じ
 // GMプログラムに揃える。
 function applyProgramToAllTracks(value, originIndex) {
-  let appliedCount = 0;
   for (const row of state.trackRows) {
     if (!row.programSelect || row.programSelect.disabled || row.index === originIndex) continue;
     if (row.programSelect.value === value) continue;
     row.programSelect.value = value;
     row.programSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    appliedCount += 1;
   }
-  if (appliedCount > 0) showStatus(`他${appliedCount}トラックの楽器も揃えました。`);
 }
 
 // Cmd/Ctrlを押しながらのミュート切り替えで、他の全トラックも同じミュート
 // 状態（ミュート／解除）に揃える。解除時は各トラックが個別に覚えている
 // 直前の音量へそれぞれ戻る（一律の音量に揃えるわけではない）。
 function applyMuteToAllTracks(shouldMute, originIndex) {
-  let appliedCount = 0;
   for (const row of state.trackRows) {
     if (!row.muteButton || !row.volumeSlider || row.index === originIndex) continue;
     const isMuted = Number(row.volumeSlider.value) === 0;
     if (isMuted === shouldMute) continue;
     row.muteButton.click();
-    appliedCount += 1;
-  }
-  if (appliedCount > 0) {
-    showStatus(`他${appliedCount}トラックも${shouldMute ? "ミュート" : "ミュート解除"}しました。`);
   }
 }
 
@@ -912,8 +936,8 @@ async function buildTrackRow(track, rowState = state) {
     });
 
     // 他の全トラックを一時的に音量0へ落として即レンダリング・再生する
-    // 「ソロ試聴」ボタン。他のトラックをミュートしてから「適用して試聴」を
-    // 押す操作をワンクリックにまとめたもので、サーバー側の状態やAPIは
+    // 「ソロ試聴」ボタン。他のトラックをミュートして最新音源を準備・再生する
+    // 操作をワンクリックにまとめたもので、サーバー側の状態やAPIは
     // 既存のPATCH /api/session/tracks・POST /api/renderをそのまま使う
     // （新しいエンドポイントは追加しない）。
     const soloButton = document.createElement("button");
@@ -1034,7 +1058,7 @@ async function enterSolo(trackIndex) {
     }
   }
 
-  setBusy(true, "ソロ試聴の準備中…");
+  setBusy(true);
   try {
     const response = await apiFetch("/api/session/tracks", {
       method: "PATCH",
@@ -1045,9 +1069,10 @@ async function enterSolo(trackIndex) {
     state.soloTrackIndex = trackIndex;
     await renderTrackList();
     updateSectionsReadiness();
-    const player = await renderAndLoadPlayer();
-    player.play().catch(() => {});
-    showStatus("ソロ試聴中です。もう一度🎧を押すと解除します。", "success");
+    cancelAutoRender();
+    markRenderStale();
+    const player = await ensureLatestRender();
+    if (player) await playPreparedPlayer(player);
   } catch (error) {
     state.soloTrackIndex = null;
     showStatus(error.message, "error");
@@ -1065,7 +1090,7 @@ async function exitSolo() {
   state.soloVolumeSnapshot = null;
   if (!snapshot) return;
 
-  setBusy(true, "音量を元に戻しています…");
+  setBusy(true);
   try {
     const response = await apiFetch("/api/session/tracks", {
       method: "PATCH",
@@ -1077,7 +1102,6 @@ async function exitSolo() {
     updateSectionsReadiness();
     markRenderStale();
     scheduleAutoRender();
-    showStatus("ソロ試聴を解除しました。");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -1114,7 +1138,6 @@ async function flushPendingTrackSettings() {
       redrawPianorollStatic();
       markRenderStale();
       scheduleAutoRender();
-      showStatus("設定を変更しました。");
       return true;
     } catch (error) {
       showStatus(error.message, "error");
@@ -1562,7 +1585,6 @@ function updateSectionsReadiness() {
   const ready = !!(state.session && state.session.tracks.length > 0);
   $("#tracks-card").classList.toggle("ready", ready);
   $("#audition-card").classList.toggle("ready", ready);
-  $("#render-button").disabled = !ready;
   document.querySelectorAll('input[name="render-mode"]')
     .forEach((control) => { control.disabled = !ready; });
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
@@ -1644,11 +1666,22 @@ async function refreshFromSession(payload) {
     renderSoundfontOptions(state.soundfontPayload);
   }
   await loadPianoroll();
+  if (!payload.tracks || payload.tracks.length === 0) return;
+  if (payload.hasRender && payload.renderId) {
+    clearRenderStale();
+    await crossfadeToRender(payload.renderId, () => state.session === payload);
+    return;
+  }
+  markRenderStale();
+  scheduleAutoRender(0);
 }
 
 function onTransformChange() {
   clearTimeout(state.transformPatchTimer);
-  state.transformPatchTimer = setTimeout(flushTransform, 250);
+  state.transformPatchTimer = setTimeout(() => {
+    state.transformPatchTimer = null;
+    flushTransform();
+  }, 250);
 }
 
 // 数値入力のstepUp()/stepDown()を使い、HTMLのmin/max/stepを単一の定義元にする。
@@ -1668,44 +1701,58 @@ function stepTransformInput(inputId, direction) {
 // トラック設定（flushPendingTrackSettings）と違い値は2つだけなので、保留マージは
 // せず入力欄の現在値をそのまま毎回送る。
 async function flushTransform() {
+  if (state.transformPatchPromise) return state.transformPatchPromise;
   const speedInput = $("#transform-speed");
   const transposeInput = $("#transform-transpose");
   const speed = Number(speedInput.value);
   const transpose = Number(transposeInput.value);
   if (Number.isNaN(speed) || Number.isNaN(transpose)) {
     showStatus("速度・ピッチには数値を入力してください", "error");
-    return;
+    return false;
   }
   // トランスポーズが実際に変わるかどうかで、ピアノロールのノート再描画が要るかを
   // 判定する（schedulePianorollReload()のneedsNoteRedrawコメント参照）。PATCH送信前の
   // state.session（＝現在表示中の値）と比較する。
   const transposeChanged = !state.session || state.session.transpose !== transpose;
-  try {
-    const response = await apiFetch("/api/session/transform", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ speed, transpose }),
-    });
-    state.session = await response.json();
-    markRenderStale();
-    updateSectionsReadiness();
-    // durationSecondsの更新自体は速度変更でも必要（再生位置バー・シークの分母）だが、
-    // 再生中に今すぐ反映すると、まだ旧速度のまま鳴っている音の経過秒数を新しい
-    // durationSecondsで割ることになり、再生位置バーが一瞬ずれて見える（クロスフェードで
-    // 音が実際に切り替わるまでの間、表示と音の前提がずれるため）。フェッチ自体は
-    // 常にここで始め、反映のタイミングだけ再生状態で変える。
-    schedulePianorollReload({ needsNoteRedraw: transposeChanged });
-    if (isActivePlayerPlaying()) {
-      // 反映はscheduleAutoRender()の自動クロスフェードが完了した直後まで遅らせる
-      // （applyPendingPianorollReload()参照）。停止中に転じた場合はそちら側で拾う。
-    } else {
-      await applyPendingPianorollReload();
+  const patchPromise = (async () => {
+    try {
+      const response = await apiFetch("/api/session/transform", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speed, transpose }),
+      });
+      state.session = await response.json();
+      markRenderStale();
+      updateSectionsReadiness();
+      // durationSecondsの更新自体は速度変更でも必要（再生位置バー・シークの分母）だが、
+      // 再生中に今すぐ反映すると、まだ旧速度のまま鳴っている音の経過秒数を新しい
+      // durationSecondsで割ることになり、クロスフェードで音が実際に切り替わるまでの間、
+      // 表示と音の前提がずれるため反映を遅らせる。
+      schedulePianorollReload({ needsNoteRedraw: transposeChanged });
+      if (!isActivePlayerPlaying()) await applyPendingPianorollReload();
+      scheduleAutoRender();
+      return true;
+    } catch (error) {
+      showStatus(error.message, "error");
+      return false;
     }
-    scheduleAutoRender();
-    showStatus("速度・ピッチを変更しました。");
-  } catch (error) {
-    showStatus(error.message, "error");
+  })();
+  state.transformPatchPromise = patchPromise;
+  const didSucceed = await patchPromise;
+  if (state.transformPatchPromise === patchPromise) state.transformPatchPromise = null;
+  return didSucceed;
+}
+
+async function flushPendingTransform() {
+  if (state.transformPatchTimer !== null) {
+    clearTimeout(state.transformPatchTimer);
+    state.transformPatchTimer = null;
+    if (!(await flushTransform())) return false;
   }
+  if (state.transformPatchPromise && !(await state.transformPatchPromise)) return false;
+  // 進行中のPATCHを待つ間に次の入力が来た場合は、その入力も送信してから再生する。
+  if (state.transformPatchTimer !== null) return flushPendingTransform();
+  return true;
 }
 
 function onDownloadFilenameChange() {
@@ -2050,12 +2097,12 @@ function waitForLoadOutcome(element) {
 // 上限として使うため、フェード中にユーザーが音量を変えても違和感のない範囲に収まる。
 // generationが変わったら（新しいcrossfadeToRender()呼び出しに追い越されたら）即座に
 // 打ち切る。
-function runCrossfade(from, to, generation) {
+function runCrossfade(from, to, generation, canCommit) {
   return new Promise((resolve) => {
     const gain = state.isUserMuted ? 0 : state.userVolume;
     const startedAt = performance.now();
     const step = () => {
-      if (generation !== state.swapGeneration) {
+      if (generation !== state.swapGeneration || !canCommit()) {
         resolve();
         return;
       }
@@ -2075,10 +2122,11 @@ function runCrossfade(from, to, generation) {
 
 // crossfadeToRender()の実処理。swapQueueで直列化されるので、呼び出し時点の
 // activePlayer()/inactivePlayer()は常に一貫している。
-async function runSwap(renderId) {
+async function runSwap(renderId, canCommit = () => true) {
   const generation = ++state.swapGeneration;
   state.isSwapping = true;
   try {
+    if (!canCommit()) return activePlayer();
     const active = activePlayer();
     const next = inactivePlayer();
     const nextUrl = audioUrl(renderId);
@@ -2099,7 +2147,12 @@ async function runSwap(renderId) {
     next.src = nextUrl;
     next.load();
     await waitForLoadOutcome(next);
-    if (generation !== state.swapGeneration) return activePlayer();
+    if (generation !== state.swapGeneration || !canCommit()) {
+      next.pause();
+      next.removeAttribute("src");
+      next.load();
+      return activePlayer();
+    }
 
     const nextDuration = Number.isFinite(next.duration) ? next.duration : fromDuration;
     const seekNextTo = (ratio) => {
@@ -2128,7 +2181,7 @@ async function runSwap(renderId) {
         // 自動再生がブロックされた場合はフェード無しの即差し替えへフォールバックする。
       }
     }
-    if (generation !== state.swapGeneration) {
+    if (generation !== state.swapGeneration || !canCommit()) {
       next.pause();
       next.removeAttribute("src");
       next.load();
@@ -2136,11 +2189,17 @@ async function runSwap(renderId) {
     }
 
     if (didStartPlaying) {
-      await runCrossfade(active, next, generation);
+      await runCrossfade(active, next, generation, canCommit);
     } else {
       next.volume = state.isUserMuted ? 0 : state.userVolume;
     }
-    if (generation !== state.swapGeneration) return activePlayer();
+    if (generation !== state.swapGeneration || !canCommit()) {
+      next.pause();
+      next.removeAttribute("src");
+      next.load();
+      active.volume = state.isUserMuted ? 0 : state.userVolume;
+      return activePlayer();
+    }
 
     active.pause();
     active.removeAttribute("src");
@@ -2160,54 +2219,39 @@ async function runSwap(renderId) {
 // 現在鳴っている（かもしれない）試聴音声を止めずに、renderIdのWAVへ乗り換える。
 // 再生中なら短時間の等パワークロスフェードで、停止中（または初回読み込み）なら
 // 位置を保ったまま即座に差し替える。戻り値は乗り換え完了後のactivePlayer()。
-function crossfadeToRender(renderId) {
-  const task = swapQueue.then(() => runSwap(renderId), () => runSwap(renderId));
+function crossfadeToRender(renderId, canCommit) {
+  const task = swapQueue.then(
+    () => runSwap(renderId, canCommit),
+    () => runSwap(renderId, canCommit),
+  );
   swapQueue = task.catch(() => {});
   return task;
 }
 
-// POST /api/renderを呼び、結果をcrossfadeToRender()経由で試聴プレイヤーへ反映する。
-// 「適用して試聴」ボタンとトラック行のソロ試聴ボタンの両方が使う共通処理。
-// 呼び出し元がsetBusy()/エラー表示を担うため、ここでは行わない。
-async function renderAndLoadPlayer() {
-  cancelAutoRender();
-  const response = await apiFetch("/api/render", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ renderMode: selectedRenderMode() }),
-  });
-  const payload = await response.json();
-  if (state.session) {
-    state.session.hasRender = true;
-    state.session.renderId = payload.renderId;
-    state.session.renderMode = payload.renderMode;
-    state.session.hasDownload = true;
+// 最新世代のレンダーがプレイヤーへ反映されるまで待つ。デバウンスタイマーはここで
+// 取り消すが、世代番号は変えないため、既に進行中の同世代レンダーはそのまま共有する。
+async function ensureLatestRender() {
+  clearAutoRenderTimer();
+  while (state.session && state.session.tracks.length > 0) {
+    if (
+      !state.isRenderStale
+      && state.session.hasRender
+      && activePlayer().getAttribute("src")
+    ) {
+      return activePlayer();
+    }
+    const generation = state.renderGeneration;
+    const player = await requestRenderGeneration(generation);
+    if (player && isCurrentRenderGeneration(generation)) return player;
   }
-  updateSectionsReadiness();
-  const player = await crossfadeToRender(payload.renderId);
-  // scheduleAutoRender()の自動クロスフェードより先にここへ来た場合
-  // （デバウンス待ち中の明示クリック等）に備え、こちらでも同様に適用する。
-  await applyPendingPianorollReload();
-  clearRenderStale();
-  updatePianorollInteraction();
-  drawPianoroll();
-  return player;
+  return null;
 }
 
-async function handleRender() {
-  clearTimeout(state.patchTimer);
-  if (!(await flushPendingTrackSettings())) return;
-  const isQuality = selectedRenderMode() === "quality";
-  setBusy(true, isQuality ? "試聴音声を準備中…（品質）" : "試聴音声を準備中…（高速）");
+async function playPreparedPlayer(player) {
   try {
-    const player = await renderAndLoadPlayer();
-    player.play().catch(() => {});
-    const modeLabel = isQuality ? "品質" : "高速";
-    showStatus(`${modeLabel}モードの試聴準備ができました。`, "success");
-  } catch (error) {
-    showStatus(error.message, "error");
-  } finally {
-    setBusy(false);
+    await player.play();
+  } catch (_error) {
+    showStatus("ブラウザが試聴音声の再生を許可しませんでした。もう一度再生してください。", "error");
   }
 }
 
@@ -2222,23 +2266,24 @@ function isPlaybackShortcutBlocked(target) {
   return ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A", "AUDIO"].includes(target.tagName);
 }
 
-// スペースキー1回分の再生・一時停止トグル。未レンダリング（またはトラック設定変更後で
-// 再レンダリングが必要）な状態で再生しようとした場合は、「適用して試聴」ボタンと同じ
-// handleRender()を呼んでレンダリングしてから再生する。トラック設定等の変更後も
-// activePlayer()のsrcは維持される（markRenderStale()はsrcを外さない）ため、
-// このhandleRender()フォールバックは実質「一度も試聴していない」場合だけ通る。
+// スペースキー1回分の再生・一時停止トグル。編集後は旧音源を再生せず、最新レンダーが
+// プレイヤーへ反映されるまで待ってから再生する。
 async function togglePlayback() {
-  if ($("#render-button").disabled || document.body.classList.contains("busy")) return;
+  if (!state.session || state.session.tracks.length === 0 || document.body.classList.contains("busy")) return;
   const player = activePlayer();
   if (!player.paused) {
     player.pause();
     return;
   }
-  if (!state.session.hasRender || !player.getAttribute("src")) {
-    await handleRender();
-    return;
+  clearTimeout(state.patchTimer);
+  if (!(await flushPendingTrackSettings())) return;
+  if (!(await flushPendingTransform())) return;
+  try {
+    const preparedPlayer = await ensureLatestRender();
+    if (preparedPlayer) await playPreparedPlayer(preparedPlayer);
+  } catch (_error) {
+    // renderGeneration()が現在世代のエラーを表示する。
   }
-  player.play().catch(() => {});
 }
 
 // 再生ボタンと既存のカーソルキー操作で同じシーク処理を共有する。
@@ -2645,7 +2690,6 @@ async function init() {
   setupPlaybackControls();
   setupPlaybackShortcut();
   $("#reset-button").addEventListener("click", handleReset);
-  $("#render-button").addEventListener("click", handleRender);
   document.querySelectorAll('input[name="render-mode"]')
     .forEach((control) => control.addEventListener("change", handleRenderModeChange));
   $("#download-button").addEventListener("click", handleDownload);

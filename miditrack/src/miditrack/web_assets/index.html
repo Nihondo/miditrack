@@ -96,7 +96,7 @@
         <span class="step-number">3</span>
         <div>
           <h2>試聴</h2>
-          <p>適用してレンダリングすると、再生位置を自由に変更できます。</p>
+          <p>編集内容は自動でレンダリングされ、準備でき次第そのまま再生できます。</p>
         </div>
       </div>
       <div class="field-group soundfont-field">
@@ -112,7 +112,7 @@
               <label for="render-mode-quality">品質</label>
             </div>
           </fieldset>
-          <button type="button" class="button primary" id="render-button">適用して試聴</button>
+          <span class="render-spinner" id="render-spinner" aria-hidden="true" hidden></span>
         </div>
         <p class="field-help" id="soundfont-help"></p>
       </div>

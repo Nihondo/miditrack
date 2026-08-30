@@ -231,7 +231,7 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("position: absolute !important", hidden_rule)
         self.assertIn("clip-path: inset(50%) !important", hidden_rule)
 
-    def test_render_mode_toggle_is_compact_and_precedes_render_button(self) -> None:
+    def test_render_mode_toggle_is_compact_and_precedes_silent_spinner(self) -> None:
         html = self.client.get("/").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)
         soundfont_row = html.split('<div class="soundfont-row">', 1)[1].split(
@@ -244,7 +244,7 @@ class TestWebApp(unittest.TestCase):
         )
         self.assertLess(
             soundfont_row.index("render-mode-field"),
-            soundfont_row.index("render-button"),
+            soundfont_row.index("render-spinner"),
         )
         self.assertIn('<label for="render-mode-fast">高速</label>', soundfont_row)
         self.assertIn('<label for="render-mode-quality">品質</label>', soundfont_row)
@@ -253,9 +253,15 @@ class TestWebApp(unittest.TestCase):
         row_rule = css.split(".soundfont-row {", 1)[1].split("}", 1)[0]
         field_rule = css.split(".render-mode-field {", 1)[1].split("}", 1)[0]
         options_rule = css.split(".render-mode-options {", 1)[1].split("}", 1)[0]
-        self.assertIn("grid-template-columns: minmax(0, 1fr) auto auto", row_rule)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto 16px", row_rule)
+        self.assertIn("reserve its lane explicitly", row_rule)
         self.assertIn("align-self: stretch", field_rule)
         self.assertIn("height: 100%", options_rule)
+        self.assertIn('id="render-spinner"', soundfont_row)
+        self.assertIn('aria-hidden="true"', soundfont_row)
+        self.assertNotIn("render-button", html)
+        self.assertIn("@keyframes render-spinner-rotate", css)
+        self.assertNotIn("prefers-reduced-motion: reduce", css)
 
     def test_pointer_selection_controls_release_focus_without_harming_keyboard_use(self) -> None:
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
@@ -301,13 +307,13 @@ class TestWebApp(unittest.TestCase):
         # 設定変更はresetPlayer()（<audio>のsrcを外すハードリセット）ではなく、
         # 再生を止めないmarkRenderStale()を経由する。
         self.assertIn("function markRenderStale()", javascript)
-        self.assertIn("function scheduleAutoRender()", javascript)
+        self.assertIn("function scheduleAutoRender(delay = PREWARM_DELAY_MS)", javascript)
         self.assertNotIn("resetPlayer({ preservePosition: true })", javascript)
 
         # crossfadeToRender()は絶対秒ではなく進捗率で位置を換算する
         # （速度変更で曲長が変わっても音楽上の同じ位置を継続するため）。
-        self.assertIn("function crossfadeToRender(renderId)", javascript)
-        self.assertIn("async function runSwap(renderId)", javascript)
+        self.assertIn("function crossfadeToRender(renderId, canCommit)", javascript)
+        self.assertIn("async function runSwap(renderId, canCommit = () => true)", javascript)
         self.assertIn(
             "if (!Number.isFinite(fromDuration) || fromDuration <= 0) return 0;",
             javascript,
@@ -346,9 +352,27 @@ class TestWebApp(unittest.TestCase):
         )
         self.assertIn("schedulePianorollReload({ needsNoteRedraw: transposeChanged });", javascript)
 
-        # scheduleAutoRender()・renderAndLoadPlayer()のどちらも、クロスフェードが
+        # scheduleAutoRender()・renderGeneration()のどちらも、クロスフェードが
         # 実際に完了した後でだけ反映する。
         self.assertGreaterEqual(javascript.count("await applyPendingPianorollReload();"), 2)
+
+    def test_auto_render_loads_paused_audio_and_playback_waits_for_latest_generation(
+        self,
+    ) -> None:
+        """停止中も最新WAVをロードし、再生で旧音源を鳴らさないことを確認する。"""
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        self.assertIn("function requestRenderGeneration(generation)", javascript)
+        self.assertIn("async function ensureLatestRender()", javascript)
+        self.assertIn("async function playPreparedPlayer(player)", javascript)
+        self.assertIn("scheduleAutoRender(0);", javascript)
+        self.assertIn('apiFetch("/api/render", {', javascript)
+        self.assertNotIn('apiFetch("/api/render/prewarm", {', javascript)
+        self.assertIn("if (!isCurrentRenderGeneration(generation)) return null;", javascript)
+        self.assertIn("await ensureLatestRender();", javascript)
+        self.assertIn("await flushPendingTransform()", javascript)
+        self.assertIn("setRenderSpinner(true)", javascript)
+        self.assertIn("setRenderSpinner(false)", javascript)
 
     # --- アップロード ---
 

@@ -101,11 +101,10 @@ Keep a tabular monospace fallback and fixed timer width so font swapping cannot
 shift adjacent controls. MIDI/WAV download buttons remain below the piano roll.
 
 The SoundFont row contains, in order, the `.program-select`, the fast/quality
-segmented choice, and the Apply & Audition `.button`. The segment shows only
+segmented choice, and a non-interactive render spinner. The segment shows only
 the two visible labels `高速`/`品質`; profile-rate explanations belong in the
-manual, not this compact toolbar. Its fieldset stretches to the row height so
-the outer segment exactly follows the Apply button's height without stretching
-the select or button themselves.
+manual, not this compact toolbar. The spinner is decorative, stays hidden
+outside rendering, and becomes static when reduced motion is requested.
 
 The fast/quality segmented choice remains a native radio group with explicit
 `label[for]` associations. Its inputs use the dedicated `.render-mode-input`
@@ -189,9 +188,8 @@ uses for video/audio scrubbing. This is deliberately "boring": it reuses
 existing, tested infrastructure instead of adding a new audio-synthesis
 dependency. The A/B crossfade layer described below (see "Why an A/B
 `<audio>` pair, not a live softsynth, closes the remaining gap") hides most
-of the latency this design implies, but an explicit "Apply & Audition"
-click (or Space) is still what starts playback the very first time in a
-session, since nothing has rendered yet at that point.
+of the latency this design implies. Initial MIDI preparation begins an
+automatic render; Space waits for that latest render and then starts playback.
 
 Auditioning has two explicit profiles. `fast` is the default and produces a
 full-song, 16-bit stereo 22.05kHz WAV while preserving the existing reverb and
@@ -209,6 +207,39 @@ MIDI re-conversion, plain MIDI replacement, source-file switching, and
 `WebSession.clear()` must not reset the counter. A process restart may safely
 begin at zero because the launch authentication token in the media URL changes
 at the same time.
+
+## Historical A/B `<audio>` pair rationale
+
+The details below record the original crossfade rollout. The current automatic
+audition behavior is defined in the next section and supersedes its former
+Apply & Audition and paused-prewarm descriptions.
+
+## Current automatic audition behavior
+
+`index.html` has no Apply & Audition button. MIDI preparation calls
+`scheduleAutoRender(0)` after the track list and piano roll are ready; edits
+use the same function with the existing 500ms debounce. Both paths activate
+`POST /api/render`, so a paused player silently loads the newest WAV and a
+playing player reaches it through the existing A/B crossfade. The legacy
+`POST /api/render/prewarm` endpoint remains for API compatibility but has no
+standard-UI caller.
+
+`state.renderGeneration` identifies the newest requested state.
+`requestRenderGeneration()` shares an in-flight render for that generation,
+and `renderGeneration()` rejects any response that is no longer current
+before it updates session state, the player, or the piano roll.
+`crossfadeToRender()` passes the same check into `runSwap()`, so a candidate
+that turns stale while its metadata loads is unloaded instead of becoming the
+active source. `ensureLatestRender()` clears only a pending debounce timer
+and waits for the current generation; playback therefore never resumes an
+older source after an edit. It also flushes pending track and transform PATCH
+operations first.
+
+The only normal UI feedback is the decorative `#render-spinner`, which is
+visible while a current render runs and stops animating under
+`prefers-reduced-motion`. Start, success, and setting-change toasts are
+intentionally suppressed; render and playback failures continue to use the
+existing error toast.
 
 ## Why an A/B `<audio>` pair, not a live softsynth, closes the remaining gap
 
