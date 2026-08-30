@@ -1949,6 +1949,486 @@ formats) — plus a fake `list_songs` injection that `TestWebAppLibvgmTrackSourc
 doesn't need, since NSF (`supports_song_list=True`) calls it from
 `POST /api/source` where VGM (`supports_song_list=False`) never does.
 
+## Added: full-screen DAW layout, CSS-only
+
+`index.html`'s single `min(1000px, 100%)` column made it impossible to see
+the track list and the piano roll at the same time — exactly what editing
+instruments/volumes while watching the render's result actually needs. The
+`#fullscreen-toggle` button in `.header-inner` toggles `body.is-fullscreen`
+(`app.js`'s `setupFullscreenLayout()`); everything else is `app.css`. No
+DOM is added, removed, or reparented, and no rendering/playback/piano-roll
+drawing code is touched — this is deliberately scoped to a CSS relayout, the
+same "CSS/HTML switch only" boundary the user asked for.
+
+**Why `#audition-card` (the whole "3. 試聴" card, containing the SoundFont
+row, transport, piano roll, and download/variation controls) becomes
+`display: contents` instead of being restyled as a box**: the target layout
+needs the SoundFont/transport row and the piano roll in the *right* column,
+but the download toolbar and the variations `<details>` — DOM children of
+the exact same `#audition-card` — in the *left* column, interleaved with
+`#tracks-card`. `display: contents` removes `#audition-card`'s own box
+without moving any of its children in the DOM, so each child becomes a
+direct grid item of `.app-shell` and can be placed independently via
+`grid-column`/`grid-row` (`app.css`'s `body.is-fullscreen .app-shell > ...`
+rules) — achieving the reorder purely through grid placement, with no JS
+DOM surgery. The one cost: `display: contents` drops the element's own box,
+so `.disabled-section`'s opacity rule (which this card also carries, via
+`updateSectionsReadiness()`'s `classList.toggle("ready", ...)`) stops
+painting on `#audition-card` itself once it has no box — `body.is-fullscreen
+#audition-card:not(.ready) > *` re-applies the same opacity to each child
+directly so the "dim until a track list exists" behavior survives.
+
+**Why the piano-roll canvas needed no JS changes to resize correctly**:
+`setupPianoroll()`'s existing `ResizeObserver` (device-pixel-content-box)
+already re-derives `canvas.width`/`canvas.height` and calls
+`redrawPianorollStatic()` whenever the canvas's rendered box changes for
+*any* reason — it has no knowledge of *why* the box changed. Replacing
+`.pianoroll-card`'s fixed `height: 380px` with `height: auto; min-height: 0`
+inside a `minmax(0, 1fr)` grid row lets the browser's own layout pass
+resize the box, and the existing observer callback does the rest. The
+horizontal zoom (`canvas.style.inlineSize = "N%"`, relative to the
+scrolling container's width) needed no change for the same reason: it was
+already expressed relative to its container, not an absolute pixel value.
+
+**Why the track table gets a role skeleton in the static HTML rather than
+JS-added roles alone**: the DAW layout turns `<table class="track-table">`
+into `display: block` (and `<tr>` into `display: grid`, for the per-track
+"channel strip" — name/channel/source on one line, instrument/volume on
+the next) so it can lay out as the compact strip a DAW's track header
+column uses. The two rows deliberately don't share one column split: a
+`grid-template-areas` block requires every row to agree on the same column
+boundaries, but name/channel/source (3 fields) and instrument/volume
+(2 fields, where volume alone needs roughly the combined width of
+channel+source to fit its mute/solo/slider/percentage cluster) want
+different splits. `body.is-fullscreen .track-row` instead defines 12 equal
+`fr` tracks and each `<td>` (matched by `nth-child` position) gets its own
+explicit `grid-column`/`grid-row` span — name/instrument each take columns
+1–7, channel/source share columns 8–12 on row 1, and volume takes columns
+8–12 on row 2 alone. `display: block/grid` strips a table's built-in
+accessibility semantics, so `index.html` carries a static
+`role="table"`/`role="rowgroup"`/`role="row"`/`role="columnheader"`
+skeleton on the parts that never change (the `<thead>` and its one row),
+and `buildTrackRow()` (`app.js`) sets `role="row"`/`role="cell"` on each
+generated `<tr>`/`<td>` right before returning it, since those rows don't
+exist in the static markup. These roles are inert in the normal (non-
+fullscreen) layout — a real `<table>` already conveys the same semantics
+natively — so this costs nothing outside `body.is-fullscreen`.
+
+**Why Escape uses its own narrow keydown guard instead of reusing
+`isPlaybackShortcutBlocked()`**: that existing helper also excludes
+`BUTTON`/`AUDIO` targets, which is correct for Space (a focused button's
+native behavior *is* to activate on Space, so the global playback shortcut
+must yield to it) but wrong for Escape — a keyboard-focused button (e.g.
+the fullscreen toggle itself, right after being activated via Enter/Space)
+has no native Escape behavior to preserve, and blocking Escape there would
+make the fullscreen toggle temporarily un-exitable from the keyboard. The
+dedicated guard in `setupFullscreenLayout()` only defers to
+`isContentEditable`/`INPUT`/`TEXTAREA`/`SELECT` — the actual text-entry and
+native-dropdown cases where Escape already has a browser-native meaning to
+protect.
+
+**Why entering fullscreen force-closes `#upload-card`'s `<details>` from
+JS instead of a CSS rule**: `<details open>` is native, per-element browser
+state that CSS cannot override (there is no `details[open] { open: false }`
+declaration) — only setting the DOM `.open` property does. The card is
+collapsed once, on entry, so the compact left column starts with just its
+`<summary>` (file name + a chevron) visible; it is never force-reopened on
+exit, matching the existing pattern elsewhere in this app of only ever
+nudging state one direction from a user action.
+
+**Left column width and the collapsed `#upload-card` heading**: the left
+column's width (`.app-shell`'s first `grid-template-columns` track) is
+`minmax(0, clamp(360px, 36vw, 640px))` — wide enough that the two-row
+channel strip (see above) has real room for the instrument `<select>` and
+the full volume control, rather than the initial narrower `clamp(300px,
+26vw, 460px)` this shipped with, which was proportioned for the original
+3-row strip. `#tracks-card .card-heading` and `#upload-card`'s collapsed
+`<summary class="card-heading">` share one compaction rule
+(`body.is-fullscreen #tracks-card .card-heading, body.is-fullscreen
+#upload-card > summary.card-heading { ... }`): both drop `.step-number` and
+the description `<p>`, leaving only a small-caps `<h2>` label — collapsing
+`#upload-card`'s `<details>` on entry (previous paragraph) is only worth
+doing if its visible `<summary>` is actually this compact; leaving the step
+number and full description on the summary line would have made the
+"collapse" pointless, since that content is exactly as tall as a couple of
+rows in the track list.
+
+**Why the left column only carries `#upload-card` and `#tracks-card`, and
+the download/variation controls moved to the bottom of the right column**:
+the initial layout put `.download-toolbar`/`.variation-panel` (both
+`#audition-card` children promoted by `display: contents`, same as every
+other row described above) at the bottom of the *left* column so
+`#tracks-card` only got the grid's single flexible row (`grid-row: 3`) to
+itself. Moving both to the right column (`grid-row: 5`/`6`, after
+`#pianoroll-status`) freed every row below `#upload-card` for
+`#tracks-card` alone: `body.is-fullscreen .app-shell > #tracks-card {
+grid-row: 2 / 7; }` now spans every remaining row, including the flexible
+`minmax(0, 1fr)` track — so the panel's own box (not just its `.table-scroll`
+content) stretches to the bottom of the screen regardless of how many
+tracks are loaded. A short track list therefore shows blank space *inside*
+the panel below the last row rather than the panel itself stopping short;
+this was confirmed by measuring `#tracks-card`'s `getBoundingClientRect()`
+against `.app-shell`'s own bottom edge (both landed within the shell's own
+12px padding) rather than trusting a screenshot at a glance, since the
+panel's dark background makes unused space visually indistinguishable from
+"the box ended here." The right column's row count grew from 4 to 6
+(`.soundfont-field`/`.audition-toolbar`/`.pianoroll-card`/
+`#pianoroll-status`/`.download-toolbar`/`.variation-panel`, one row each);
+`#pianoroll-status` no longer needs the `grid-row: 4 / span 2` hack it had
+when it was the last item in its column, since `.download-toolbar`/
+`.variation-panel` now occupy the rows after it directly.
+
+**Why the SoundFont field sits between the piano-roll status line and the
+download toolbar, not at the top of the right column**: the transport
+(`.audition-toolbar`) now occupies `grid-row: 1` and the piano roll
+`grid-row: 2` — the flexible `minmax(0, 1fr)` track — so the DAW's
+play/pause/speed/pitch controls sit directly above the timeline the way a
+real DAW's transport bar does, and the SoundFont picker (a setting changed
+far less often than playback controls) moved down next to the other
+"apply/export" controls (`#pianoroll-status` at `grid-row: 3`,
+`.soundfont-field` at `grid-row: 4`, `.download-toolbar` at `grid-row: 5`,
+`.variation-panel` at `grid-row: 6`).
+
+**Why the `max-width: 900px` fallback assigns every item an explicit
+`grid-row` instead of resetting to `grid-column/row: auto` (its original
+implementation)**: `#audition-card`'s children are promoted into
+`.app-shell`'s grid via `display: contents`, so their fallback stacking
+order without an explicit `grid-row` follows plain DOM order — which is
+fixed in `index.html` as SoundFont → transport → piano roll → status →
+download → variations, independent of whatever order the wide-screen rules
+place them in. Once the SoundFont field moved to `grid-row: 4` above (no
+longer matching its DOM position), letting the fallback fall back to DOM
+order would have put it back above the transport and piano roll on a narrow
+window — contradicting the very layout just chosen above 900px. The
+fallback keeps `.app-shell` as a `display: grid` (single `minmax(0, 1fr)`
+column, `grid-auto-rows: auto`) and gives every promoted child its own
+explicit `grid-row: 1` through `8` (upload card, track list, transport,
+piano roll, status, SoundFont, download, variations, in that order) so the
+narrow layout's stacking order always matches the wide layout's reading
+order, regardless of DOM position.
+
+**Why `#tracks-card` needs an explicit `height` inside that same media
+query, when the wide layout's `grid-row: 2 / 7` spanning a `minmax(0, 1fr)`
+track needed none**: giving `#tracks-card` (and every promoted item) a bare
+`grid-row: N` inside a `grid-auto-rows: auto` track relies on the grid
+auto-sizing that row from the item's own content size, using the default
+`align-self: stretch`. `#tracks-card` is itself `display: flex;
+flex-direction: column; min-height: 0; overflow: hidden`, and its child
+`.table-scroll` is `flex: 1 1 auto; min-height: 0; overflow-y: auto` — a
+flex item with `overflow` other than `visible` resolves its automatic
+minimum size to `0` rather than its content size (the same rule
+`min-height: 0` exists to opt into elsewhere in this stylesheet). Chained
+through an `auto`-sized grid track needing a content-based measurement,
+this collapsed `#tracks-card` to roughly its own heading's height (~52px),
+hiding the sort chips and every track row — caught by measuring
+`getBoundingClientRect()` directly rather than trusting a screenshot, since
+the card's own dark background made the collapsed box visually
+indistinguishable from a correctly-sized-but-empty one at a glance. The
+wide layout never hit this because `minmax(0, 1fr)` is a *definite* track
+size once the grid resolves available space, so the stretched item receives
+a concrete height up front with no content-dependent measurement pass to
+collapse. `body.is-fullscreen #tracks-card { height: min(60vh, 520px); }`
+inside the same media query sidesteps the auto-sizing pass entirely by
+giving the item a height that doesn't depend on its own content, matching
+why `.pianoroll-card` already needed the sibling `height: 320px` override
+in this same block.
+
+Verified against a live, non-mocked `create_app()` server
+(`.venv/bin/miditrack --no-browser`) with a synthetic 6-track/9-second MIDI
+fixture, driven through Chrome DevTools: entering fullscreen produced the
+left channel-strip column (sticky sort-chip header, `.table-scroll`
+scrolling independently of the page) and the right SoundFont/transport/
+piano-roll column; the piano-roll `<canvas>`'s device-pixel backing store
+grew to match its new, taller box; starting playback, then toggling
+fullscreen and pressing Escape, left `#player-b` continuously playing
+throughout (confirmed via `currentTime` sampled before/after both
+transitions) — the audio elements are never touched by this feature: the
+crossfade/A-B player machinery in "Why an A/B `<audio>` pair..." above is
+completely orthogonal to it. Resizing to 800px confirmed the `max-width:
+900px` fallback returns to a single scrolling column (via `.app-shell`'s
+own `overflow-y: auto`, not the outer document) in the explicit
+upload/tracks/transport/piano-roll/status/SoundFont/download/variations
+order described above — matching the wide layout's reading order rather
+than DOM order — and that `#tracks-card` renders its full track list
+(sort chips, every row) at its explicit `min(60vh, 520px)` height with its
+own internal scroll, rather than the collapsed, content-less box the first
+version of this media query produced.
+
+**Two bugs reported after the layout above shipped, both hand-tested rather
+than caught by the automated suite (neither has a Python-side regression to
+guard, since both are pure `app.css` layout defects):**
+
+First, the channel strip's row-1 `source`/`ch` column split (`10 / 13` and
+`8 / 10` in the original 12-column proportions — 25%/17% of the row) was
+sized against `"SoundFont"`, the short static label most tracks show. A
+track with `availableSources.length > 1` (VGM/NSF hardware selection, SPC's
+game-SoundFont choice) instead renders a real `<select class="source-select">`
+whose longer option text — `"原曲の音源（推奨）"` — doesn't fit 25% of the
+card width, and a `<select>` clips overflowing text raw, with no `…`, unlike
+`.track-name-text`'s existing `text-overflow: ellipsis`. This wasn't caught
+by the original verification because the synthetic test fixture had no
+dual-source tracks, only the single-source `"SoundFont"` static-text branch.
+Column proportions moved from name/ch/source = 58%/17%/25% to 42%/8%/50% (ch
+only ever needs 1-2 digits, so it gives up the most room), and
+`.program-select`/`.source-select` both gained `overflow: hidden;
+text-overflow: ellipsis; white-space: nowrap;` in `body.is-fullscreen` as a
+defensive fallback for whatever width remains too narrow regardless (Chrome
+and Safari both honor `text-overflow: ellipsis` on `<select>`'s displayed
+value, not just plain text elements).
+
+Second, expanding `#upload-card`'s `<details>` (reopening it by clicking its
+now-compact `<summary>`, since nothing prevents that) pushed the piano roll
+and transport controls down the page. `#upload-card` (`grid-row: 1`, left
+column) and `.audition-toolbar` (`grid-row: 1`, right column) share one grid
+row, and a CSS grid row's height is shared across every column — the
+open `<details>`'s drop-zone/convert-options content (several hundred px)
+inflated row 1's auto height for the *whole grid*, shoving row 2 (the piano
+roll, on its `minmax(0, 1fr)` track) and every row after it down by that
+same amount in both columns, even though the right column's content has no
+relationship to the left column's upload state.
+
+The first fix attempt gave `#upload-card` a `max-height` + `overflow-y:
+auto`, on the theory that capping the box would stop it from inflating row
+1. That was wrong, and shipped without being measured precisely enough to
+notice: `max-height` only stops the box from growing *past* the cap — it
+does nothing to keep an *auto-sized* grid track from growing to fit the
+box's height in the first place, for any height up to that cap. A
+`getBoundingClientRect()` comparison before/after opening the card (not
+just a screenshot, which had made the shift look smaller than it was) showed
+the piano roll's `top` moving from `192` to `406.5` merely from the card's
+natural (uncapped, well under the old 520px max-height) open height of
+~295px — confirming row 1 was still inflating to match it. The actual fix
+removes `#upload-card` from the grid's row-sizing calculation entirely:
+`position: absolute` on a grid item still lets it use its assigned
+`grid-column`/`grid-row` as its containing block (a normal CSS Grid
+positioning feature — the box is positioned and sized against that grid
+area's bounds), but an absolutely positioned box no longer contributes to
+that track's auto-sizing pass at all, by spec. `body.is-fullscreen
+.app-shell > #upload-card` is now `position: absolute; top: 0; left: 0;
+width: 100%;` inside `grid-column: 1; grid-row: 1`, with `.app-shell`
+gaining `position: relative` (required for the grid-area containing block to
+apply) and row 1's track changed from bare `auto` to `minmax(80px, auto)` —
+80px because that's the card's own measured collapsed height (`padding:
+24px` top/bottom around the compacted single-line `<summary>`), so the
+right column's `.audition-toolbar` (58px) still has just enough row height
+not to look cramped even though it's now the row's only sizing input. Opening
+the card now overlays it (`z-index: 5`, a drop shadow to read as "floating")
+on top of `#tracks-card` — which starts at row 2 immediately below the fixed
+80px row 1 either way — instead of displacing anything: confirmed by
+comparing `.pianoroll-card`/`.audition-toolbar`/`#tracks-card`
+`getBoundingClientRect()` before and after opening, all three identical
+(`top`/`height` unchanged) to the pixel.
+
+Both were verified by directly mutating `state.session.tracks[]` through
+`evaluate_script` (setting `availableSources`/`source`/`sourceSuggested` on
+the *correct* track — the session's `tracks[0]` is the always-hidden,
+note-less "Conductor"/tempo track in this fixture, not the first visible
+row, which cost one failed check before finding the actual note-bearing
+track by name — reproducing a VGM-style dual-source track without needing a
+real `.vgm` fixture, then `await`-ing the page's own `renderTrackList()`,
+itself `async` and silently a no-op if awaited incorrectly) and by toggling
+`#upload-card.open` via a real click on its `<summary>` (not just setting
+`.open` from script, to exercise the same code path a user's click does) —
+both confirmed against a live, non-mocked `create_app()` server through
+Chrome DevTools: the `原曲の音源（推奨）` label renders in full with the new
+column split, and opening `#upload-card` now leaves the transport bar,
+piano roll, and track list at their exact original screen position.
+
+**Channel-strip row split changed from name/ch/source + instrument/volume to
+name/ch/volume + source/instrument**, at the user's request, so row 1 groups
+a track's identity and level controls (name, channel, mute, solo, the volume
+slider) and row 2 groups its sound-source controls (the source dropdown, the
+instrument dropdown with its pin/favorite and mid-song-change-warning
+buttons). This needed no HTML/JS change — `buildTrackRow()`'s `<td>` order is
+unchanged (name, channel, source, instrument, volume); only each `td`'s
+`nth-child`-matched `grid-column`/`grid-row` in `body.is-fullscreen
+.track-row` moved, reusing the same 42%/8%/50% row-1 column split from the
+`source`-select fix above (now applied to name/ch/volume instead of
+name/ch/source) and giving row 2's source/instrument an even 50/50 split
+(source still needs the room the `原曲の音源（推奨）` fix above established;
+instrument carries the GM program name plus the pin and ⚠ buttons inline).
+
+**Two more bugs found by hand-testing the `position: absolute` overlay fix
+above and the new row split, both fixed the same day:**
+
+First, the overlay itself was wrong: opening `#upload-card` covered the
+*entire* right column — the transport bar, piano roll, and everything below
+it — not just the left column as intended.
+`getBoundingClientRect()` showed `right: 1440` (the full viewport width) on
+a 1440px-wide window, confirming the box's containing block was the whole
+grid, not column 1's track. The cause is a specific, easy-to-miss CSS Grid
+rule for absolutely positioned grid items (CSS Grid Level 1 §10.1): when
+`grid-column`/`grid-row` is written with only a start line (`grid-column:
+1`, which resolves to `grid-column-start: 1; grid-column-end: auto`), the
+`auto` end is **not** resolved through the normal auto-placement algorithm
+for an absolutely positioned item — auto-placement doesn't apply to abspos
+items at all — instead an `auto` end value falls back to the grid
+container's own far edge. So `grid-column: 1` on an in-flow item means
+"occupy exactly track 1," but the *same declaration* on a `position:
+absolute` item means "start at track 1's start line and extend to the
+container's right edge." `grid-row: 1` had the identical bug in the other
+axis (silently didn't matter at 1440px width because the card's own content
+height happened to stay within row 1's neighborhood, but would have made
+the overlay span the entire page height in the `max-width: 900px`
+single-column fallback, which reassigns `#upload-card` its own `grid-row:
+1` too). Both instances — the base rule and the fallback's — now write
+explicit two-sided spans (`grid-column: 1 / 2; grid-row: 1 / 2;`) so the
+grid area resolves to exactly one track in each axis, matching the in-flow
+behavior the original (wrong) code assumed applied uniformly.
+
+Second, `.source-select`/the plain-text source label sat left-aligned inside
+its row-2 grid cell with a visually dead gap trailing it before the
+instrument dropdown started. The cell (`<td>` at `nth-child(3)`, the actual
+grid item) was correctly stretched to its assigned 50% column width, but
+the `<select>` (or bare text node, for a single-source track) *inside* that
+`<td>` is an ordinary shrink-to-fit inline-level child, not itself a grid
+item — grid's `justify-self: stretch` only stretches the item placed
+directly in the grid, so it had no effect on content one level further in,
+and the box just sat at its own short content width. `body.is-fullscreen
+.track-row td:nth-child(3)` gained `display: flex; justify-content:
+flex-end; align-items: center;`, turning the cell itself into a flex
+container so its child (select or text) right-aligns flush against the
+instrument column instead of floating at the left with trailing blank
+space — visually clustering the two dropdowns together rather than leaving
+one adrift. The existing `min-width: 0` on `.source-select` continues to do
+its job for the opposite (too-narrow) case, now as a flex-item minimum
+instead of a grid-item one — the same "resolves to min-content unless
+overridden" rule applies to both contexts.
+
+Both were verified against a live, non-mocked `create_app()` server: opening
+`#upload-card` at 1440px width now measures `right: 530` against a
+`.audition-toolbar` starting at `left: 542` (no overlap, confirmed by
+`getBoundingClientRect()` on both, not just a screenshot), and every
+source cell — `<select>` and plain-text alike — sits flush against its
+row's instrument column with no intervening gap.
+
+**Two follow-up polish requests on the same channel strip, both handled by
+one container-level rule and one fixed width, no per-cell special-casing:**
+
+The ch number (row 1) and the `パーカッション（ch10）のため変更できません`
+lock-reason text (row 2, for a non-editable percussion track) both sat
+visibly above-center relative to their row's other controls (the mute/solo/
+volume cluster in row 1, the source dropdown in row 2). The cause was the
+grid's default `align-items: stretch`: every `<td>` (grid item) stretched to
+fill its full row height, and whichever cell's own content didn't already
+center itself internally (the ch `<td>` has nothing but a bare `10` text
+node; the lock-reason `<span>` is a plain block) just flowed to the *top* of
+that stretched box — while name/volume/source *did* look centered only
+because their own inner content happens to establish its own flex
+`align-items: center` one level down. Rather than special-casing each
+column, `align-items: center` moved onto `.track-row` itself (the grid
+container): every `<td>` now sizes to its own natural content height and
+centers within the row, matching for every column at once — confirmed by
+comparing every cell's `centerY` in a percussion row (`599`/`599`/`599` for
+name/ch/volume, `634`/`634` for source/instrument), all pixel-identical.
+`td:nth-child(2)`'s now-redundant `align-self: start` (the original,
+wrong-for-this-purpose top-alignment) was removed.
+
+Separately, `.source-select`'s width still came from its own text content
+(`"SoundFont"` vs. the much longer `"原曲の音源（推奨）"`), so even
+right-aligned (previous fix), two tracks' dropdowns landed at visibly
+different sizes — a column of controls that doesn't line up reads as
+sloppier than the single-track case the earlier fix targeted.
+`body.is-fullscreen .source-select` gained a fixed `width: 12.5rem` (`flex:
+0 1 12.5rem`, so `min-width: 0` — already set — still lets it shrink below
+that at the left column's narrowest widths rather than overflow), sized
+with room for the longest label. Every dropdown now measures the same
+`200px` regardless of which label it holds, confirmed across two tracks
+with different source text.
+
+**The gap between the transport toolbar and the piano roll was noticeably
+wider in fullscreen (measured `50px`) than in normal mode (measured
+`16px`), and the fix went through two iterations before both sides of the
+toolbar (above *and* below it) were tight.** Normal mode's `16px` comes
+entirely from `.pianoroll-card`'s own `margin-top: 16px` — in that layout
+`#audition-card` is an ordinary block, so `.app-shell`'s grid `gap` never
+applies between `.audition-toolbar` and `.pianoroll-card` at all (they're
+not siblings of `.app-shell`; only `#audition-card` itself is). Fullscreen's
+`50px` had three components stacking: `.audition-toolbar`'s `align-self:
+start` left it sitting flush against the top of its row while the row
+itself was `minmax(80px, auto)` — sized for the collapsed `#upload-card`
+overlay's height, not the 58px-tall toolbar — leaving 22px of dead space
+below the toolbar before the row even ended; then `.app-shell`'s `gap: 12px`
+(which *does* apply here, since `display: contents` promotes both elements
+to direct grid children); then the same `margin-top: 16px` on
+`.pianoroll-card` that normal mode relies on, now stacking on top of both of
+those instead of being the only contributor.
+
+The first fix flipped `.audition-toolbar`'s `align-self` from `start` to
+`end` (pushing the row's slack space above the toolbar, next to the header,
+instead of below it) and zeroed `.pianoroll-card`'s redundant `margin-top`.
+That closed the gap *below* the toolbar to a clean `12px`, but — pointed out
+immediately afterward — it did nothing for the gap *above* it, which was now
+the same `22px` of slack that used to sit below, just relocated. The row
+still had to be at least 80px for a real reason (`#upload-card`'s collapsed
+height), and the toolbar only ever needed 58px of it — no single-axis
+`align-self` choice could give both edges of the toolbar a tight fit
+simultaneously against a row forced taller than its own content by an
+unrelated column's requirement.
+
+**The real fix decouples the two columns' row-1 sizing entirely**, since a
+shared CSS Grid row's height applies to every column whether or not that
+column actually needs the extra space. `grid-template-rows` gained a second,
+small, fixed row (`auto 12px minmax(0, 1fr) auto auto auto auto` — a bare
+`12px` track inserted right after row 1, shifting every subsequent row
+number by one) used only as a buffer: `#upload-card` spans `grid-row: 1 / 3`
+(rows 1+2 together, ≈ its own 80px collapsed height, though since it's
+`position: absolute` this span only matters for its containing-block
+semantics, not its actual rendered size) and `#tracks-card` starts at row 3
+— clearing the collapsed overlay by construction, the same guarantee the old
+`minmax(80px, auto)` row 1 provided. Row 1 itself, now freed of that
+constraint, is bare `auto` — sized purely by whatever's actually in it,
+which for column 2 is just the 58px toolbar, so `.audition-toolbar` (back to
+`align-self: center`, though with row 1 now ≈ its own height the alignment
+barely matters) sits with no slack on either side. The trick that keeps
+column 2 from *also* paying for the 12px buffer row: `.pianoroll-card`
+spans `grid-row: 2 / 4` — rows 2 and 3 as one continuous item — rather than
+being confined to row 3 alone. Grid `gap` only appears *between* separate
+items across a row boundary; a single item spanning across an otherwise-empty
+row absorbs that row into its own box for free, so the piano roll's top edge
+sits exactly `12px` (one `gap`) below the toolbar, with the buffer row
+contributing zero extra visual space to that column. Every row number for
+`#pianoroll-status`/`.soundfont-field`/`.download-toolbar`/`.variation-panel`
+shifted by one to match (4/5/6/7). Verified live at 1440px width: `12px`
+above the toolbar (matching `.app-shell`'s own padding, i.e. no extra slack
+at all) and `12px` below it before the piano roll begins; `#upload-card`'s
+collapsed height (`80px`) still ends `14px` before `#tracks-card` begins
+(`upload.bottom − tracksCard.top = -14`, confirming no overlap); and
+opening `#upload-card` still measured `right: 530` against the toolbar's
+`left: 542` (no encroachment into the right column, unaffected by any of
+this row renumbering). The `max-width: 900px` fallback needed no change —
+it defines its own independent `grid-row: 1` through `8` for every item and
+was never affected by the wide-layout row count.
+
+**Compact channel-strip row height, requested once the two-row layout
+itself was settled**: with more tracks needing to be visible at once being
+the whole point of the fullscreen mode, a 89px-per-track row (measured)
+meant only ~10 tracks fit in a typical viewport before `.table-scroll`
+had to scroll. Every fullscreen override here is additive/scoped under
+`body.is-fullscreen` — none of the touched classes' *base* rules changed,
+so the normal (non-fullscreen) wizard layout's row height is untouched
+(verified: `.mute-button` still measures `32×32` there). Three things drove
+the 89px figure, all reduced together (shrinking only one leaves the row
+governed by whichever is still tall): `.track-row`'s own `padding: 10px 4px`
+→ `6px 4px` and `gap: 4px 8px` → `3px 8px`; the shared
+`.pin-button`/`.mute-button`/`.solo-button`/`.track-warning-button` square
+size `32px` → `26px` (with `font-size` trimmed to `13px` to match, since
+these are icon/glyph buttons whose size is mostly the box, not text) and
+`.program-select`/`.source-select`'s padding `6px 8px` → `4px 6px`; and
+`.track-name`'s `min-height: 32px` → `26px` plus `.track-color-bar`'s
+`height: 28px` → `22px` (needed because row 1 is governed by whichever of
+the name div or the volume/mute/solo cluster is taller — shrinking only the
+buttons would have left `.track-name`'s own `min-height: 32px` still
+forcing the row back up to 32px). `.track-volume-control`'s
+`grid-template-columns` first two `32px` tracks (reserved for the mute/solo
+button cells) moved to `26px` to match. Net result: `69px` per row
+(measured), a ~22% reduction, without needing to touch font sizes for
+actual readable text (track names, GM program labels) — only icon-button
+boxes and control padding. Verified against tracks with a dual-source
+`<select>` (VGM/NSF `原曲の音源（推奨）`/SoundFont) and a mid-song
+Program-Change ⚠ warning button together on one row: both remain fully
+legible and clickable at the smaller size, with no clipping or overlap.
+
 ## Added: dark mode (`prefers-color-scheme`, no manual toggle)
 
 `index.html`'s `<meta name="color-scheme">` was `light` only and `app.css`

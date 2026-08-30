@@ -970,6 +970,11 @@ async function buildTrackRow(track, rowState = state) {
     volumeCell.textContent = "—";
   }
   row.appendChild(volumeCell);
+  // 全画面レイアウトではtrをgrid化して3段のチャンネルストリップへ再配置する
+  // （app.css の body.is-fullscreen .track-row）ため、display:gridで失われる
+  // テーブルのセマンティクスをここで明示的に補う。
+  row.setAttribute("role", "row");
+  for (const cell of row.children) cell.setAttribute("role", "cell");
   return row;
 }
 
@@ -2659,6 +2664,37 @@ async function handleReset() {
   }
 }
 
+// 全画面（DAW風）レイアウトへの切り替え。body.is-fullscreenの付け外しだけを行い、
+// レイアウト自体はapp.cssのdisplay:contents/grid配置に任せる。再生・レンダリング・
+// ピアノロール描画のロジックには一切触れない — ピアノロールのcanvasはsetupPianoroll()の
+// ResizeObserverが高さの変化を検知して自動的に再描画するため、ここでの追加処理は不要。
+function setupFullscreenLayout() {
+  const toggle = $("#fullscreen-toggle");
+  const setFullscreen = (isFullscreen) => {
+    document.body.classList.toggle("is-fullscreen", isFullscreen);
+    toggle.setAttribute("aria-pressed", String(isFullscreen));
+    // 読み込みカードは全画面では折りたたんで小さく表示するため、CSSでは開閉を
+    // 制御できない<details>のopenをここで明示的に閉じる。
+    if (isFullscreen) $("#upload-card").open = false;
+  };
+  toggle.addEventListener("click", () => {
+    setFullscreen(!document.body.classList.contains("is-fullscreen"));
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!document.body.classList.contains("is-fullscreen")) return;
+    // isPlaybackShortcutBlocked()はBUTTON/AUDIOも除外するが、それはSpaceが
+    // それらの既定動作（クリック等）と衝突するため。EscapeにBUTTON上での
+    // 既定動作は無く、キーボードでフォーカスしたボタン（例えばこの全画面
+    // ボタン自身）からもEscapeで抜けられるべきなので、ここではテキスト編集
+    // 系（input/textarea/select/contenteditable）だけを素通しの対象にする。
+    const target = event.target;
+    if (target?.isContentEditable) return;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName)) return;
+    setFullscreen(false);
+  });
+}
+
 function setupDropZone() {
   const dropZone = $("#drop-zone");
   const input = $("#midi-input");
@@ -2683,6 +2719,7 @@ async function init() {
     return;
   }
   setupDropZone();
+  setupFullscreenLayout();
   setupTrackSorting();
   $("#hide-empty-tracks").addEventListener("change", (event) => {
     state.hideEmptyTracks = event.target.checked;

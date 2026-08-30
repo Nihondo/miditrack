@@ -18,6 +18,10 @@
         <h1>miditrack GM Instrument Assigner</h1>
       </div>
       <p class="privacy-note">MIDIはこのMacの中だけで処理されます。</p>
+      <button type="button" class="button ghost small" id="fullscreen-toggle" aria-pressed="false">
+        <span class="fullscreen-label-enter">全画面</span>
+        <span class="fullscreen-label-exit">全画面を終了</span>
+      </button>
     </div>
   </header>
 
@@ -74,18 +78,18 @@
         <label for="hide-empty-tracks">ノート数が0のトラックを非表示にする</label>
       </div>
       <div class="table-scroll">
-        <table class="track-table">
+        <table class="track-table" role="table">
           <caption class="visually-hidden">MIDIトラック一覧。列見出しで表示順を変更できます。</caption>
-          <thead>
-            <tr>
-              <th scope="col" data-sort-key="index" aria-sort="ascending"><button type="button" class="sort-button" data-sort-key="index">トラック<span class="sort-indicator" aria-hidden="true">▲</span></button></th>
-              <th scope="col" data-sort-key="channel"><button type="button" class="sort-button" data-sort-key="channel">ch<span class="sort-indicator" aria-hidden="true"></span></button></th>
-              <th scope="col" data-sort-key="source"><button type="button" class="sort-button" data-sort-key="source">音源<span class="sort-indicator" aria-hidden="true"></span></button></th>
-              <th scope="col" data-sort-key="instrument"><button type="button" class="sort-button" data-sort-key="instrument">楽器<span class="sort-indicator" aria-hidden="true"></span></button></th>
-              <th scope="col" data-sort-key="volume"><button type="button" class="sort-button" data-sort-key="volume">音量<span class="sort-indicator" aria-hidden="true"></span></button></th>
+          <thead role="rowgroup">
+            <tr role="row">
+              <th scope="col" role="columnheader" data-sort-key="index" aria-sort="ascending"><button type="button" class="sort-button" data-sort-key="index">トラック<span class="sort-indicator" aria-hidden="true">▲</span></button></th>
+              <th scope="col" role="columnheader" data-sort-key="channel"><button type="button" class="sort-button" data-sort-key="channel">ch<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" role="columnheader" data-sort-key="source"><button type="button" class="sort-button" data-sort-key="source">音源<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" role="columnheader" data-sort-key="instrument"><button type="button" class="sort-button" data-sort-key="instrument">楽器<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" role="columnheader" data-sort-key="volume"><button type="button" class="sort-button" data-sort-key="volume">音量<span class="sort-indicator" aria-hidden="true"></span></button></th>
             </tr>
           </thead>
-          <tbody id="track-list"></tbody>
+          <tbody id="track-list" role="rowgroup"></tbody>
         </table>
       </div>
       <p class="field-help" id="tracks-empty">MIDIを読み込むとここにトラック一覧が表示されます。</p>
