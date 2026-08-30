@@ -1995,7 +1995,6 @@ function renderConvertPanel(source) {
   }
 
   if (source.songs && source.songs.length > 0) {
-    songGroup.hidden = false;
     for (const song of source.songs) {
       const option = document.createElement("option");
       option.value = String(song.index);
@@ -2008,6 +2007,9 @@ function renderConvertPanel(source) {
     if (source.songs.some((song) => String(song.index) === previousSongIndex)) {
       songSelect.value = previousSongIndex;
     }
+    // 選べる曲が1件だけなら選択UIは不要。ただし曲番号は0とは限らないため、
+    // gatherConvertOptions()では非表示中でもこの<option>の値を送る。
+    songGroup.hidden = source.songs.length <= 1;
     playlistNote.hidden = !source.hasPlaylist;
   } else {
     songGroup.hidden = true;
@@ -2041,7 +2043,7 @@ async function handleSelectFile() {
 
 function gatherConvertOptions() {
   const options = {};
-  if (!$("#convert-song-group").hidden) {
+  if ($("#convert-song-select").options.length > 0) {
     options.songIndex = Number($("#convert-song-select").value);
   }
   for (const entry of state.convertFields) {

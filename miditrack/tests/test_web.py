@@ -263,6 +263,14 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("@keyframes render-spinner-rotate", css)
         self.assertNotIn("prefers-reduced-motion: reduce", css)
 
+    def test_song_picker_is_shown_only_when_multiple_candidates_exist(self) -> None:
+        """単一候補は隠しつつ、その曲番号を変換時に送ることを確認する。"""
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        self.assertIn("songGroup.hidden = source.songs.length <= 1;", javascript)
+        self.assertIn('$("#convert-song-select").options.length > 0', javascript)
+        self.assertIn("options.songIndex = Number($(\"#convert-song-select\").value);", javascript)
+
     def test_pointer_selection_controls_release_focus_without_harming_keyboard_use(self) -> None:
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
         selector_block = javascript.split(
