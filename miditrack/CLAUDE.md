@@ -830,6 +830,131 @@ game-SoundFont half and the GM half are always rendered from
 already-transformed MIDI, and only the real-audio stems need the separate
 `pitch_shift.sh` pass described above.
 
+## Added: per-track WAV export (「トラックごとに出力」)
+
+`GET /api/download/wav` only ever returns the final mixed WAV — useful for
+listening, but a user bringing the result into a DAW as separate stems had
+no way to get there short of re-rendering each instrument by hand outside
+`miditrack`. `POST /api/tracks/export` / `GET /api/download/tracks` fill
+that gap: they split the same rendering machinery `ensure_render()` already
+uses (`_plan_render_jobs()`'s fluidsynth split, `_plan_chip_hardware()`'s
+VGM/NSF hardware channels, the standalone `chip_stem_path`/`dac_stem_path`
+stems) into one WAV per track (or per logical group), instead of summing
+them into one file. The UI lives in the same `<details class="output-panel">`
+disclosure as the pre-existing "バリエーションをまとめて生成" — renamed from
+`.variation-panel` to `.output-panel` and given a second
+`<section class="output-section">` — since both features are "generate
+several derived audio files from the current session and zip them," not two
+unrelated concerns.
+
+**The core invariant this endpoint is built to satisfy**: summing every WAV
+in the exported ZIP (`ffmpeg amix=normalize=0`) must reproduce
+`GET /api/download/wav`'s output. This is why every gain that `mix.mix_wav()`
+would normally bake into one `-filter_complex` call gets baked into each
+standalone file individually instead, via the new `mix.apply_gain()` (a
+single-input special case of the same `volume=` filter `mix.mix_wav()`
+already uses — `mix_wav()` itself keeps its existing "2+ inputs" contract
+unchanged). Concretely:
+
+- Each fluidsynth-rendered track gets `mix.DRY_GAIN` (0.80) if the session
+  also has any real-audio contribution (a chip-hardware channel or a
+  `chip_stem_path`/`dac_stem_path` stem), or no gain at all (`1.0`, skipping
+  ffmpeg entirely) otherwise — the identical `has_stem` rule
+  `_render_applied_midi()` already uses for its own fluidsynth part(s).
+- Each VGM/NSF hardware chip channel gets whatever gain
+  `_plan_chip_hardware()` already computes for it (`mix.STEM_GAIN`, or a
+  volume-adjusted multiple of it) — see "Why per-track volume on VGM/NSF
+  `"game"` tracks re-renders only the channels whose volume actually
+  changed" above.
+- `chip_stem_path`/`dac_stem_path` (the non-per-track noise/DPCM/DAC stems)
+  each get `mix.STEM_GAIN` baked in and become one standalone
+  `{stem}_noise_orig.wav` / `{stem}_dac_orig.wav` file — the same gain the
+  real mix already gives them.
+
+Because a plain MIDI session (no chip hardware, no real-audio stem) always
+resolves every gain to `1.0`, `mix.apply_gain()`/`mix.mix_wav()` are never
+invoked for it — this endpoint gains no new `ffmpeg` dependency for the
+common case, matching the project's existing "don't add ffmpeg to the
+ordinary path" posture already established for `chipNoise`/`gameSoundfont`.
+
+**Why fluidsynth splitting happens per-track, not per-job**: `_plan_render_jobs()`
+splits `applied_path` into at most two MIDIs (game-derived-SoundFont side,
+GM side) because that's the coarsest split the final mix actually needs.
+This endpoint instead calls `midi.write_track_subset(applied_path, {index},
+...)` once per surviving track, reusing the exact same
+zero-tick-shift-preserving mechanism (see "Why `write_track_subset()` strips
+messages rather than deleting tracks" above) — a track not in `{index}` has
+its messages stripped, not the track itself deleted, so tempo/time-signature
+metadata anywhere in the file survives and every track's rendered duration
+still matches what a combined render would produce. `strip_bank_select` is
+decided the same way `_plan_render_jobs()` decides it for its GM-bound half:
+`True` whenever `game_soundfont_path` exists, so an SPC track's Bank Select
+CC0 (meaningful only inside the game-derived SF2's own bank layout) can't
+make fluidsynth silently keep the previous program when rendered against a
+generic GM SoundFont.
+
+**Why VGM/NSF hardware channels default to one-WAV-per-channel, with a
+`groupChipTracks` opt-in to combine them**: `_plan_chip_hardware()` gained a
+`per_track: bool = False` parameter. Its existing (`per_track=False`)
+behavior — group every default-volume channel into one emulation pass,
+render only volume-adjusted channels individually — stays exactly the
+optimization it always was, still used by `ensure_render()`/
+`POST /api/variations` and reused here when `groupChipTracks: true` (whose
+single-or-multi-input result is combined into one `{stem}_chiptracks_orig.wav`
+via `mix.mix_wav()`, or `mix.apply_gain()` when the plan already collapsed
+to one input). `per_track=True` instead renders every selected channel with
+its own singleton `_render_chip_targets([index], ...)` call, regardless of
+whether its volume was touched — full per-channel separation costs one
+complete VGM/NSF re-emulation pass per channel (the "全曲再エミュレーション"
+cost every response's `field-help` text mentions), which is only worth
+paying when the user actually wants separated stems, not for the ordinary
+audition/download path. Both branches still go through the existing
+`_chip_cache_key()`/LRU cache, so re-exporting after only changing
+`groupChipTracks` (or after a prior audition render already populated the
+cache with the same channel set) reuses cached WAVs instead of re-emulating.
+
+**Why excluded tracks are silent, not zero-length or missing entirely from
+the request**: a track with `note_count == 0`, or whose effective volume
+(`WebSession.volumes.get(index, track.source_volume_percent)` — the same
+expression `_apply_to()` uses) is `0`, is dropped before any rendering
+happens, rather than rendered and included as a silent WAV. Both cases
+would just be dead weight in the ZIP for a track the user has already
+muted or that never made any sound; the JSON response's `items[]` simply
+omits them. If *every* track ends up excluded this way (e.g., every track
+muted), the endpoint raises `WebValidationError` rather than returning an
+empty ZIP.
+
+**Why the ZIP suffix is `_midi` vs `_orig`, not the `soundfont`/`game`
+vocabulary used internally**: `_midi` means "this file came from rendering
+the (possibly reassigned) MIDI through a SoundFont," `_orig` means "this
+file is (or is derived from) the original game's own audio" — chosen to
+match how a user thinks about the choice, not the three different internal
+mechanisms that can produce a `"game"`-sourced track (SPC's BRR-derived
+SoundFont, VGM/NSF hardware re-emulation, and the non-per-track chip/DAC
+stems). All three get `_orig`; only a fluidsynth render against a generic
+GM SoundFont gets `_midi`. `_track_filename_label(name, index)` (`web.py`)
+is the dedicated normalizer for the track-name half of each filename — it
+deliberately does **not** reuse `sanitize_stem()`, because that function
+routes every input through `Path(...).stem`, which would truncate a track
+name like `"St.Trumpet"` at the first `.` (a real track name is not a
+filename with an extension to strip). It shares only the same
+"replace anything outside `[\w .()-]` with `_`, then strip leading/trailing
+space/dot" regex, and falls back to `Track{index}` for an empty or
+whitespace-only name. A same-named track pair naturally gets distinguished
+because `{stem}_{label}_{kind}.wav` includes the SoundFont/orig suffix and
+the exporting loop's own `unique_wav_name()` helper appends `_1`, `_2`, …
+on any remaining collision — the same pattern `_unique_upload_path()`
+already uses for upload filename collisions.
+
+**Why `track_export_zip_path` shares `variations_zip_path`'s exact
+invalidation lifecycle**: both are derivatives of the identical input set
+(assignments/volumes/track_sources/soundfont/speed/transpose), so every
+place that already invalidates one (`reset_midi_state()`,
+`invalidate_render()`, and `update_download_filename()` when the sanitized
+name actually changes) invalidates the other in the same call, for the
+same reasons documented under "Added: a user-editable download filename"
+below.
+
 ## Added: a user-editable download filename (`download_stem`)
 
 Before this feature, `GET /api/download`, `GET /api/download/wav`, and the
@@ -2840,8 +2965,68 @@ containing a `.wav` and a `.mid` per combination by default (with filenames
 encoding speed/transpose and the `.mid` verified via `mido` to carry the
 correctly scaled tempo and shifted note) — or only `.wav` files, with every
 `items[]` entry's `"mid"` field `null`, when `includeMidi: false` is
-passed — and is invalidated by a subsequent track change. A dedicated
-`TestWebAppChipStem` class (its own `create_app()`
+passed — and is invalidated by a subsequent track change.
+
+`TestWebApp` covers `POST /api/tracks/export`/`GET /api/download/tracks`
+(per-track WAV export) the same way it covers `/api/variations`: one WAV
+per track named `{stem}_{trackName}_{midi|orig}.wav`, exclusion of a muted
+or note-less track (and a `400` when every track ends up excluded),
+rejection of a non-`bool` `groupChipTracks`, the same custom-filename/
+invalidation-on-rename/invalidation-on-track-change trio `/api/variations`
+already has, that `track_export_work/` is cleaned up afterward, that the
+export never mutates the session's own `speed`/`transpose`, and that a
+track name containing a `.` (e.g. `"St.Trumpet"`) survives intact in the
+exported filename — the regression guard that `_track_filename_label()`
+does not route through `sanitize_stem()`'s `Path(...).stem` truncation.
+`TestTrackFilenameLabel` unit-tests that normalizer directly (dot
+preservation, unsafe-character replacement, empty/whitespace-only name
+falling back to `Track{index}`). `TestWebAppGameSoundfont` gained coverage
+for the SPC branch (both tracks `_orig` via the game-derived SoundFont
+before any assignment, split into `_midi`/`_orig` after `_assign_track0()`,
+with `mix_calls` confirmed empty since no stem is present to justify an
+`ffmpeg` gain call). `TestWebAppLibvgmTrackSource` gained the VGM
+hardware-channel coverage: the default (`groupChipTracks: false`) path
+renders the selected channel individually (one `libvgm_calls` entry) and
+emits `_orig`; `groupChipTracks: true` combines the same channel-selection
+plan into one `{stem}_chiptracks_orig.wav`; and muting the hardware channel
+excludes it from the ZIP without disabling its underlying
+`_plan_chip_hardware()` render (a muted channel's gain is `0`, but the
+plan itself is unaffected — only this endpoint's ZIP membership is). Both
+that class and `TestWebAppChipStem` (a new
+`test_track_export_noise_stem_gets_stem_gain_and_transform_sync`) inject a
+`gain_applier=<fake>` fixture (mirroring the pre-existing `mixer=<fake>`
+pattern) so `mix.apply_gain()`'s real `ffmpeg` invocation is never
+exercised by these tests; the chip-stem test additionally confirms the
+noise stem is pitch/speed-synced through the injected `pitch_shifter`
+before its `mix.STEM_GAIN` is baked in, matching `_render_applied_midi()`'s
+own `_synced_stem()` usage. `test_mix.py`'s `TestApplyGain` covers
+`mix.apply_gain()` directly (argv shape, the single `-i`/`-filter:a
+volume=...` construction, sample-rate pass-through, and the same
+`FileNotFoundError`/timeout/non-zero-exit/empty-output failure modes
+`TestMixWav` already covers for `mix_wav()`).
+
+Beyond the mocked unit tests, this feature was verified against a live,
+non-mocked `create_app()` server (`./miditrack.sh --no-browser`, real
+`fluidsynth`/`ffmpeg`) driven through a real browser: uploading a 2-track
+fixture and clicking "トラックごとにZIPでダウンロード" produced a real ZIP
+with two valid 44.1kHz stereo WAVs (`afinfo`-confirmed); summing them with
+a real `ffmpeg amix=normalize=0` reproduced `GET /api/download/wav`'s own
+output to within 0.04% RMS (`sqrt(mean squared difference)` against the
+signal's own RMS) — the practical confirmation of the "stems sum back to
+the final mix" invariant this feature is built around. The
+`#track-export-group-chip-field` checkbox's `hidden` toggle also surfaced
+an unrelated pre-existing-pattern bug during this verification: `.hidden`
+alone does not hide a `.convert-field.is-checkbox` element, because that
+class's own `display: flex` (two-class specificity) outranks the browser's
+default `[hidden] { display: none }` UA rule (one-attribute specificity) —
+the same reason `.convert-panel[hidden]`/`.playlist-note[hidden]`/
+`.pianoroll-empty[hidden]` overrides already exist elsewhere in `app.css`.
+`.convert-field.is-checkbox[hidden] { display: none; }` was added
+alongside them; any future conditionally-hidden element that also carries
+a `display`-setting class needs the same explicit `[hidden]` override, not
+just an `el.hidden = true` assignment.
+
+A dedicated `TestWebAppChipStem` class (its own `create_app()`
 with an injected `mixer=<fake>`, separate from the rest of `test_web.py`'s
 `TestWebApp`, which never injects one) covers the `chipNoise` mixing path:
 converting with `chipNoise: true` sets `hasChipStem` in the session

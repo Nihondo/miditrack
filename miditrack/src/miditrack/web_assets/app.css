@@ -559,6 +559,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
    ラベルと横並びにせず常に次の行へ折り返す（幅が狭いときに全員が
    縦一列に潰れて文字化けのように見えるのを防ぐ）。 */
 .convert-field.is-checkbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* .is-checkboxのdisplay:flexが[hidden]の既定display:noneに優先してしまうため、
+   個別に上書きする（#track-export-group-chip-fieldをJSのel.hidden=trueで
+   隠すため。.convert-panel[hidden]と同じ理由）。 */
+.convert-field.is-checkbox[hidden] { display: none; }
 .convert-field.is-checkbox label { margin-bottom: 0; }
 .convert-field.is-checkbox .field-help { flex-basis: 100%; }
 
@@ -590,7 +594,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 /* 編成プリセット・SoundFont設定は、他のサブパネル（.convert-panel/
-   .variation-panel）と同じ角丸矩形でまとめて囲み、トラック一覧との
+   .output-panel）と同じ角丸矩形でまとめて囲み、トラック一覧との
    境界を視覚的に示す。 */
 .settings-panel {
   margin-top: 12px;
@@ -1125,7 +1129,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .pianoroll-footer .field-help { margin: 0; }
 
-.variation-panel {
+.output-panel {
   margin-top: 16px;
   padding: 16px;
   background: var(--neutral-10);
@@ -1133,18 +1137,34 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-radius: 12px;
 }
 
-.variation-panel > summary {
+.output-panel > summary {
   color: var(--neutral-80);
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
 }
 
-.variation-panel > summary:hover { color: var(--brand-dark); }
-.variation-panel > summary:focus-visible { outline-offset: 4px; }
-.variation-content { margin-top: 14px; }
-.variation-panel .convert-options { margin-bottom: 4px; }
-.variation-panel .toolbar { margin: 12px 0 4px; }
+.output-panel > summary:hover { color: var(--brand-dark); }
+.output-panel > summary:focus-visible { outline-offset: 4px; }
+.output-content { margin-top: 14px; }
+.output-panel .convert-options { margin-bottom: 4px; }
+.output-panel .toolbar { margin: 12px 0 4px; }
+
+/* 「バリエーションをまとめて生成」「トラックごとに出力」の2セクションを
+   .output-content内で縦に並べる。2つ目以降は罫線+余白で区切り、
+   .output-panel > summaryと同じトーンの小見出し（h3）を持たせる。 */
+.output-section + .output-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--neutral-30);
+}
+
+.output-section-title {
+  margin: 0 0 10px;
+  color: var(--neutral-80);
+  font-size: 12px;
+  font-weight: 700;
+}
 .status-toast {
   position: fixed;
   right: 20px;
@@ -1255,7 +1275,7 @@ body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column
 body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 2; grid-row: 2 / 4; }
 body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 2; grid-row: 4; align-self: start; }
 body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 2; grid-row: 5; align-self: start; }
-body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 2; grid-row: 6; align-self: start; }
+body.is-fullscreen .app-shell > #audition-card > .output-panel { grid-column: 2; grid-row: 6; align-self: start; }
 
 body.is-fullscreen #audition-card { display: contents; }
 body.is-fullscreen #audition-card > .card-heading { display: none; }
@@ -1488,7 +1508,7 @@ body.is-fullscreen .pianoroll-card {
   body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 1; grid-row: 4; }
   body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 1; grid-row: 5; }
   body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 1; grid-row: 6; }
-  body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 1; grid-row: 7; }
+  body.is-fullscreen .app-shell > #audition-card > .output-panel { grid-column: 1; grid-row: 7; }
   body.is-fullscreen .pianoroll-card { height: 320px; }
   /* #tracks-cardはflex-column+overflow:hiddenで、内側の.table-scrollも
      overflow-y:auto/min-height:0 — grid-auto-rows: autoな行に

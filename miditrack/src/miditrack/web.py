@@ -78,6 +78,7 @@ ListSongsFunc = Callable[[SourceFormat, Path], "tuple[dict[str, Any], list[dict[
 ConvertFunc = Callable[[SourceFormat, Path, Path, "dict[str, Any]"], "tuple[Path | None, Path | None]"]
 PitchShiftFunc = Callable[[Path, Path, "list[float]", "list[float]"], "list[Path]"]
 MixerFunc = Callable[["list[tuple[Path, float]]", Path], None]
+GainApplierFunc = Callable[[Path, Path, float], None]
 LibvgmRendererFunc = Callable[
     [Path, Path, int, "list[libvgm.LibvgmTarget]"], None
 ]
@@ -183,6 +184,10 @@ class WebSession:
     # 無効化する。ただし生成自体はensure_render()を経由しない
     # （_apply_to()/_render_applied_midi()を直接、組み合わせの数だけ呼ぶ）。
     variations_zip_path: Path | None = None
+    # 「トラックごとに出力」で生成したZIP（トラック単位WAV）。variations_zip_pathと
+    # 全く同じ入力から作られる派生物なので、無効化のタイミングも完全に同じにする
+    # （reset_midi_state/invalidate_render/ファイル名変更）。
+    track_export_zip_path: Path | None = None
     render_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     # 音源変換時（convert_source）に chipNoise オプションで生成された実機ノイズ/DPCM
     # ステムWAV。ensure_render() がこれを検出すると、fluidsynthの出力とffmpegで
@@ -256,6 +261,8 @@ class WebSession:
             self.audio_path.unlink(missing_ok=True)
         if self.variations_zip_path is not None:
             self.variations_zip_path.unlink(missing_ok=True)
+        if self.track_export_zip_path is not None:
+            self.track_export_zip_path.unlink(missing_ok=True)
         self.original_path = None
         self.original_name = ""
         self.download_stem = ""
@@ -271,6 +278,7 @@ class WebSession:
         self.apply_summary = None
         self.audio_path = None
         self.variations_zip_path = None
+        self.track_export_zip_path = None
         # unlink しない理由は上のフィールド定義コメントを参照。
         self.chip_stem_path = None
         self.dac_stem_path = None
@@ -330,10 +338,10 @@ class WebSession:
     def invalidate_render(self) -> None:
         """割り当て変更後にレンダリング結果だけを無効化する（原本・トラック解析は残す）。
 
-        variations_zip_pathはensure_render()と同じ入力（assignments/volumes/
-        track_sources/soundfont等）から作られる派生物なので同時に無効化する。
-        ポインタをNoneにするだけで実ファイルの削除は次回生成時に行う
-        （audio_path自身の扱いと同じ）。
+        variations_zip_path・track_export_zip_pathはensure_render()と同じ入力
+        （assignments/volumes/track_sources/soundfont等）から作られる派生物な
+        ので同時に無効化する。ポインタをNoneにするだけで実ファイルの削除は次回
+        生成時に行う（audio_path自身の扱いと同じ）。
         """
         self.applied_path = None
         self.apply_summary = None
@@ -341,6 +349,7 @@ class WebSession:
         self.current_render_key = None
         self.current_render_mode = None
         self.variations_zip_path = None
+        self.track_export_zip_path = None
         self.state_revision += 1
 
     def require_tracks(self) -> list[TrackInfo]:
@@ -355,6 +364,22 @@ def sanitize_stem(filename: str) -> str:
     stem = Path(basename).stem.strip().lstrip(".")
     safe = re.sub(r"[^\w .()-]", "_", stem, flags=re.UNICODE).strip(" .")
     return safe or "miditrack"
+
+
+def _track_filename_label(name: str, index: int) -> str:
+    """トラック名を「トラックごとに出力」のファイル名断片へ正規化する。
+
+    sanitize_stem()と同じ「ファイルシステムに安全でない文字を`_`へ置換し、前後の
+    ` .`を落とす」正規表現を使うが、sanitize_stem()自身が経由するPath(...).stem
+    は通さない ―― トラック名は`St.Trumpet`のように`.`を含むことがあり、
+    拡張子とみなして切り詰められてしまうと元の名前が失われる（sanitize_stem()
+    はダウンロードファイル名"全体"のstemを求める用途なのでこの割り切りが正しいが、
+    トラック名はそもそも拡張子を持たない）。空になった場合はTrack{index}へ
+    フォールバックする。
+    """
+    stripped = name.strip()
+    safe = re.sub(r"[^\w .()-]", "_", stripped, flags=re.UNICODE).strip(" .")
+    return safe or f"Track{index}"
 
 
 def _effective_download_stem(session: WebSession) -> str:
@@ -649,6 +674,7 @@ def create_app(
     converter: ConvertFunc | None = None,
     pitch_shifter: PitchShiftFunc | None = None,
     mixer: MixerFunc | None = None,
+    gain_applier: GainApplierFunc | None = None,
     libvgm_renderer: LibvgmRendererFunc | None = None,
     nsf_chip_renderer: NsfChipRendererFunc | None = None,
 ) -> Flask:
@@ -683,6 +709,20 @@ def create_app(
             mixer(inputs, output_path)
             return
         mix.mix_wav(inputs, output_path, sample_rate=sample_rate)
+
+    def apply_gain_wav(
+        input_path: Path, output_path: Path, gain: float, sample_rate: int
+    ) -> None:
+        """本番ゲイン適用（mix.apply_gain）へsample_rateを渡し、テスト注入も可能にする。
+
+        「トラックごとに出力」（POST /api/tracks/export）専用。gainが1.0のとき
+        （実機ステム併用のない通常セッション）は呼び出し側がそもそも呼ばない
+        ため、ffmpeg依存はchipNoise/gameSoundfontと同じく実際に必要な場合のみ発生する。
+        """
+        if gain_applier is not None:
+            gain_applier(input_path, output_path, gain)
+            return
+        mix.apply_gain(input_path, output_path, gain, sample_rate=sample_rate)
 
     app = Flask(__name__, static_folder=str(ASSET_DIR), static_url_path="/assets")
     app.config.update(
@@ -1310,15 +1350,15 @@ def create_app(
 
     @app.patch("/api/session/filename")
     def update_download_filename() -> Response:
-        """MIDI/WAV単体ダウンロードとバリエーションZIPが使うベースファイル名を更新する。
+        """MIDI/WAV単体ダウンロードとバリエーション・トラック別ZIPが使うベースファイル名を更新する。
 
         speed/transpose（PATCH /api/session/transform）と同様、ファイル全体に対して
         1つだけの設定なので独立エンドポイントに分ける。空文字列（または空白のみ）を
         送ると明示指定を解除し、アップロード時のファイル名（original_name）に戻る。
-        既に生成済みのバリエーションZIPは内部の各ファイル名が古いstemのまま残って
-        しまうため、ここで無効化して次回ダウンロード時に再生成させる（試聴用の
-        applied_path/audio_pathはファイル名の変更で内容が変わるわけではないので
-        invalidate_render()は使わず、variations_zip_pathだけを個別に無効化する）。
+        既に生成済みのバリエーションZIP・トラック別ZIPは内部の各ファイル名が古い
+        stemのまま残ってしまうため、ここで無効化して次回ダウンロード時に再生成させる
+        （試聴用のapplied_path/audio_pathはファイル名の変更で内容が変わるわけでは
+        ないのでinvalidate_render()は使わず、両ZIPだけを個別に無効化する）。
         """
         web_session.require_tracks()
         body = request.get_json(silent=True) or {}
@@ -1331,6 +1371,7 @@ def create_app(
         if new_stem != web_session.download_stem:
             web_session.download_stem = new_stem
             web_session.variations_zip_path = None
+            web_session.track_export_zip_path = None
         return jsonify(**session_payload(web_session))
 
     @app.get("/api/pianoroll")
@@ -1636,16 +1677,22 @@ def create_app(
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         return "chip:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-    def _plan_chip_hardware() -> ChipHardwarePlan:
+    def _plan_chip_hardware(*, per_track: bool = False) -> ChipHardwarePlan:
         """VGM/NSFの実機音声入力を決め、キャッシュミスを未実行のまま返す。
 
-        音量が既定(100%)のチャンネルはまとめて1回、
+        既定（per_track=False）では、音量が既定(100%)のチャンネルはまとめて1回、
         音量を変更したチャンネルだけチャンネル単位で個別にレンダリングする —
         個別レンダリングはVGM/NSFの全曲再エミュレーションをチャンネルの数だけ
         繰り返すコストがあるため、実際に音量調整されたチャンネルだけに限定する
         （miditrack/CLAUDE.md「Why per-track volume on 'game' tracks only
         re-renders the channels whose volume actually changed」参照）。
         実行を分離することで、通常レンダーではFluidSynthと同じ最大2枠へ投入できる。
+
+        per_track=Trueは「トラックごとに出力」（POST /api/tracks/export）専用の
+        分岐で、音量が既定かどうかに関わらず選択チャンネルを常に1つずつ個別の
+        WAVへレンダリングする（コストは承知の上でユーザーが明示的にチェックを
+        外した場合のみ）。ゲインの求め方自体は既定分岐の「音量変更チャンネル」
+        と同じ式を全チャンネルに適用するだけなので、実装を分岐後半で共有する。
         """
         selected_chip_indices = (
             [
@@ -1672,22 +1719,30 @@ def create_app(
             if index in tracks_by_index
             else midi.DEFAULT_TRACK_VOLUME_PERCENT
         )
-        default_indices = sorted(
-            index for index in selected_chip_indices
-            if index not in web_session.volumes
-            or web_session.volumes[index] == baseline_for(index)
-        )
-        custom_indices = sorted(set(selected_chip_indices) - set(default_indices))
 
         plans: list[tuple[list[int], float]] = []
-        if default_indices:
-            plans.append((default_indices, mix.STEM_GAIN))
-        for index in custom_indices:
-            baseline_percent = baseline_for(index) or midi.DEFAULT_TRACK_VOLUME_PERCENT
-            volume_percent = web_session.volumes.get(index, baseline_percent)
-            plans.append(
-                ([index], mix.STEM_GAIN * volume_percent / baseline_percent)
+        if per_track:
+            for index in sorted(selected_chip_indices):
+                baseline_percent = baseline_for(index) or midi.DEFAULT_TRACK_VOLUME_PERCENT
+                volume_percent = web_session.volumes.get(index, baseline_percent)
+                plans.append(
+                    ([index], mix.STEM_GAIN * volume_percent / baseline_percent)
+                )
+        else:
+            default_indices = sorted(
+                index for index in selected_chip_indices
+                if index not in web_session.volumes
+                or web_session.volumes[index] == baseline_for(index)
             )
+            custom_indices = sorted(set(selected_chip_indices) - set(default_indices))
+            if default_indices:
+                plans.append((default_indices, mix.STEM_GAIN))
+            for index in custom_indices:
+                baseline_percent = baseline_for(index) or midi.DEFAULT_TRACK_VOLUME_PERCENT
+                volume_percent = web_session.volumes.get(index, baseline_percent)
+                plans.append(
+                    ([index], mix.STEM_GAIN * volume_percent / baseline_percent)
+                )
 
         results: list[tuple[Path, float]] = []
         misses: list[ChipCacheMiss] = []
@@ -1706,9 +1761,15 @@ def create_app(
         for miss in plan.misses:
             _cache_store(miss.cache_key, miss.path, protected)
 
-    def _render_chip_hardware(_work_dir: Path, _prefix: str) -> list[tuple[Path, float]]:
-        """実機音声を最大2並列で生成し、バリエーション生成向けに返す。"""
-        plan = _plan_chip_hardware()
+    def _render_chip_hardware(
+        _work_dir: Path, _prefix: str, *, per_track: bool = False
+    ) -> list[tuple[Path, float]]:
+        """実機音声を最大2並列で生成し、バリエーション生成向けに返す。
+
+        per_track=Trueは「トラックごとに出力」専用: _plan_chip_hardware()の
+        同名引数をそのまま中継し、選択チャンネルを常に個別レンダリングさせる。
+        """
+        plan = _plan_chip_hardware(per_track=per_track)
         try:
             with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
                 futures = [
@@ -2099,6 +2160,274 @@ def create_app(
         download_name = f"{_effective_download_stem(web_session)}_variations.zip"
         return send_file(
             web_session.variations_zip_path,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=download_name,
+        )
+
+    @app.post("/api/tracks/export")
+    def track_export_endpoint() -> Response:
+        """トラックごとの音声を個別WAVへ分けてZIPにまとめる（「トラックごとに出力」）。
+
+        全出力を単純加算すればGET /api/download/wavと同じ音になるよう、
+        _render_applied_midi()と同じゲイン設計（実機ステム併用時のみ
+        fluidsynth側にmix.DRY_GAIN、実機チップチャンネルは常にmix.STEM_GAIN
+        ベース）を1トラックずつ焼き込む。分離不可能な実機ノイズ/DPCM・DAC
+        ステムは1本のWAVにまとめ、VGM/NSFの実機チップチャンネルは既定で
+        チャンネルごとに分離するが、groupChipTracks指定時は1本にまとめる
+        （チャンネルごとの分離はチャンネル数だけ全曲再エミュレーションが
+        走るため、ユーザーが明示的に選べるようにしている）。ノート数0・
+        実効音量0%のトラックは無音WAVを増やすだけなので除外する。
+        ensure_render()を経由しないので試聴レンダリングは不要で、既存の
+        試聴WAV・セッションのspeed/transposeにも影響しない
+        （POST /api/variationsと同じ設計判断）。
+        """
+        web_session.require_tracks()
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("MIDIファイルがアップロードされていません")
+
+        body = request.get_json(silent=True) or {}
+        group_chip_tracks = body.get("groupChipTracks", False)
+        if not isinstance(group_chip_tracks, bool):
+            raise WebValidationError("groupChipTracksはtrue/falseで指定してください")
+
+        work_dir = web_session.root / "track_export_work"
+        shutil.rmtree(work_dir, ignore_errors=True)
+        work_dir.mkdir()
+        items: list[dict[str, Any]] = []
+        export_paths: list[Path] = []
+        used_names: set[str] = set()
+
+        def unique_wav_name(base: str) -> str:
+            candidate = f"{base}.wav"
+            counter = 1
+            while candidate in used_names:
+                candidate = f"{base}_{counter}.wav"
+                counter += 1
+            used_names.add(candidate)
+            return candidate
+
+        def finalize_chip_input(raw_path: Path, gain: float, label: str, stem_dir: Path) -> Path:
+            """1件の実機音声(raw_path, gain)を、必要なら速度/ピッチ同期しゲインを
+            焼き込んだ独立WAVへ変換して返す（グループ化時にmix_wav()でまとめる
+            前処理、または単独出力の最終処理として共通で使う）。
+            """
+            synced_path = raw_path
+            if has_transform:
+                synced_path = _synced_stem(raw_path, label, stem_dir, speed, transpose)
+            if gain == 1.0:
+                return synced_path
+            gained_path = work_dir / f"{label}_gain.wav"
+            apply_gain_wav(synced_path, gained_path, gain, 44100)
+            return gained_path
+
+        try:
+            with web_session.render_lock:
+                applied_path = ensure_applied()
+                speed = web_session.speed_ratio
+                transpose = web_session.transpose_semitones
+                has_transform = _has_transform(speed, transpose)
+                download_stem = _effective_download_stem(web_session)
+
+                tracks_by_index = {track.index: track for track in web_session.tracks}
+
+                def effective_volume(track: TrackInfo) -> int:
+                    return web_session.volumes.get(track.index, track.source_volume_percent)
+
+                audible_tracks = [
+                    track for track in web_session.tracks
+                    if track.note_count > 0 and effective_volume(track) != 0
+                ]
+
+                game_sf = web_session.game_soundfont_path
+                if game_sf is not None and not game_sf.exists():
+                    game_sf = None
+
+                selected_chip_indices = sorted(
+                    index for index, source in web_session.track_sources.items()
+                    if source == "game"
+                ) if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS else []
+                included_chip_indices = {
+                    index for index in selected_chip_indices
+                    if index in tracks_by_index
+                    and tracks_by_index[index].note_count > 0
+                    and effective_volume(tracks_by_index[index]) != 0
+                }
+
+                chip_plan = (
+                    _plan_chip_hardware(per_track=not group_chip_tracks)
+                    if selected_chip_indices
+                    else ChipHardwarePlan(inputs=[], misses=[])
+                )
+
+                stem = web_session.chip_stem_path
+                if stem is not None and not stem.exists():
+                    stem = None
+                dac_stem = web_session.dac_stem_path
+                if dac_stem is not None and not dac_stem.exists():
+                    dac_stem = None
+                has_stem = stem is not None or dac_stem is not None or bool(chip_plan.inputs)
+                fluidsynth_gain = mix.DRY_GAIN if has_stem else 1.0
+
+                # fluidsynthジョブ: 実機チップ選択（VGM/NSF）以外の可聴トラックを
+                # 1トラック1MIDIへ分割する。SPCの"game"はSoundFontバンク切替の
+                # ままfluidsynthジョブに含める。
+                fluidsynth_specs: list[tuple[TrackInfo, Path, Path, str]] = []
+                fluidsynth_mid_paths: dict[int, Path] = {}
+                for track in audible_tracks:
+                    source = _selected_track_source(web_session, track)
+                    if source == "game" and track.index in selected_chip_indices:
+                        continue
+                    if source == "game" and game_sf is not None:
+                        soundfont_path: Path | None = game_sf
+                        strip_bank_select = False
+                        kind = "orig"
+                    else:
+                        soundfont_path = web_session.soundfont_override or soundfont
+                        strip_bank_select = game_sf is not None
+                        kind = "midi"
+                    mid_out = work_dir / f"track{track.index}.mid"
+                    has_notes = midi.write_track_subset(
+                        applied_path, {track.index}, mid_out, strip_bank_select=strip_bank_select
+                    )
+                    if not has_notes:
+                        continue
+                    wav_out = work_dir / f"track{track.index}.wav"
+                    fluidsynth_specs.append((track, wav_out, soundfont_path, kind))
+                    # mid_outはこの後のrender_wav()呼び出しでしか使わないので、
+                    # specへは埋め込まずクロージャのローカル辞書経由で参照する。
+                    fluidsynth_mid_paths[track.index] = mid_out
+
+                stem_sync_dir: Path | None = None
+                if has_stem and has_transform:
+                    stem_sync_dir = work_dir / "stemsync"
+                    stem_sync_dir.mkdir()
+                    if stem is not None:
+                        stem = _synced_stem(stem, "noise", stem_sync_dir, speed, transpose)
+                    if dac_stem is not None:
+                        dac_stem = _synced_stem(dac_stem, "dac", stem_sync_dir, speed, transpose)
+
+                chip_plan_misses = list(chip_plan.misses)
+                try:
+                    with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                        futures = [
+                            executor.submit(
+                                render_wav,
+                                fluidsynth_mid_paths[track.index],
+                                wav_out,
+                                soundfont_path,
+                                44100,
+                            )
+                            for track, wav_out, soundfont_path, _kind in fluidsynth_specs
+                        ]
+                        futures += [
+                            executor.submit(_render_chip_targets, miss.indices, miss.path)
+                            for miss in chip_plan_misses
+                        ]
+                        for future in futures:
+                            future.result()
+                    if selected_chip_indices:
+                        _store_chip_hardware(chip_plan)
+                except Exception:
+                    for miss in chip_plan_misses:
+                        miss.path.unlink(missing_ok=True)
+                    raise
+
+                # --- fluidsynthトラックの最終化 ---
+                for track, wav_out, _soundfont_path, kind in fluidsynth_specs:
+                    final_wav = wav_out
+                    if fluidsynth_gain != 1.0:
+                        gained_path = work_dir / f"track{track.index}_gain.wav"
+                        apply_gain_wav(wav_out, gained_path, fluidsynth_gain, 44100)
+                        final_wav = gained_path
+                    label = _track_filename_label(track.name, track.index)
+                    filename = unique_wav_name(f"{download_stem}_{label}_{kind}")
+                    dest = work_dir / filename
+                    shutil.move(str(final_wav), dest)
+                    items.append({"track": track.name, "file": filename, "kind": kind})
+                    export_paths.append(dest)
+
+                # --- 実機チップチャンネルの最終化 ---
+                if chip_plan.inputs:
+                    if group_chip_tracks:
+                        if len(chip_plan.inputs) == 1:
+                            raw_path, gain = chip_plan.inputs[0]
+                            combined = finalize_chip_input(raw_path, gain, "chiptracks", work_dir)
+                        else:
+                            synced_inputs = [
+                                (
+                                    _synced_stem(raw_path, f"chiptracksmix{i}", work_dir, speed, transpose)
+                                    if has_transform
+                                    else raw_path,
+                                    gain,
+                                )
+                                for i, (raw_path, gain) in enumerate(chip_plan.inputs)
+                            ]
+                            combined = work_dir / "chiptracks_combined.wav"
+                            mix_wav(synced_inputs, combined, 44100)
+                        filename = unique_wav_name(f"{download_stem}_chiptracks_orig")
+                        dest = work_dir / filename
+                        shutil.move(str(combined), dest)
+                        items.append({"track": "原曲の音源（まとめ）", "file": filename, "kind": "orig"})
+                        export_paths.append(dest)
+                    else:
+                        for index, (raw_path, gain) in zip(selected_chip_indices, chip_plan.inputs):
+                            if index not in included_chip_indices:
+                                continue
+                            final_path = finalize_chip_input(
+                                raw_path, gain, f"chiprender{index}", work_dir
+                            )
+                            track = tracks_by_index[index]
+                            label = _track_filename_label(track.name, track.index)
+                            filename = unique_wav_name(f"{download_stem}_{label}_orig")
+                            dest = work_dir / filename
+                            shutil.move(str(final_path), dest)
+                            items.append({"track": track.name, "file": filename, "kind": "orig"})
+                            export_paths.append(dest)
+
+                # --- 分離不可能な実機ステム（ノイズ/DPCM・DAC） ---
+                if stem is not None:
+                    final_stem = work_dir / "noise_stem_gain.wav"
+                    apply_gain_wav(stem, final_stem, mix.STEM_GAIN, 44100)
+                    filename = unique_wav_name(f"{download_stem}_noise_orig")
+                    dest = work_dir / filename
+                    shutil.move(str(final_stem), dest)
+                    items.append({"track": "ノイズ/DPCM", "file": filename, "kind": "orig"})
+                    export_paths.append(dest)
+                if dac_stem is not None:
+                    final_dac = work_dir / "dac_stem_gain.wav"
+                    apply_gain_wav(dac_stem, final_dac, mix.STEM_GAIN, 44100)
+                    filename = unique_wav_name(f"{download_stem}_dac_orig")
+                    dest = work_dir / filename
+                    shutil.move(str(final_dac), dest)
+                    items.append({"track": "DAC", "file": filename, "kind": "orig"})
+                    export_paths.append(dest)
+
+                if not items:
+                    raise WebValidationError("出力できるトラックがありません")
+
+            zip_path = web_session.root / "track_export.zip"
+            if web_session.track_export_zip_path is not None:
+                web_session.track_export_zip_path.unlink(missing_ok=True)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                for path in export_paths:
+                    archive.write(path, arcname=path.name)
+            web_session.track_export_zip_path = zip_path
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+        return jsonify(items=items, downloadUrl="/api/download/tracks")
+
+    @app.get("/api/download/tracks")
+    def get_download_tracks() -> Response:
+        if (
+            web_session.track_export_zip_path is None
+            or not web_session.track_export_zip_path.exists()
+        ):
+            raise WebValidationError("先に「トラックごとに出力」を実行してください")
+        download_name = f"{_effective_download_stem(web_session)}_tracks.zip"
+        return send_file(
+            web_session.track_export_zip_path,
             mimetype="application/zip",
             as_attachment=True,
             download_name=download_name,

@@ -227,6 +227,108 @@ class TestMixWav(unittest.TestCase):
         self.assertIn("volume=0.55", filter_str)
 
 
+class TestApplyGain(unittest.TestCase):
+    """apply_gain(): トラックごと出力（POST /api/tracks/export）専用の単一入力ゲイン適用。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.in_path = Path(self.tmp.name) / "a & b.in.wav"
+        self.in_path.write_bytes(b"fake-in-wav")
+        self.out_path = Path(self.tmp.name) / "a & b.out.wav"
+
+        self._env_backup = os.environ.get("FFMPEG_BIN")
+        os.environ["FFMPEG_BIN"] = "/usr/bin/ffmpeg"
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self) -> None:
+        if self._env_backup is None:
+            os.environ.pop("FFMPEG_BIN", None)
+        else:
+            os.environ["FFMPEG_BIN"] = self._env_backup
+
+    def _fake_success_run(self, out_size: int = 100):
+        def fake_run(argv, **kwargs):
+            Path(argv[-1]).write_bytes(b"0" * out_size)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        return fake_run
+
+    def _patch_executable(self):
+        return mock.patch("miditrack.mix._is_executable_file", return_value=True)
+
+    def test_argv_is_a_list_with_shell_false(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            mix.apply_gain(self.in_path, self.out_path, 0.55)
+        argv, kwargs = mocked.call_args
+        self.assertEqual(kwargs.get("shell"), False)
+        self.assertIsInstance(argv[0], list)
+
+    def test_volume_filter_contains_gain_and_single_input(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            mix.apply_gain(self.in_path, self.out_path, 0.8)
+        (argv,), _ = mocked.call_args
+        self.assertIn("volume=0.8", argv[argv.index("-filter:a") + 1])
+        i_indices = [i for i, a in enumerate(argv) if a == "-i"]
+        self.assertEqual(len(i_indices), 1)
+        self.assertEqual(argv[i_indices[0] + 1], str(self.in_path))
+        self.assertIn(str(self.out_path), argv)
+
+    def test_sample_rate_is_passed_through(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            mix.apply_gain(self.in_path, self.out_path, 1.0, sample_rate=22050)
+        (argv,), _ = mocked.call_args
+        self.assertEqual(argv[argv.index("-ar") + 1], "22050")
+
+    def test_non_zero_exit_raises_mix_error_with_stderr(self) -> None:
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="gain error\n")
+
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=fake_run
+        ):
+            with self.assertRaises(MixError) as ctx:
+                mix.apply_gain(self.in_path, self.out_path, 0.55)
+        self.assertIn("gain error", str(ctx.exception))
+
+    def test_file_not_found_raises_mix_error(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=FileNotFoundError()
+        ):
+            with self.assertRaises(MixError):
+                mix.apply_gain(self.in_path, self.out_path, 0.55)
+
+    def test_timeout_raises_mix_error(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=300),
+        ):
+            with self.assertRaises(MixError):
+                mix.apply_gain(self.in_path, self.out_path, 0.55)
+
+    def test_empty_output_raises_mix_error(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run(out_size=0)
+        ):
+            with self.assertRaises(MixError):
+                mix.apply_gain(self.in_path, self.out_path, 0.55)
+
+    def test_space_and_ampersand_path_survives_unmangled(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            mix.apply_gain(self.in_path, self.out_path, 0.55)
+        (argv,), _ = mocked.call_args
+        self.assertIn(str(self.in_path), argv)
+        self.assertIn(str(self.out_path), argv)
+
+
 class TestBuildFilterComplex(unittest.TestCase):
     def test_raises_for_fewer_than_two_gains(self) -> None:
         with self.assertRaises(MixError):

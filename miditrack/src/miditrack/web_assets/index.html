@@ -266,27 +266,41 @@
         <input type="text" id="download-filename" placeholder="ファイル名">
       </div>
 
-      <details class="variation-panel">
-        <summary>バリエーションをまとめて生成</summary>
-        <div class="variation-content">
-          <div class="convert-options">
-            <div class="convert-field">
-              <label for="variation-speeds">速度倍率（カンマ区切り）</label>
-              <input type="text" id="variation-speeds" value="1.2, 1.0, 0.8">
+      <details class="output-panel">
+        <summary>出力オプション</summary>
+        <div class="output-content">
+          <section class="output-section">
+            <h3 class="output-section-title">バリエーションをまとめて生成</h3>
+            <div class="convert-options">
+              <div class="convert-field">
+                <label for="variation-speeds">速度倍率（カンマ区切り）</label>
+                <input type="text" id="variation-speeds" value="1.2, 1.0, 0.8">
+              </div>
+              <div class="convert-field">
+                <label for="variation-transposes">ピッチ（半音、カンマ区切り）</label>
+                <input type="text" id="variation-transposes" value="-2, -1, 0, 1, 2">
+              </div>
             </div>
-            <div class="convert-field">
-              <label for="variation-transposes">ピッチ（半音、カンマ区切り）</label>
-              <input type="text" id="variation-transposes" value="-2, -1, 0, 1, 2">
+            <div class="convert-field is-checkbox">
+              <input type="checkbox" id="variation-include-midi" checked>
+              <label for="variation-include-midi">ZIPにMIDIも含める</label>
             </div>
-          </div>
-          <div class="convert-field is-checkbox">
-            <input type="checkbox" id="variation-include-midi" checked>
-            <label for="variation-include-midi">ZIPにMIDIも含める</label>
-          </div>
-          <div class="toolbar">
-            <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード</button>
-          </div>
-          <p class="field-help">ツールバーの速度・ピッチと同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAV（とチェックすればMIDIも）をZIPにまとめます。試聴用の速度・ピッチ設定は変更されません。</p>
+            <div class="toolbar">
+              <button type="button" class="button secondary" id="variation-button">バリエーションをZIPでダウンロード</button>
+            </div>
+            <p class="field-help">ツールバーの速度・ピッチと同じMIDI書き換えを組み合わせの数だけ実行し、各バリエーションのWAV（とチェックすればMIDIも）をZIPにまとめます。試聴用の速度・ピッチ設定は変更されません。</p>
+          </section>
+          <section class="output-section">
+            <h3 class="output-section-title">トラックごとに出力</h3>
+            <div class="convert-field is-checkbox" id="track-export-group-chip-field">
+              <input type="checkbox" id="track-export-group-chip">
+              <label for="track-export-group-chip">原曲の音源トラックを1つにまとめる</label>
+            </div>
+            <div class="toolbar">
+              <button type="button" class="button secondary" id="track-export-button">トラックごとにZIPでダウンロード</button>
+            </div>
+            <p class="field-help">トラック名をファイル名にした個別WAVをZIPにまとめます。ファイル名の末尾で、SoundFontでレンダリングした音（_midi）か原曲の音源（_orig）かを区別します。ノイズ/DPCM・DACなど分離できない実機音は1本のWAVにまとまります。原曲の音源のチャンネルごとの分離は、その数だけ全曲を再エミュレーションするため時間がかかります。</p>
+          </section>
         </div>
       </details>
     </article>

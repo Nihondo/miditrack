@@ -2252,9 +2252,12 @@ function updateSectionsReadiness() {
   $("#save-project-button").disabled = !ready;
   document.querySelectorAll(".transform-controls button, .transform-controls input")
     .forEach((control) => { control.disabled = !ready; });
-  // バリエーション一括生成はensure_render()を経由しないため事前の試聴レンダリングは
-  // 不要（hasRenderではなくhasDownload = MIDIアップロード済みかどうかで活性化する）。
+  // バリエーション一括生成・トラックごと出力はどちらもensure_render()を経由しない
+  // ため事前の試聴レンダリングは不要（hasRenderではなくhasDownload = MIDIアップ
+  // ロード済みかどうかで活性化する）。
   $("#variation-button").disabled = !(state.session && state.session.hasDownload);
+  $("#track-export-button").disabled = !(state.session && state.session.hasDownload);
+  $("#track-export-group-chip-field").hidden = !isChipHardwareFormat();
   updateEnsemblePresetControls();
   updatePianorollLoopRegion();
   updatePlaybackControls();
@@ -3470,6 +3473,31 @@ async function handleVariations() {
   }
 }
 
+// トラックごとの音声をZIPで出力する（POST /api/tracks/export）。
+// ensure_render()を経由しないので事前の試聴レンダリングは不要
+// （handleVariations()と同じ設計判断、#variation-buttonと同じ
+// hasDownload基準で活性化する）。
+async function handleTrackExport() {
+  const groupChipTracks = $("#track-export-group-chip").checked;
+  setBusy(true, "トラックごとのWAVを生成中…");
+  try {
+    const response = await apiFetch("/api/tracks/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groupChipTracks }),
+    });
+    const payload = await response.json();
+    showStatus(`${payload.items.length}件のトラックWAVを生成しました。ダウンロードします…`);
+    const stem = (state.session && (state.session.downloadStem || state.session.filename)) || "miditrack";
+    const filename = `${stem}_tracks.zip`;
+    await downloadFrom("/api/download/tracks", filename);
+  } catch (error) {
+    showStatus(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function handleReset() {
   setBusy(true);
   try {
@@ -3575,6 +3603,7 @@ async function init() {
   $("#download-wav-button").addEventListener("click", handleDownloadWav);
   $("#download-filename").addEventListener("input", onDownloadFilenameChange);
   $("#variation-button").addEventListener("click", handleVariations);
+  $("#track-export-button").addEventListener("click", handleTrackExport);
   $("#convert-button").addEventListener("click", handleConvert);
   $("#convert-file-select").addEventListener("change", handleSelectFile);
   $("#soundfont-select").addEventListener("change", handleSoundfontChange);

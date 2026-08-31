@@ -21,7 +21,12 @@ import mido
 from miditrack import libvgm, mix, nsf_chip, preferences
 from miditrack.convert import SourceFormat
 from miditrack.errors import ConvertError, RenderError
-from miditrack.web import WebSession, create_app, resolve_startup_soundfont_override
+from miditrack.web import (
+    WebSession,
+    _track_filename_label,
+    create_app,
+    resolve_startup_soundfont_override,
+)
 
 
 def build_zip_bytes(members: dict[str, bytes]) -> bytes:
@@ -839,6 +844,151 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         response = self.client.get("/api/download/variations", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
+
+    # --- トラックごとに出力 ---
+
+    def test_track_export_produces_one_wav_per_track(self) -> None:
+        self._upload()
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(
+            {(item["track"], item["kind"]) for item in payload["items"]},
+            {("Lead", "midi"), ("Noise", "midi")},
+        )
+        self.assertEqual(payload["downloadUrl"], "/api/download/tracks")
+        download = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        self.assertEqual(download.status_code, 200)
+        archive = zipfile.ZipFile(io.BytesIO(download.data))
+        self.assertEqual(set(archive.namelist()), {"fixture_Lead_midi.wav", "fixture_Noise_midi.wav"})
+
+    def test_track_export_excludes_muted_track(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"1": 0}}),
+        )
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        payload = response.get_json()
+        self.assertEqual([item["track"] for item in payload["items"]], ["Lead"])
+
+    def test_track_export_excludes_all_muted_tracks_with_error(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"0": 0, "1": 0}}),
+        )
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_track_export_without_upload_is_rejected(self) -> None:
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_track_export_rejects_non_bool_group_chip_tracks(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/tracks/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"groupChipTracks": "yes"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_download_tracks_requires_prior_generation(self) -> None:
+        self._upload()
+        response = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_download_tracks_invalidated_by_track_change(self) -> None:
+        self._upload()
+        self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"assignments": {"0": 30}}),
+        )
+        response = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_track_export_zip_and_members_use_custom_filename(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "my song"}),
+        )
+        self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        response = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        self.assertIn("my song_tracks.zip", response.headers.get("Content-Disposition", ""))
+        archive = zipfile.ZipFile(io.BytesIO(response.data))
+        self.assertTrue(all(name.startswith("my song_") for name in archive.namelist()))
+
+    def test_changing_filename_after_generation_invalidates_track_export_zip(self) -> None:
+        self._upload()
+        self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "renamed"}),
+        )
+        response = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 400)
+
+    def test_setting_same_filename_does_not_invalidate_track_export_zip(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        response = self.client.patch(
+            "/api/session/filename",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"name": "custom"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        response = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+
+    def test_track_export_work_dir_is_cleaned_up(self) -> None:
+        self._upload()
+        self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        session = self.app.config["MIDITRACK_SESSION"]
+        self.assertFalse((session.root / "track_export_work").exists())
+        self.assertTrue((session.root / "track_export.zip").exists())
+
+    def test_track_export_does_not_change_session_speed_and_transpose(self) -> None:
+        self._upload()
+        self.client.patch(
+            "/api/session/transform",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speed": 1.2, "transpose": -2}),
+        )
+        self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        session_payload = self.client.get("/api/session", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(session_payload["speed"], 1.2)
+        self.assertEqual(session_payload["transpose"], -2)
+
+    def test_track_export_name_preserves_dot_in_track_name(self) -> None:
+        """トラック名の`.`がsanitize_stem()のようにPath(...).stemで切り詰められないことを確認する。"""
+        mf = mido.MidiFile(ticks_per_beat=480)
+        t0 = mido.MidiTrack()
+        t0.append(mido.MetaMessage("track_name", name="St.Trumpet", time=0))
+        t0.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+        t0.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=480))
+        mf.tracks.append(t0)
+        buffer = io.BytesIO()
+        mf.save(file=buffer)
+        data = {"midi": (io.BytesIO(buffer.getvalue()), "fixture.mid")}
+        self.client.post(
+            "/api/session", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
+        )
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        payload = response.get_json()
+        self.assertEqual(payload["items"][0]["file"], "fixture_St.Trumpet_midi.wav")
 
     # --- レンダリング/試聴/ダウンロード ---
 
@@ -2371,6 +2521,67 @@ class TestWebAppChipStem(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         app.config["MIDITRACK_SESSION"].clear()
 
+    def test_track_export_noise_stem_gets_stem_gain_and_transform_sync(self) -> None:
+        # 分離不可能な実機ノイズ/DPCMステムは1本のWAVとして_noise_origサフィックス
+        # で出力され、mix.STEM_GAINが焼き込まれる。transformが有効なときは
+        # ensure_render()と同じくpitch_shift.shで先に同期される。
+        pitch_shift_calls: list[tuple[Path, list[float], list[float]]] = []
+        gain_calls: list[tuple[Path, float]] = []
+
+        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
+            pitch_shift_calls.append((wav_path, speeds, pitches))
+            out = work_dir / "synced.wav"
+            out.write_bytes(wav_path.read_bytes())
+            return [out]
+
+        def fake_gain_applier(input_path, output_path, gain):
+            gain_calls.append((input_path, gain))
+            output_path.write_bytes(input_path.read_bytes())
+
+        app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            renderer=self.fake_renderer,
+            list_songs=self.fake_list_songs,
+            converter=self.fake_converter_with_stem,
+            mixer=self.fake_mixer,
+            pitch_shifter=fake_pitch_shifter,
+            gain_applier=fake_gain_applier,
+        )
+        client = app.test_client()
+        data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
+        client.post(
+            "/api/source", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
+        )
+        client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 0, "chipNoise": True}),
+        )
+        client.patch(
+            "/api/session/transform",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speed": 1.2, "transpose": -2}),
+        )
+        response = client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertIn(("ノイズ/DPCM", "orig"), {(i["track"], i["kind"]) for i in payload["items"]})
+
+        self.assertEqual(len(pitch_shift_calls), 1)
+        _wav_path, speeds, pitches = pitch_shift_calls[0]
+        self.assertEqual(speeds, [1.2])
+        self.assertEqual(pitches, [-2.0])
+        # ステム自身にはmix.STEM_GAIN(0.55)、fluidsynthでレンダリングした各トラック
+        # （Lead・Noise=ch9パーカッション、計2本）にはhas_stem=Trueによる
+        # mix.DRY_GAIN(0.80)が焼き込まれる。
+        gains = sorted(gain for _path, gain in gain_calls)
+        self.assertEqual(gains, sorted([mix.STEM_GAIN, mix.DRY_GAIN, mix.DRY_GAIN]))
+        download = client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(download.data))
+        self.assertIn("chip_00_noise_orig.wav", archive.namelist())
+        app.config["MIDITRACK_SESSION"].clear()
+
 
 def build_single_track_fixture_bytes() -> bytes:
     """percussion等の編集不可トラックを含まない、単一メロディックトラックのフィクスチャ。
@@ -2782,6 +2993,38 @@ class TestWebAppGameSoundfont(unittest.TestCase):
         session = self.app.config["MIDITRACK_SESSION"]
         self.assertEqual(response.data, session.applied_path.read_bytes())
 
+    # --- トラックごとに出力（ゲーム由来SoundFont） ---
+
+    def test_track_export_uses_game_soundfont_when_no_assignment(self) -> None:
+        # 既定状態（未割り当て）ではSPCの両トラックとも"game"＝ゲーム由来
+        # SoundFontレンダリングなので、どちらも_origサフィックスになる。
+        self._upload_source_with_game_soundfont()
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(
+            {(item["track"], item["kind"]) for item in payload["items"]},
+            {("Lead", "orig"), ("Noise", "orig")},
+        )
+        for _mid, _wav, sf in self.render_calls:
+            self.assertTrue(str(sf).endswith(".sf2"))
+
+    def test_track_export_splits_by_source_after_assignment(self) -> None:
+        # track0を手動でGM音色に割り当てると"soundfont"側（_midi）へ移り、
+        # track1（常にゲーム側）は_origのまま。CLI既定SoundFontが使われる。
+        self._upload_source_with_game_soundfont()
+        self._assign_track0()
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        payload = response.get_json()
+        kinds = {(item["track"], item["kind"]) for item in payload["items"]}
+        self.assertEqual(kinds, {("Lead", "midi"), ("Noise", "orig")})
+        used_soundfonts = {sf for _mid, _wav, sf in self.render_calls}
+        self.assertIn(self.CLI_SOUNDFONT, used_soundfonts)
+        self.assertTrue(any(str(sf).endswith(".sf2") for sf in used_soundfonts))
+        # ステム併用が無いため(has_stem=False)、ffmpegによるゲイン適用は
+        # 一切発生しない（mixerも呼ばれない）。
+        self.assertEqual(self.mix_calls, [])
+
 
 class TestWebAppLibvgmTrackSource(unittest.TestCase):
     """VGM sidecarの自動サジェスト・音源PATCH・選択レンダリング。"""
@@ -2791,6 +3034,7 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         self.render_calls: list[tuple[Path, Path, Path | None]] = []
         self.render_note_counts: list[int] = []
         self.mix_calls: list[list[tuple[Path, float]]] = []
+        self.gain_calls: list[tuple[Path, float]] = []
         self.render_delay = 0.0
         self.active_render_jobs = 0
         self.max_active_render_jobs = 0
@@ -2864,12 +3108,21 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             out.write_bytes(wav_path.read_bytes())
             return [out]
 
+        # 「トラックごとに出力」（POST /api/tracks/export）のゲイン焼き込み
+        # （mix.apply_gain）を注入で差し替える。実ffmpegを起動しないため。
+        def fake_gain_applier(input_path, output_path, gain):
+            self.gain_calls.append((input_path, gain))
+            output_path.write_bytes(input_path.read_bytes())
+
+        self.fake_gain_applier = fake_gain_applier
+
         self.app = create_app(
             token=TOKEN,
             session=WebSession(),
             converter=fake_converter,
             renderer=fake_renderer,
             mixer=fake_mixer,
+            gain_applier=fake_gain_applier,
             libvgm_renderer=fake_libvgm,
             pitch_shifter=fake_pitch_shifter,
         )
@@ -3035,6 +3288,59 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         # デフォルトグループ1回＋カスタムチャンネル1回＝2回のみ。2組み合わせ分
         # 増えたりはしない。
         self.assertEqual(len(self.libvgm_calls), 2)
+
+    # --- トラックごとに出力（実機チップチャンネル） ---
+
+    def test_track_export_default_renders_chip_channel_individually(self) -> None:
+        self._convert(True)
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        kinds = {(item["track"], item["kind"]) for item in payload["items"]}
+        self.assertEqual(kinds, {("Lead", "midi"), ("Noise", "orig")})
+        self.assertEqual(len(self.libvgm_calls), 1)
+        download = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(download.data))
+        self.assertEqual(
+            set(archive.namelist()), {"song_Lead_midi.wav", "song_Noise_orig.wav"}
+        )
+        # 実機チップチャンネル(has_stem=True)があるため、fluidsynth側にも
+        # mix.DRY_GAINが焼き込まれる（_render_applied_midi()と同じ規則）。
+        # Lead(fluidsynth、DRY_GAIN)+Noise(チップチャンネル、STEM_GAIN)で2回。
+        self.assertEqual(len(self.gain_calls), 2)
+
+    def test_track_export_grouped_combines_chip_channels_into_one_file(self) -> None:
+        self._convert(True)
+        response = self.client.post(
+            "/api/tracks/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"groupChipTracks": True}),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(
+            {(item["track"], item["kind"]) for item in payload["items"]},
+            {("Lead", "midi"), ("原曲の音源（まとめ）", "orig")},
+        )
+        download = self.client.get("/api/download/tracks", headers=AUTH_HEADERS)
+        archive = zipfile.ZipFile(io.BytesIO(download.data))
+        self.assertEqual(
+            set(archive.namelist()), {"song_Lead_midi.wav", "song_chiptracks_orig.wav"}
+        )
+
+    def test_track_export_excludes_muted_chip_channel(self) -> None:
+        self._convert(True)
+        self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"1": 0}}),
+        )
+        response = self.client.post("/api/tracks/export", headers=AUTH_HEADERS)
+        payload = response.get_json()
+        self.assertEqual([item["track"] for item in payload["items"]], ["Lead"])
+        # 実機チップチャンネルのレンダリング自体は_plan_chip_hardware()の
+        # 通常挙動どおり発生する（音量0ゲインで計画されるだけ）が、ZIPからは
+        # 除外される。
 
 
 class TestWebAppChipHardwareVolumeBaseline(unittest.TestCase):
@@ -3734,6 +4040,27 @@ class TestResolveStartupSoundfontOverride(unittest.TestCase):
             {"selectedSoundfont": str(Path(self.tmp.name) / "deleted.sf2")}
         )
         self.assertIsNone(resolve_startup_soundfont_override(None))
+
+
+class TestTrackFilenameLabel(unittest.TestCase):
+    """_track_filename_label(): 「トラックごとに出力」のファイル名断片への正規化。"""
+
+    def test_dot_in_track_name_is_not_truncated(self) -> None:
+        # sanitize_stem()はPath(...).stemを通すため"St.Trumpet"は"St"に切り詰め
+        # られるが、_track_filename_label()はトラック名専用なのでそれをしない。
+        self.assertEqual(_track_filename_label("St.Trumpet", 0), "St.Trumpet")
+
+    def test_unsafe_characters_are_replaced(self) -> None:
+        self.assertEqual(_track_filename_label("Lead/Synth: 1", 0), "Lead_Synth_ 1")
+
+    def test_empty_name_falls_back_to_track_index(self) -> None:
+        self.assertEqual(_track_filename_label("", 3), "Track3")
+
+    def test_whitespace_only_name_falls_back_to_track_index(self) -> None:
+        self.assertEqual(_track_filename_label("   ", 5), "Track5")
+
+    def test_leading_and_trailing_space_and_dot_are_stripped(self) -> None:
+        self.assertEqual(_track_filename_label(" Bass. ", 0), "Bass")
 
 
 if __name__ == "__main__":

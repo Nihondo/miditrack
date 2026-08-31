@@ -92,6 +92,66 @@ def resolve_ffmpeg_bin() -> str:
     raise MixError("ffmpeg が見つかりません。FFMPEG_BIN 環境変数か PATH を確認してください")
 
 
+def apply_gain(
+    input_wav: Path,
+    out_wav: Path,
+    gain: float,
+    *,
+    sample_rate: int = 44100,
+) -> None:
+    """input_wavへgainを掛けた結果をout_wavへ書く。失敗時は MixError。
+
+    トラックごとの出力（POST /api/tracks/export）が、全部を単純加算すれば
+    ensure_render()の最終ミックスと同じ音量になる1本のステムを作るために使う
+    ―― mix_wav()と同じffmpeg volumeフィルタを1入力だけに適用した特殊形。
+    mix_wav()自体は「2入力以上」の契約を崩したくない（本関数の追加後も
+    そのまま）ため、1入力の場合をここで独立して持つ。
+    """
+    bin_path = resolve_ffmpeg_bin()
+    argv = [
+        bin_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(input_wav),
+        "-filter:a",
+        f"volume={gain}",
+        "-c:a",
+        "pcm_s16le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "2",
+        str(out_wav),
+    ]
+
+    try:
+        result = subprocess.run(
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=MIX_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise MixError(
+            f"ffmpeg が見つかりません（{bin_path}）。FFMPEG_BIN 環境変数か PATH を確認してください"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise MixError(f"ffmpeg のゲイン適用が {MIX_TIMEOUT_SECONDS} 秒でタイムアウトしました") from error
+
+    if result.returncode != 0:
+        stderr_lines = result.stderr.strip().splitlines()
+        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
+        raise MixError(f"ffmpeg の実行に失敗しました（exit={result.returncode}）:\n{tail}")
+
+    if not out_wav.exists() or out_wav.stat().st_size <= 44:
+        raise MixError("ゲイン適用結果のWAV書き出しに失敗しました（出力が空です）")
+
+
 def mix_wav(
     inputs: Sequence[tuple[Path, float]],
     out_wav: Path,
