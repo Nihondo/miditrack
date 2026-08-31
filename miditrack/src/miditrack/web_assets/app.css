@@ -548,6 +548,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .convert-field input[type="number"],
 .convert-field input[type="text"] {
   width: 100%;
+  min-height: 38px;
   padding: 6px 8px;
   color: var(--neutral-100);
   background: var(--neutral-0);
@@ -581,6 +582,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: var(--neutral-10);
   cursor: not-allowed;
 }
+
+.variation-transpose-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.variation-transpose-row input[type="text"] { flex: 1; min-width: 140px; }
+.variation-transpose-row .button,
+.variation-transpose-row .convert-field.is-checkbox { flex-shrink: 0; white-space: nowrap; }
 
 .playlist-note { color: var(--brand-dark); font-weight: 600; }
 .playlist-note[hidden] { display: none; }
@@ -1147,7 +1153,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .output-panel > summary:hover { color: var(--brand-dark); }
 .output-panel > summary:focus-visible { outline-offset: 4px; }
 .output-content { margin-top: 14px; }
-.output-panel .convert-options { margin-bottom: 4px; }
+.output-panel .convert-options {
+  margin-bottom: 4px;
+  grid-template-columns: minmax(160px, 1fr) minmax(280px, 2fr);
+}
 .output-panel .toolbar { margin: 12px 0 4px; }
 
 /* 「バリエーションをまとめて生成」「トラックごとに出力」の2セクションを
@@ -1190,6 +1199,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   #convert-options.has-timing-group > .convert-field:not([data-layout-group="timing"]) {
     grid-column: auto;
   }
+  .output-panel .convert-options { grid-template-columns: 1fr; }
 }
 
 /* ==========================================================================
