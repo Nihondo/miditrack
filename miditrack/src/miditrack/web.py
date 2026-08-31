@@ -1141,6 +1141,7 @@ def create_app(
             "usageCounts",
             "displayMode",
             "roundedPianorollNotes",
+            "outlinedPianorollNotes",
             "ensemblePresets",
         }
         if not any(field in body for field in allowed_fields):

@@ -70,10 +70,12 @@ adjacent pitches from overlapping if any future layout makes the canvas smaller.
 Note bodies are rounded by default through `drawPianorollNote()` using Canvas
 2D's `roundRect()` with a radius capped to the shorter edge; if the user turns
 off `roundedPianorollNotes` (or a browser lacks `roundRect()`), it must use the
-cheaper `fillRect()` path. This is a persistent display-only preference in
-`preferences.json`: changing it redraws the static canvas immediately but must
-not fetch the piano-roll payload, alter the project archive, or trigger an
-audio/MIDI render.
+cheaper `fillRect()` path. `outlinedPianorollNotes` independently adds a
+one-pixel outline using the same track hue at lower lightness, following either
+the rounded or rectangular note shape. Both are persistent display-only
+preferences in `preferences.json`: changing either redraws the static canvas
+immediately but must not fetch the piano-roll payload, alter the project
+archive, or trigger an audio/MIDI render.
 `GET /api/pianoroll` additionally returns an optional per-track `pitchPaths`
 array for notes with MIDI pitchwheel events. Each path pairs elapsed seconds with
 the bend offset in semitones, after applying that channel's RPN 0 bend range

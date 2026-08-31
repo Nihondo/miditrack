@@ -356,10 +356,8 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("function drawPitchAutomation", javascript)
         self.assertIn("track.pitchPaths || []", javascript)
         self.assertIn('context.fillText("PITCH", 7, center)', javascript)
-        self.assertIn(
-            "drawPianorollNote(context, x, pianorollPitchY(note, layout), noteWidth, noteHeight)",
-            javascript,
-        )
+        self.assertIn("drawPianorollNote(", javascript)
+        self.assertIn("pianorollPitchY(note, layout)", javascript)
 
     def test_song_picker_is_shown_only_when_multiple_candidates_exist(self) -> None:
         """単一候補は隠しつつ、その曲番号を変換時に送ることを確認する。"""
@@ -3665,6 +3663,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIsNone(payload["selectedSoundfont"])
         self.assertEqual(payload["displayMode"], "normal")
         self.assertTrue(payload["roundedPianorollNotes"])
+        self.assertTrue(payload["outlinedPianorollNotes"])
         self.assertEqual(
             [preset["name"] for preset in payload["ensemblePresets"]],
             ["ゲームリード", "アコースティック", "ジャズカルテット"],
@@ -3721,6 +3720,28 @@ class TestWebAppPreferences(unittest.TestCase):
             "/api/preferences",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
             data=json.dumps({"roundedPianorollNotes": "yes"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_outlined_pianoroll_notes_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"outlinedPianorollNotes": False}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["outlinedPianorollNotes"])
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertFalse(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["outlinedPianorollNotes"]
+        )
+
+    def test_patch_rejects_invalid_outlined_pianoroll_notes_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"outlinedPianorollNotes": "yes"}),
         )
         self.assertEqual(response.status_code, 400)
 
@@ -4026,9 +4047,13 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function setFullscreenLayout", javascript)
         self.assertIn("function saveDisplayMode", javascript)
         self.assertIn('id="pianoroll-rounded-notes"', html)
+        self.assertIn('id="pianoroll-outlined-notes"', html)
         self.assertIn("function drawPianorollNote", javascript)
         self.assertIn("context.roundRect", javascript)
+        self.assertIn("function getTrackOutlineColor", javascript)
+        self.assertIn("context.strokeRect", javascript)
         self.assertIn("function saveRoundedPianorollNotes", javascript)
+        self.assertIn("function saveOutlinedPianorollNotes", javascript)
         self.assertIn('displayMode: state.displayMode', javascript)
         fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(
             "\n}\n\nfunction setupDropZone", 1

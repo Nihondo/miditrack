@@ -73,6 +73,7 @@ const state = {
   usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
   displayMode: "normal",    // 通常表示または全画面DAW表示。サーバー側の設定に永続化する。
   hasRoundedPianorollNotes: true, // ピアノロールのノートを角丸で描くか。設定として永続化する。
+  hasOutlinedPianorollNotes: true, // ピアノロールのノートに濃い縁取りを描くか。設定として永続化する。
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -281,7 +282,9 @@ async function loadPreferences() {
     state.usageCounts = payload.usageCounts || {};
     state.displayMode = payload.displayMode === "fullscreen" ? "fullscreen" : "normal";
     state.hasRoundedPianorollNotes = payload.roundedPianorollNotes !== false;
+    state.hasOutlinedPianorollNotes = payload.outlinedPianorollNotes !== false;
     $("#pianoroll-rounded-notes").checked = state.hasRoundedPianorollNotes;
+    $("#pianoroll-outlined-notes").checked = state.hasOutlinedPianorollNotes;
     setFullscreenLayout(state.displayMode === "fullscreen");
     state.ensemblePresets = payload.ensemblePresets || [];
     renderEnsemblePresetOptions();
@@ -312,6 +315,20 @@ async function saveRoundedPianorollNotes() {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ roundedPianorollNotes: state.hasRoundedPianorollNotes }),
+    });
+  } catch (_error) {
+    // 保存に失敗しても今回の表示は維持する。
+  }
+}
+
+// ピアノロールのノート縁取りをサーバー側設定へ保存する。縁取りも表示専用なので、
+// 設定変更時は静的Canvasを再描画するだけで、MIDIや試聴音声を再生成しない。
+async function saveOutlinedPianorollNotes() {
+  try {
+    await apiFetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outlinedPianorollNotes: state.hasOutlinedPianorollNotes }),
     });
   } catch (_error) {
     // 保存に失敗しても今回の表示は維持する。
@@ -1693,6 +1710,13 @@ function getTrackColor(trackIndex, trackCount, opacity = 1) {
   return `hsl(${hue} 68% 48% / ${opacity})`;
 }
 
+// ノート塗りと同じ色相・彩度のまま明度だけを下げ、トラック色と一貫した
+// 控えめな縁取り色を返す。
+function getTrackOutlineColor(trackIndex, trackCount, opacity = 1) {
+  const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+  return `hsl(${hue} 68% 40% / ${opacity})`;
+}
+
 function formatPianorollTime(seconds) {
   const safeSeconds = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safeSeconds / 60);
@@ -1900,17 +1924,29 @@ function drawPitchAutomation(context, path, start, duration, track, layout, opac
 }
 
 // 角丸設定が有効な時だけroundRect()でノートを描く。角丸の半径はノートの短辺の
-// 半分以下に制限し、短いノートでも形状が崩れないようにする。古いCanvas実装では
-// 従来どおりのfillRect()へフォールバックする。
-function drawPianorollNote(context, x, y, width, height) {
-  if (!state.hasRoundedPianorollNotes || typeof context.roundRect !== "function") {
+// 半分以下に制限し、短いノートでも形状が崩れないようにする。縁取り設定が有効なら
+// 同じ外形に少し濃いトラック色を重ねる。古いCanvas実装ではfillRect()/strokeRect()
+// の矩形描画へフォールバックする。
+function drawPianorollNote(context, x, y, width, height, outlineColor) {
+  const canDrawRoundedNote = state.hasRoundedPianorollNotes && typeof context.roundRect === "function";
+  if (!canDrawRoundedNote) {
     context.fillRect(x, y, width, height);
+    if (state.hasOutlinedPianorollNotes) {
+      context.strokeStyle = outlineColor;
+      context.lineWidth = 1;
+      context.strokeRect(x, y, width, height);
+    }
     return;
   }
   const radius = Math.min(3, width / 2, height / 2);
   context.beginPath();
   context.roundRect(x, y, width, height, radius);
   context.fill();
+  if (state.hasOutlinedPianorollNotes) {
+    context.strokeStyle = outlineColor;
+    context.lineWidth = 1;
+    context.stroke();
+  }
 }
 
 function drawPianorollTrack(context, track, layout, mutedIndices) {
@@ -1920,6 +1956,7 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
   } = layout;
   const isMuted = mutedIndices.has(track.index);
   context.fillStyle = getTrackColor(track.index, trackCount, isMuted ? 0.18 : 0.72);
+  const outlineColor = getTrackOutlineColor(track.index, trackCount, isMuted ? 0.18 : 0.92);
   const pitchOpacity = isMuted ? 0.18 : 0.9;
   const pitchPaths = new Map((track.pitchPaths || []).map((path) => [path.noteIndex, path]));
   let noteIndex = 0;
@@ -1937,7 +1974,9 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     // 抑えて、異なるノートを別行として判別できるようにする。
     const pitchHeight = height / noteSpan;
     const noteHeight = Math.min(Math.max(1.5, pitchHeight * 0.72), pitchHeight * 0.8);
-    drawPianorollNote(context, x, pianorollPitchY(note, layout), noteWidth, noteHeight);
+    drawPianorollNote(
+      context, x, pianorollPitchY(note, layout), noteWidth, noteHeight, outlineColor,
+    );
     if (pitchPath) drawPitchAutomation(context, pitchPath, start, duration, track, layout, pitchOpacity);
   }
 }
@@ -2261,6 +2300,11 @@ function setupPianoroll() {
     state.hasRoundedPianorollNotes = event.target.checked;
     redrawPianorollStatic();
     saveRoundedPianorollNotes();
+  });
+  $("#pianoroll-outlined-notes").addEventListener("change", (event) => {
+    state.hasOutlinedPianorollNotes = event.target.checked;
+    redrawPianorollStatic();
+    saveOutlinedPianorollNotes();
   });
   for (const eventName of ["wheel", "pointerdown", "touchstart"]) {
     scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
