@@ -453,13 +453,15 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   line-height: 1.45;
 }
 
-.source-select {
-  min-width: 9.5rem;
-  padding: 6px 8px;
-  border: 1px solid var(--neutral-40);
-  border-radius: 6px;
-  background: var(--neutral-0);
-  color: var(--neutral-100);
+
+.track-source-field {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.track-source-options {
+  height: auto;
 }
 
 /* VGM/NSFで原曲の音源（実機チップレンダリング）を選んだトラック行。
@@ -570,6 +572,16 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   color: var(--neutral-80);
   font-size: 12px;
   font-weight: 700;
+}
+
+/* SoundFont設定はトラック一覧の末尾に置くため、一覧との間隔を確保し、
+   ラベル下だけを少し広げる。説明文の後ろには次のフォーム用の余白を追加しない。 */
+.soundfont-field {
+  margin: 12px 0 0;
+}
+
+.soundfont-field .field-label {
+  margin-bottom: 10px;
 }
 
 .soundfont-row {
@@ -1089,12 +1101,12 @@ body.is-fullscreen .app-shell {
   padding: 12px;
   display: grid;
   grid-template-columns: minmax(0, clamp(360px, 36vw, 640px)) minmax(0, 1fr);
-  grid-template-rows: auto 12px minmax(0, 1fr) auto auto auto auto;
+  grid-template-rows: auto 12px minmax(0, 1fr) auto auto auto;
   gap: 12px;
 }
 
 /* 左カラム: ファイル読み込み（上）だけを固定し、トラック一覧は
-   残り全行（r3〜r7、可変のr3を含む）へspanして画面下いっぱいまで広げる。
+   残り全行（r3〜r6、可変のr3を含む）へspanして画面下いっぱいまで広げる。
    #upload-cardの<summary>をクリックして<details>を開くと、変換オプション
    やドロップゾーンでコンテンツが数百px分伸びる。position: absoluteにすると、
    そのgrid item（に指定したgrid-column/grid-row）が包含ブロックとして
@@ -1122,10 +1134,10 @@ body.is-fullscreen .app-shell > #upload-card {
   overflow-y: auto;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
 }
-body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 8; }
+body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 7; }
 
-/* 右カラム: トランスポート／ピアノロール（大、可変行）／SoundFont／出力。
-   SoundFontはピアノロール直下（状態行の次）〜ダウンロード欄の直前に置く。
+/* 右カラム: トランスポート／ピアノロール（大、可変行）／出力。
+   SoundFont設定はトラック一覧の直下に置き、左カラムで扱う。
    r1はトランスポート自身の高さ（auto、58px程度）で決まり、左カラムの
    #upload-card折りたたみ高さ（80px）に引きずられて余白を持たない
    （#upload-cardはposition:absoluteなのでr1のサイズ決定に寄与しない —
@@ -1139,9 +1151,8 @@ body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 8; 
 body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 2; grid-row: 1; align-self: center; }
 body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 2; grid-row: 2 / 4; }
 body.is-fullscreen .app-shell > #audition-card > #pianoroll-status { grid-column: 2; grid-row: 4; align-self: start; }
-body.is-fullscreen .app-shell > #audition-card > .soundfont-field { grid-column: 2; grid-row: 5; align-self: start; margin-bottom: 0; }
-body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 2; grid-row: 6; align-self: start; }
-body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 2; grid-row: 7; align-self: start; }
+body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 2; grid-row: 5; align-self: start; }
+body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 2; grid-row: 6; align-self: start; }
 
 body.is-fullscreen #audition-card { display: contents; }
 body.is-fullscreen #audition-card > .card-heading { display: none; }
@@ -1195,6 +1206,12 @@ body.is-fullscreen #tracks-card .table-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* トラック表だけを伸縮・スクロール対象にすることで、SoundFont設定は
+   常に左カラムの下端に残る。 */
+body.is-fullscreen #tracks-card .soundfont-field {
+  flex: 0 0 auto;
 }
 
 /* トラック表: theadを固定のソートチップ行、tbodyの各trを2段の
@@ -1253,7 +1270,7 @@ body.is-fullscreen .track-row {
   grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: center;
   gap: 3px 8px;
-  padding: 6px 4px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--neutral-20);
 }
 body.is-fullscreen .track-row td {
@@ -1264,13 +1281,11 @@ body.is-fullscreen .track-row td {
 /* 1行目=トラック名/ch/ミュート・ソロ・音量、2行目=音源選択/楽器選択
    （お気に入り・警告アイコンはinstrumentCell内に既に同居している）。
    chはせいぜい2桁の数字しか入らないため最小限にし、名前と音量に多く
-   配分する。sourceは「原曲の音源（推奨）」のような長い日本語ラベルを
-   持つ<select>になるトラックがあるため（VGM/NSFの実機音源選択）、
-   楽器選択と半々にして十分な幅を確保する。 */
+   配分する。sourceの「SF｜原曲」セグメントと楽器選択を半々にする。 */
 body.is-fullscreen .track-row td:nth-child(1) { grid-column: 1 / 6; grid-row: 1; } /* name */
 body.is-fullscreen .track-row td:nth-child(2) { grid-column: 6 / 7; grid-row: 1; } /* ch */
 body.is-fullscreen .track-row td:nth-child(5) { grid-column: 7 / 13; grid-row: 1; } /* mute/solo/volume */
-/* sourceのtd自体は自然な内容幅（<select>もプレーンテキストも中身の幅
+/* sourceのtd自体は自然な内容幅（セグメントもプレーンテキストも中身の幅
    のまま）なので、単に幅いっぱいのgrid areaへ配置しただけだと左詰めの
    小さな箱の右側に不自然な空白が残る。tdをflexにしてjustify-content:
    flex-endで右寄せにし、隣接するinstrument（同じ行の右半分）に詰めて
@@ -1292,21 +1307,11 @@ body.is-fullscreen .program-select { min-width: 0; }
 /* <select>は幅が足りないとtext-overflow無しで文字を生のまま切り詰める
    （「…」も付かない）。列を広げてもなお収まらない幅では、せめて省略記号
    付きで切れるようにする保険。 */
-body.is-fullscreen .program-select,
-body.is-fullscreen .source-select {
+body.is-fullscreen .program-select {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-/* sourceの<select>は中身（"SoundFont" / "原曲の音源（推奨）"）の長さで
-   自然幅がトラックごとにバラバラになり、右寄せにしても縦に並んだ列の
-   見た目が揃わなかった。固定幅にして全トラック共通のサイズにする
-   （"原曲の音源（推奨）"が収まる余裕を見た値）。列が足りない狭い左カラム
-   幅ではmin-width:0により縮んでellipsisが効く。 */
-body.is-fullscreen .source-select {
-  flex: 0 1 12.5rem;
-  width: 12.5rem;
 }
 body.is-fullscreen .track-volume-control {
   min-width: 0;
@@ -1326,9 +1331,13 @@ body.is-fullscreen .track-warning-button {
 }
 body.is-fullscreen .track-name { min-height: 26px; }
 body.is-fullscreen .track-color-bar { height: 22px; }
-body.is-fullscreen .program-select,
-body.is-fullscreen .source-select {
+body.is-fullscreen .program-select {
   padding: 4px 6px;
+}
+body.is-fullscreen .track-source-options label {
+  min-width: 44px;
+  min-height: 22px;
+  padding: 0 8px;
 }
 
 /* 右カラム上部をトランスポートバー風の枠にする */
@@ -1353,11 +1362,10 @@ body.is-fullscreen .pianoroll-card {
 /* 900px未満は2カラムを解除し、単一カラムの縦積みへフォールバックする
    （.track-rowのチャンネルストリップ表示自体は維持する）。display:blockに
    せずgrid-template-columns: 1frの1カラムgridのまま保つのは、display:contents
-   の#audition-cardの子要素がDOM順（SoundFont→トランスポート→…）のまま
-   並んでしまうと、上のワイド表示で意図した「SoundFontはピアノロールの下」
-   という並びが崩れるため。各要素のgrid-rowを明示し直し、DOM順に頼らず
-   同じ並び順（アップロード→トラック一覧→トランスポート→ピアノロール→
-   状態行→SoundFont→ダウンロード→バリエーション）を維持する。 */
+   の#audition-cardの子要素をDOM順に依存させず、各要素のgrid-rowを
+   明示し直す。SoundFont設定は#tracks-cardの内部にあるため、同じ並び順
+   （アップロード→トラック一覧＋SoundFont→トランスポート→ピアノロール→
+   状態行→ダウンロード→バリエーション）を維持する。 */
 @media (max-width: 900px) {
   body.is-fullscreen .app-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -1373,9 +1381,8 @@ body.is-fullscreen .pianoroll-card {
   body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 1; grid-row: 3; }
   body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 1; grid-row: 4; }
   body.is-fullscreen .app-shell > #audition-card > #pianoroll-status { grid-column: 1; grid-row: 5; }
-  body.is-fullscreen .app-shell > #audition-card > .soundfont-field { grid-column: 1; grid-row: 6; }
-  body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 1; grid-row: 7; }
-  body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 1; grid-row: 8; }
+  body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 1; grid-row: 6; }
+  body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 1; grid-row: 7; }
   body.is-fullscreen .pianoroll-card { height: 320px; }
   /* #tracks-cardはflex-column+overflow:hiddenで、内側の.table-scrollも
      overflow-y:auto/min-height:0 — grid-auto-rows: autoな行に

@@ -32,7 +32,7 @@ Turn chiptune music — NES (`.nsf`), SNES (`.spc`/`.rsn`), or VGM (`.vgm`/`.vgz
 - **Upload a whole rip pack at once** — a `.zip` containing several source files, or several files selected together, works without unzipping first. A `.m3u` playlist bundled alongside is read automatically and used to show real song titles instead of bare track numbers.
 - **Reassign each track's instrument** — every track gets a General MIDI instrument dropdown, grouped into the 16 standard families (Piano, Guitar, Strings, Brass, and so on) for easy browsing. Any instrument the converter already picked is pre-selected.
 - **Adjust volume per track** — a 0–200% slider per track, independent of every other track even when several share a MIDI channel. If the source MIDI already carries a volume setting (CC7) for that track alone, the slider starts there automatically.
-- **Hear the original chip/game sound instead of a generic SoundFont** — for tracks where it's available, switch a "SoundFont" row to "原曲の音源" (Original game sound) to hear the actual NES/SNES/chip hardware output instead of a synthesized approximation.
+- **Hear the original chip/game sound instead of a generic SoundFont** — for tracks where it's available, use the compact **SF | 原曲** segmented choice to hear the actual NES/SNES/chip hardware output instead of a synthesized approximation.
 - **Change the whole song's speed and pitch** — use the compact −/＋ controls on the right side of the audition toolbar to adjust the global speed multiplier and semitone transpose. The change is applied directly to the MIDI (no audio time-stretch artifacts) and reflected in every play, WAV download, and MIDI download until you change it back.
 - **Export a batch of speed/pitch variations** — expand the normally collapsed "バリエーションをまとめて生成" (Generate variations in bulk) disclosure to generate every combination of a few speed factors and semitone shifts as a single downloadable ZIP of WAV files, named `{name}_p{+/-semitones}_x{speed}.wav` (for example, `song_p+0_x1.0.wav`), handy for game-development or remix use.
 - **Choose fast or final-quality auditioning** — Fast mode renders the full song at 22.05kHz for quick checks; Quality mode renders at 44.1kHz with the same processing used by the final WAV download. Completed renders are cached for the current session, so revisiting the same settings and mode is immediate.
@@ -75,7 +75,7 @@ Most people only ever need `miditrack` — the three converters and two scripts 
 
 1. Select or drag a `.mid`/`.midi` file onto the upload area.
 2. The track list appears. Each editable track shows an instrument dropdown (pre-selected to whatever the file already specifies) and, for tracks with notes, a 0–200% volume slider. Long track names and non-editable reasons are shortened with an ellipsis to keep every row the same height; focus or point at a ⚠ button to read an instrument-change warning.
-3. Optionally pick a different **SoundFont**, then choose **高速** (Fast, 22.05kHz) or **品質** (Quality, 44.1kHz) in the audition card. Quality mode matches the final WAV download.
+3. Optionally pick a different **SoundFont** directly below the track list, then choose **高速** (Fast, 22.05kHz) or **品質** (Quality, 44.1kHz). Quality mode matches the final WAV download.
 4. Optionally adjust the speed multiplier and/or semitone transpose with the compact −/＋ controls on the right side of the audition toolbar. You can also type a value directly into either control.
 5. The selected mode starts rendering as soon as MIDI preparation finishes, and edits refresh it after 500ms of inactivity. Use the segmented playback controls or keyboard shortcuts to play, pause, and seek; if the newest audio is still preparing, playback waits for it instead of using an older setting. Pointer-used selection controls release focus after the operation, so Space can immediately control playback; controls reached by keyboard keep their native key behavior. The adjacent digital timer shows elapsed/total time to one-tenth of a second, followed by volume and mute controls. At zoom levels wider than the viewport, playback from the beginning starts auto-scrolling after the playhead reaches the midpoint. A manual horizontal scroll stops following.
 6. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) to save your work. WAV download always uses the 44.1kHz quality render and reuses it when Quality mode has already prepared the same state.
@@ -91,10 +91,10 @@ Most people only ever need `miditrack` — the three converters and two scripts 
 
 ### Original game sound vs. SoundFont
 
-Whenever a track can be played with the real chip/game hardware sound, its Source dropdown offers two choices:
+Whenever a track can be played with the real chip/game hardware sound, its compact Source segmented control offers two choices:
 
-- **原曲の音源 (Original game sound)** — the track plays through the actual chip emulation (NSF, VGM) or a SoundFont built from the game's own samples (SPC), instead of a generic synth. Rows marked **（推奨）** ("recommended") were auto-suggested as safe to switch.
-- **SoundFont** — the track plays through your selected General MIDI SoundFont, with the instrument dropdown you can freely change.
+- **原曲 (Original game sound)** — the track plays through the actual chip emulation (NSF, VGM) or a SoundFont built from the game's own samples (SPC), instead of a generic synth.
+- **SF (SoundFont)** — the track plays through your selected General MIDI SoundFont, with the instrument dropdown you can freely change.
 
 Switching to Original game sound disables the instrument dropdown for VGM/NSF tracks (that audio never passes through the SoundFont at all); for SPC it only disables the instrument control, since volume adjustments still apply.
 

@@ -263,6 +263,24 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("@keyframes render-spinner-rotate", css)
         self.assertNotIn("prefers-reduced-motion: reduce", css)
 
+    def test_track_source_uses_same_segmented_radio_design_as_render_mode(self) -> None:
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+        source_control = javascript.split("function createTrackSourceOption", 1)[1].split(
+            "function applyProgramToAllTracks", 1
+        )[0]
+
+        self.assertIn('fieldset.className = "render-mode-field track-source-field"', source_control)
+        self.assertIn('options.className = "render-mode-options track-source-options"', source_control)
+        self.assertIn('input.className = "render-mode-input track-source-input"', source_control)
+        self.assertIn('input.type = "radio"', source_control)
+        self.assertIn('label.textContent = source === "game" ? "原曲" : "SF"', source_control)
+        self.assertIn("legend.textContent = `${track.name}の音源`", source_control)
+        self.assertNotIn('document.createElement("select")', source_control)
+        self.assertIn(".track-source-field {", css)
+        self.assertIn(".track-source-options {", css)
+        self.assertNotIn(".source-select {", css)
+
     def test_pianoroll_playhead_does_not_recopy_large_canvas_each_frame(self) -> None:
         """高倍率の再生ループが静的Canvas全体を再転送しないことを確認する。"""
         html = self.client.get("/").get_data(as_text=True)

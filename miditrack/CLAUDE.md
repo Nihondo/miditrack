@@ -148,11 +148,15 @@ as `mm:ss.t`, and runs its animation-frame refresh only while media is playing.
 Keep a tabular monospace fallback and fixed timer width so font swapping cannot
 shift adjacent controls. MIDI/WAV download buttons remain below the piano roll.
 
-The SoundFont row contains, in order, the `.program-select`, the fast/quality
+The SoundFont setting lives directly below the track list, not in the audition
+section. It contains, in order, the `.program-select`, the fast/quality
 segmented choice, and a non-interactive render spinner. The segment shows only
 the two visible labels `高速`/`品質`; profile-rate explanations belong in the
-manual, not this compact toolbar. The spinner is decorative, stays hidden
-outside rendering, and becomes static when reduced motion is requested.
+manual, not this compact toolbar. In full-screen mode, `#tracks-card` is a
+column flex container: only `.table-scroll` grows and scrolls, while the
+SoundFont field is the final, fixed control at the bottom of the left column.
+The spinner is decorative, stays hidden outside rendering, and becomes static
+when reduced motion is requested.
 
 The fast/quality segmented choice remains a native radio group with explicit
 `label[for]` associations. Its inputs use the dedicated `.render-mode-input`
@@ -160,6 +164,16 @@ canonical 1px/`clip-path` hiding rule, not the shared `.visually-hidden` helper:
 that helper intentionally becomes visible while focused/active, which puts a
 radio back into the two-column grid during a click and breaks both layout and
 hit-testing. Keyboard focus is rendered on the adjacent visible label instead.
+
+Tracks with both `soundfont` and `game` sources use a native radio group with
+the visible labels `SF`/`原曲`, not a `<select>`. The control directly reuses the
+fast/quality segment's `.render-mode-field`, `.render-mode-options`, and
+`.render-mode-input` classes so borders, selected state, and keyboard focus stay
+identical. Keep a per-track `<legend>` as its accessible name, and keep each
+radio group's `name`/`id` values unique to the track index. `state.trackRows`
+stores the group's `sourceInputs`; Cmd/Ctrl-click applies the clicked value to
+every compatible group while normal change handling still invalidates the
+audition and updates instrument availability.
 
 Pointer-operated selection controls (`select`, radio, checkbox, range, and file
 inputs) release focus after their completed pointer interaction so global Space
@@ -2209,6 +2223,11 @@ than DOM order — and that `#tracks-card` renders its full track list
 (sort chips, every row) at its explicit `min(60vh, 520px)` height with its
 own internal scroll, rather than the collapsed, content-less box the first
 version of this media query produced.
+
+Historical note: the fullscreen-layout rollout below predates the current
+`SF`/`原曲` segmented radio control. Its references to `.source-select`, the
+Source dropdown, and the longer `原曲の音源（推奨）` option document the old
+layout bugs and their fixes; they are not current implementation guidance.
 
 **Two bugs reported after the layout above shipped, both hand-tested rather
 than caught by the automated suite (neither has a Python-side regression to

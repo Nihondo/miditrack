@@ -46,7 +46,7 @@ const state = {
   usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
-  // { sourceSelect, programSelect, volumeSlider, muteButton }（無いものはnull）。
+  // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
   // Cmd/Ctrlキーを押しながらの操作で「全トラックに同じ設定を適用」する際に使う。
   trackRows: [],
   pendingAssignments: {}, // トラック番号(number) -> GMプログラム番号 | null（未送信分）
@@ -642,30 +642,82 @@ function createTrackWarningControl(track, warningText) {
   return { button, tooltip };
 }
 
-// ネイティブ<select>のポップアップが開いている間はOSネイティブUIがキー入力を
-// 奪うため、「ドロップダウンを開いた後でCmd/Ctrlを押す」操作をJS側で検知する
-// 確実な方法が無い。またchangeイベント自体も、選んだ値が変更前と同じ場合は
-// 発火しない。そのため<select>ではmousedown時点でこの判定を行い、真なら
-// event.preventDefault()でポップアップ自体を開かせず、その場で現在の値を
-// 全トラックへ適用する（つまりCmd/Ctrl+クリックは「値を変える」操作ではなく
-// 「今の値を揃える」操作になる。値を変えてから揃えたい場合は、まず普通に
-// クリックして値を変え、その後もう一度Cmd/Ctrl+クリックする）。
-// ボタン（ミュートボタン）はポップアップを持たないため、通常のclickイベントで
-// そのままこの判定を使える。
+// 楽器<select>はネイティブポップアップがキー入力を奪うためmousedown時点で、
+// 音源radioとミュートボタンは選択対象が直接クリックできるためclick時点で、
+// Cmd/Ctrlによる全トラック一括適用を判定する。
 function isBulkApplyEvent(event) {
   return event.metaKey || event.ctrlKey;
 }
 
-// Cmd/Ctrlを押しながらの音源選択で、他の全トラックの音源セレクトも同じ値に
+// Cmd/Ctrlを押しながらの音源選択で、他の全トラックの音源radioも同じ値に
 // 揃える。選択肢が無い（その値を持たない）行や、既に同じ値の行はスキップする。
 function applySourceToAllTracks(value, originIndex) {
   for (const row of state.trackRows) {
-    if (!row.sourceSelect || row.index === originIndex) continue;
-    if (row.sourceSelect.value === value) continue;
-    if (!Array.from(row.sourceSelect.options).some((option) => option.value === value)) continue;
-    row.sourceSelect.value = value;
-    row.sourceSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    if (!row.sourceInputs || row.index === originIndex) continue;
+    const sourceInput = row.sourceInputs.find((input) => input.value === value);
+    if (!sourceInput || sourceInput.checked) continue;
+    sourceInput.checked = true;
+    sourceInput.dispatchEvent(new Event("change", { bubbles: true }));
   }
+}
+
+function updateTrackSource(track, row, value) {
+  const isHardware = value === "game" && isChipHardwareFormat();
+  row.classList.toggle("is-hardware", isHardware);
+  const programSelect = row.querySelector(".program-select");
+  if (programSelect) {
+    programSelect.disabled = value !== "soundfont";
+    if (
+      value === "soundfont" &&
+      track.availableSources.includes("game") &&
+      programSelect.value === KEEP_ORIGINAL
+    ) {
+      programSelect.value = DEFAULT_GM_PROGRAM;
+      onProgramChange(track.index, programSelect.value);
+    }
+  }
+  onSourceChange(track.index, value);
+}
+
+function createTrackSourceOption(track, row, source) {
+  const input = document.createElement("input");
+  input.className = "render-mode-input track-source-input";
+  input.type = "radio";
+  input.name = `track-source-${track.index}`;
+  input.id = `track-source-${track.index}-${source}`;
+  input.value = source;
+  input.checked = source === track.source;
+  const label = document.createElement("label");
+  label.htmlFor = input.id;
+  label.textContent = source === "game" ? "原曲" : "SF";
+  input.addEventListener("change", () => {
+    if (input.checked) updateTrackSource(track, row, input.value);
+  });
+  input.addEventListener("click", (event) => {
+    if (isBulkApplyEvent(event)) applySourceToAllTracks(input.value, track.index);
+  });
+  return { input, label };
+}
+
+function createTrackSourceControl(track, row, trackRowRef) {
+  const fieldset = document.createElement("fieldset");
+  fieldset.className = "render-mode-field track-source-field";
+  const legend = document.createElement("legend");
+  legend.className = "visually-hidden";
+  legend.textContent = `${track.name}の音源`;
+  const options = document.createElement("div");
+  options.className = "render-mode-options track-source-options";
+  const sourceInputs = track.availableSources.map((source) => {
+    const option = createTrackSourceOption(track, row, source);
+    options.append(option.input, option.label);
+    return option.input;
+  });
+  if (track.sourceGroupSize > 1) {
+    fieldset.title = `同じ物理チャンネルを共有する${track.sourceGroupSize}トラックを同時に切り替えます`;
+  }
+  fieldset.append(legend, options);
+  trackRowRef.sourceInputs = sourceInputs;
+  return fieldset;
 }
 
 // Cmd/Ctrlを押しながらの楽器選択で、編集可能な他の全トラックの楽器も同じ
@@ -701,7 +753,7 @@ async function buildTrackRow(track, rowState = state) {
   const trackRowRef = {
     index: track.index,
     sourceVolumePercent: track.sourceVolumePercent ?? 100,
-    sourceSelect: null,
+    sourceInputs: null,
     programSelect: null,
     volumeSlider: null,
     muteButton: null,
@@ -733,51 +785,7 @@ async function buildTrackRow(track, rowState = state) {
 
   const sourceCell = document.createElement("td");
   if (track.availableSources.length > 1) {
-    const sourceSelect = document.createElement("select");
-    sourceSelect.className = "source-select";
-    sourceSelect.setAttribute("aria-label", `${track.name}の音源`);
-    for (const source of track.availableSources) {
-      const option = document.createElement("option");
-      option.value = source;
-      if (source === "game") {
-        option.textContent = track.sourceSuggested ? "原曲の音源（推奨）" : "原曲の音源";
-      } else option.textContent = "SoundFont";
-      sourceSelect.appendChild(option);
-    }
-    sourceSelect.value = track.source;
-    if (track.sourceGroupSize > 1) {
-      sourceSelect.title = `同じ物理チャンネルを共有する${track.sourceGroupSize}トラックを同時に切り替えます`;
-    }
-    sourceSelect.addEventListener("change", () => {
-      const isHardware = sourceSelect.value === "game" && isChipHardwareFormat();
-      row.classList.toggle("is-hardware", isHardware);
-      const programSelect = row.querySelector(".program-select");
-      if (programSelect) {
-        programSelect.disabled = sourceSelect.value !== "soundfont";
-        if (
-          sourceSelect.value === "soundfont" &&
-          track.availableSources.includes("game") &&
-          programSelect.value === KEEP_ORIGINAL
-        ) {
-          programSelect.value = DEFAULT_GM_PROGRAM;
-          onProgramChange(track.index, programSelect.value);
-        }
-      }
-      onSourceChange(track.index, sourceSelect.value);
-    });
-    // Cmd/Ctrlを押しながらのクリックはドロップダウンを開かせず、その場で
-    // 現在の値を全トラックへ適用する（isBulkApplyEvent()参照: ポップアップが
-    // 開いている間はOSネイティブUIがキー操作を奪うため、開いた後のキー入力を
-    // 確実に検知する手段が無い。値を変えてから揃えたい場合は、まず普通に
-    // クリックして値を変え、その後もう一度Cmd/Ctrl+クリックする）。
-    sourceSelect.addEventListener("mousedown", (event) => {
-      if (isBulkApplyEvent(event)) {
-        event.preventDefault();
-        applySourceToAllTracks(sourceSelect.value, track.index);
-      }
-    });
-    trackRowRef.sourceSelect = sourceSelect;
-    sourceCell.appendChild(sourceSelect);
+    sourceCell.appendChild(createTrackSourceControl(track, row, trackRowRef));
   } else {
     sourceCell.textContent = track.source === "game" ? "原曲の音源" : "SoundFont";
   }
@@ -828,7 +836,7 @@ async function buildTrackRow(track, rowState = state) {
       onProgramChange(track.index, select.value);
       updatePinButton();
     });
-    // sourceSelectと同じ理由でmousedown+preventDefault方式にする
+    // 楽器<select>はネイティブポップアップを持つためmousedown+preventDefault方式にする
     // （isBulkApplyEvent()参照）。KEEP_ORIGINALのまま揃えても意味が無いので
     // スキップする。
     select.addEventListener("mousedown", (event) => {
