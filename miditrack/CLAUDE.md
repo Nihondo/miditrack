@@ -2471,6 +2471,15 @@ Chrome DevTools: the `原曲の音源（推奨）` label renders in full with th
 column split, and opening `#upload-card` now leaves the transport bar,
 piano roll, and track list at their exact original screen position.
 
+**Why the expanded full-screen file panel does not scroll internally**:
+the earlier `max-height: min(60vh, 560px)` and `overflow-y: auto` made the
+conversion action fall below an inner scrollbar on shorter wide windows. The
+overlay now has no height cap or overflow scroller, while its full-screen-only
+padding, drop-zone, conversion panel, and field gaps are reduced. This keeps
+the format options and `MIDIに変換` action visible together in the normal
+desktop full-screen viewport; the narrow (`max-width: 900px`) fallback retains
+the app shell's single-column page scrolling for the rest of the interface.
+
 **Channel-strip row split changed from name/ch/source + instrument/volume to
 name/ch/volume + source/instrument**, at the user's request, so row 1 groups
 a track's identity and level controls (name, channel, mute, solo, the volume

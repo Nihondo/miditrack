@@ -332,6 +332,22 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("const pitchHeight = height / noteSpan", draw_track_block)
         self.assertIn("pitchHeight * 0.8", draw_track_block)
 
+    def test_fullscreen_upload_panel_shows_conversion_action_without_inner_scroll(self) -> None:
+        """全画面で開いたファイルパネルは、変換操作までを内部スクロールせずに表示する。"""
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+
+        upload_rule = css.split("body.is-fullscreen .app-shell > #upload-card {", 1)[1].split(
+            "}", 1
+        )[0]
+        self.assertIn("max-height: none", upload_rule)
+        self.assertIn("overflow: visible", upload_rule)
+
+        drop_zone_rule = css.split("body.is-fullscreen #upload-card .drop-zone {", 1)[1].split(
+            "}", 1
+        )[0]
+        self.assertIn("min-height: 96px", drop_zone_rule)
+        self.assertIn("padding: 12px", drop_zone_rule)
+
     def test_pianoroll_draws_pitchwheel_paths(self) -> None:
         """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)

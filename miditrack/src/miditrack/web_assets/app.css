@@ -1263,8 +1263,10 @@ body.is-fullscreen .app-shell > #upload-card {
   left: 0;
   width: 100%;
   z-index: 5;
-  max-height: min(60vh, 560px);
-  overflow-y: auto;
+  /* 変換オプションとMIDI作成ボタンまでを一度に見せる。ここに高さ上限と
+     内部スクロールを置くと、特に短めの全画面で主操作が隠れてしまう。 */
+  max-height: none;
+  overflow: visible;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
 }
 body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 7; }
@@ -1318,15 +1320,27 @@ body.is-fullscreen #upload-card > summary.card-heading h2 {
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-/* #upload-cardは開くとmax-height+overflow-y:autoで内部スクロールする
-   （上のgrid-row:1の項参照）。summaryをstickyにして、スクロールしても
-   閉じるための見出し行を見失わないようにする。 */
-body.is-fullscreen #upload-card > summary.card-heading {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--neutral-0);
+/* 全画面で開いたファイルパネルは、内部スクロールを使わずに変換ボタンまで
+   表示する。そのため通常表示より余白を圧縮し、短めの画面でも必要な操作を
+   1つのパネルに収める。 */
+body.is-fullscreen #upload-card { padding: 16px; }
+body.is-fullscreen #upload-card .drop-zone {
+  min-height: 96px;
+  padding: 12px;
 }
+body.is-fullscreen #upload-card .drop-zone svg { width: 24px; height: 24px; }
+body.is-fullscreen #upload-card .drop-zone strong { font-size: 14px; }
+body.is-fullscreen #upload-card .compact-toolbar { margin-top: 8px; }
+body.is-fullscreen #upload-card .convert-panel {
+  margin-top: 8px;
+  padding: 12px;
+}
+body.is-fullscreen #upload-card .convert-panel-title { margin-bottom: 8px; }
+body.is-fullscreen #upload-card .convert-options {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+body.is-fullscreen #upload-card .field-group { margin-bottom: 8px; }
 
 body.is-fullscreen #tracks-card {
   display: flex;
