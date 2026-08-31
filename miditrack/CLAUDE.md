@@ -87,6 +87,33 @@ tracks are, mechanically, just muted tracks — and a track muted before
 solo starts stays dimmed after solo ends, because `exitSolo()` restores
 the pre-solo snapshot rather than a flat "all unmuted" state.
 
+Horizontal pointer movement of at least `LOOP_DRAG_THRESHOLD_PX` selects a
+piano-roll loop instead of performing a click seek. The browser owns this
+transport-only state (`loopStartSeconds`, `loopEndSeconds`, and
+`isLoopEnabled`): the DOM overlay and numeric controls mirror it, and the
+playback rAF seeks back to the start once the player reaches the end. The
+range is persisted under the project archive's validated `ui.loop` object; it
+does not change the MIDI or render a shorter audio file.
+
+Pressing a track-name button sets only `highlightedTrackIndex` and locally
+redraws the current canvas slice. Other notes use the same dim opacity as
+muted/soloed notes, but no session PATCH or audio rerender occurs. Pointer
+capture plus pointerup/cancel/lostcapture and Enter/Space keyup guarantee that
+the highlight is temporary.
+
+Ensemble presets are persisted role-to-GM-program maps in
+`preferences.json`, with three editable defaults. The native `<dialog>` editor
+uses the normal GM catalogue for melodic roles and a concise General MIDI drum
+kit list for percussion. Activating one captures the current per-track
+source/program state, suggests roles from percussion identity, pitch range, and
+note density, then shows role selects in place of program selects. Preset
+changes reuse those roles; clearing restores the captured assignments. Project
+`ui.ensemblePreset`, its validated definition, `ui.trackRoles`, and the
+pre-preset restoration snapshot are validated before archiving. Including the
+definition keeps a project editable when the local preferences no longer have
+that custom preset, while persisting the snapshot lets Clear preset restore the
+true pre-preset choices after reopening a project.
+
 **Added: mouse-wheel seeking while hovering the piano roll.** `#pianoroll-canvas`
 gained a `wheel` listener (`handlePianorollWheel()`, registered
 `{ passive: false }` so it can call `preventDefault()`) alongside the

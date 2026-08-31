@@ -3308,12 +3308,16 @@ class TestWebAppPreferences(unittest.TestCase):
             content_type="multipart/form-data",
         )
 
-    def test_get_preferences_defaults_to_empty(self) -> None:
+    def test_get_preferences_includes_default_ensemble_presets(self) -> None:
         response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["pinnedPrograms"], [])
+        self.assertEqual(payload["usageCounts"], {})
+        self.assertIsNone(payload["selectedSoundfont"])
         self.assertEqual(
-            response.get_json(),
-            {"pinnedPrograms": [], "usageCounts": {}, "selectedSoundfont": None},
+            [preset["name"] for preset in payload["ensemblePresets"]],
+            ["ゲームリード", "アコースティック", "ジャズカルテット"],
         )
 
     def test_patch_updates_pinned_programs(self) -> None:
@@ -3350,6 +3354,42 @@ class TestWebAppPreferences(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["pinnedPrograms"], [80])
         self.assertEqual(payload["usageCounts"], {"80": 2})
+
+    def test_patch_saves_custom_ensemble_preset(self) -> None:
+        custom_preset = {
+            "id": "custom-synthwave",
+            "name": "Synthwave",
+            "programs": {
+                "melody": 80,
+                "counterMelody": 81,
+                "bass": 38,
+                "accompaniment": 88,
+                "percussion": 24,
+            },
+        }
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"ensemblePresets": [custom_preset]}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["ensemblePresets"], [custom_preset])
+        loaded = self.client.get("/api/preferences", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(loaded["ensemblePresets"], [custom_preset])
+
+    def test_patch_rejects_invalid_ensemble_preset_role(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "ensemblePresets": [{
+                    "id": "custom-invalid",
+                    "name": "Invalid",
+                    "programs": {"melody": 80},
+                }],
+            }),
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_patch_requires_at_least_one_field(self) -> None:
         response = self.client.patch(
@@ -3446,10 +3486,24 @@ class TestWebAppPreferences(unittest.TestCase):
             data=json.dumps({"name": "saved project"}),
         )
 
+        acoustic_preset = next(
+            preset for preset in preferences.build_default_ensemble_presets()
+            if preset["id"] == "acoustic"
+        )
         exported = self.client.post(
             "/api/project/export",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
-            data=json.dumps({"renderMode": "quality"}),
+            data=json.dumps({
+                "renderMode": "quality",
+                "loop": {"start": 1.0, "end": 2.5, "enabled": True},
+                "ensemblePreset": "acoustic",
+                "ensemblePresetDefinition": acoustic_preset,
+                "trackRoles": {"0": "melody", "1": "percussion"},
+                "ensemblePresetSnapshot": {
+                    "assignments": {"0": 12, "1": None},
+                    "sources": {"0": "soundfont", "1": "soundfont"},
+                },
+            }),
         )
         self.assertEqual(exported.status_code, 200)
         self.assertEqual(exported.mimetype, "application/vnd.miditrack.project+zip")
@@ -3459,6 +3513,23 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertEqual(manifest["format"], "miditrack-project")
         self.assertEqual(manifest["edits"]["assignments"], {"0": 30})
         self.assertEqual(manifest["ui"]["renderMode"], "quality")
+        self.assertEqual(
+            manifest["ui"]["loop"],
+            {"start": 1.0, "end": 2.5, "enabled": True},
+        )
+        self.assertEqual(manifest["ui"]["ensemblePreset"], "acoustic")
+        self.assertEqual(manifest["ui"]["ensemblePresetDefinition"], acoustic_preset)
+        self.assertEqual(
+            manifest["ui"]["trackRoles"],
+            {"0": "melody", "1": "percussion"},
+        )
+        self.assertEqual(
+            manifest["ui"]["ensemblePresetSnapshot"],
+            {
+                "assignments": {"0": 12, "1": None},
+                "sources": {"0": "soundfont", "1": "soundfont"},
+            },
+        )
 
         self.client.delete("/api/session", headers=AUTH_HEADERS)
         imported = self.client.post(
@@ -3469,7 +3540,20 @@ class TestWebAppPreferences(unittest.TestCase):
         )
         self.assertEqual(imported.status_code, 200)
         payload = imported.get_json()
-        self.assertEqual(payload["uiState"], {"renderMode": "quality"})
+        self.assertEqual(
+            payload["uiState"],
+            {
+                "renderMode": "quality",
+                "loop": {"start": 1.0, "end": 2.5, "enabled": True},
+                "ensemblePreset": "acoustic",
+                "ensemblePresetDefinition": acoustic_preset,
+                "trackRoles": {"0": "melody", "1": "percussion"},
+                "ensemblePresetSnapshot": {
+                    "assignments": {"0": 12, "1": None},
+                    "sources": {"0": "soundfont", "1": "soundfont"},
+                },
+            },
+        )
         self.assertEqual(payload["warnings"], [])
         session = payload["session"]
         self.assertEqual(session["downloadStem"], "saved project")
@@ -3491,6 +3575,42 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertEqual(current["filename"], "fixture")
         self.assertEqual(len(current["tracks"]), 2)
 
+    def test_project_export_rejects_invalid_loop_track_role_and_snapshot(self) -> None:
+        self._upload()
+        invalid_loop = self.client.post(
+            "/api/project/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "renderMode": "fast",
+                "loop": {"start": 2.0, "end": 1.0, "enabled": True},
+            }),
+        )
+        self.assertEqual(invalid_loop.status_code, 400)
+        invalid_role = self.client.post(
+            "/api/project/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "renderMode": "fast",
+                "ensemblePreset": "acoustic",
+                "trackRoles": {"0": "unknown"},
+            }),
+        )
+        self.assertEqual(invalid_role.status_code, 400)
+        invalid_snapshot = self.client.post(
+            "/api/project/export",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "renderMode": "fast",
+                "ensemblePreset": "acoustic",
+                "trackRoles": {"0": "melody"},
+                "ensemblePresetSnapshot": {
+                    "assignments": {"0": 12},
+                    "sources": {"0": "soundfont"},
+                },
+            }),
+        )
+        self.assertEqual(invalid_snapshot.status_code, 400)
+
     def test_project_controls_and_deferred_patches_are_wired(self) -> None:
         html = self.client.get("/").get_data(as_text=True)
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
@@ -3501,6 +3621,13 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function handleOpenProject(file)", javascript)
         self.assertIn("await flushPendingDownloadFilename();", javascript)
         self.assertIn('apiFetch("/api/project/import"', javascript)
+        self.assertIn('id="pianoroll-loop-enabled"', html)
+        self.assertIn('id="ensemble-preset-select"', html)
+        self.assertIn('id="ensemble-preset-new"', html)
+        self.assertIn('id="ensemble-preset-dialog"', html)
+        self.assertIn("function suggestTrackRoles()", javascript)
+        self.assertIn("function handleEnsemblePresetSave", javascript)
+        self.assertIn("function setupTrackHighlightControl", javascript)
 
 
 class TestResolveStartupSoundfontOverride(unittest.TestCase):

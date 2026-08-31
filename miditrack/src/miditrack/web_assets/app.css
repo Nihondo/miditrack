@@ -255,6 +255,7 @@ details[open] > summary.card-heading .disclosure-chevron { transform: rotate(180
 .button.primary { color: #fff; background: var(--brand-gradient); box-shadow: var(--shadow-brand); }
 .button.secondary { color: var(--neutral-80); background: var(--neutral-0); border-color: var(--neutral-40); }
 .button.ghost { color: var(--neutral-60); background: transparent; border-color: var(--neutral-30); }
+.button.danger { color: var(--danger); }
 .button.small { min-height: 32px; padding: 6px 10px; font-size: 12px; }
 .reset-action { margin-left: auto; }
 .button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(86, 116, 185, 0.2); }
@@ -323,13 +324,27 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .track-name-cell { width: 180px; max-width: 180px; }
 
 .track-name {
+  width: 100%;
   min-height: 32px;
   min-width: 0;
+  margin: 0;
+  padding: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--neutral-100);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
   font-weight: 600;
+  text-align: start;
+}
+
+.track-name:hover .track-name-text { color: var(--brand-dark); }
+.track-name:focus-visible {
+  outline: 2px solid var(--brand-dark);
+  outline-offset: 2px;
 }
 
 .track-name-text {
@@ -576,9 +591,66 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 /* SoundFont設定はトラック一覧の末尾に置くため、一覧との間隔を確保し、
    ラベル下だけを少し広げる。説明文の後ろには次のフォーム用の余白を追加しない。 */
+.ensemble-preset-field,
 .soundfont-field {
   margin: 12px 0 0;
 }
+
+.ensemble-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ensemble-preset-row .program-select { min-width: 0; flex: 1 1 auto; }
+.ensemble-preset-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+
+.ensemble-preset-dialog {
+  width: min(680px, calc(100% - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: auto;
+  padding: 0;
+  color: var(--neutral-100);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(23, 43, 77, 0.3);
+}
+
+.ensemble-preset-dialog::backdrop { background: rgba(23, 43, 77, 0.52); }
+.ensemble-preset-dialog form { padding: 24px; }
+.dialog-heading { margin-bottom: 20px; }
+.dialog-heading h2 { margin: 0 0 4px; font-size: 18px; }
+.dialog-heading p { margin: 0; color: var(--neutral-60); font-size: 13px; }
+
+.ensemble-preset-programs {
+  margin: 20px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.ensemble-preset-programs legend {
+  margin-bottom: 8px;
+  color: var(--neutral-80);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ensemble-preset-program-grid {
+  display: grid;
+  grid-template-columns: minmax(76px, 0.3fr) minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.ensemble-preset-program-grid > label {
+  color: var(--neutral-80);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ensemble-preset-program-grid .program-select { width: 100%; }
+.dialog-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
 
 .soundfont-field .field-label {
   margin-bottom: 10px;
@@ -876,8 +948,18 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   will-change: transform;
 }
 
+.pianoroll-loop-region {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  background: rgba(86, 116, 185, 0.18);
+  border-inline: 2px solid var(--brand-dark);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+}
+
 .pianoroll-scroll canvas.is-seekable {
-  cursor: ew-resize;
+  cursor: crosshair;
 }
 
 .pianoroll-scroll canvas:focus-visible {
@@ -1022,6 +1104,46 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 #pianoroll-status:empty { display: none; }
 
+.pianoroll-footer {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.pianoroll-loop-controls {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--neutral-60);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pianoroll-loop-toggle {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--neutral-80);
+}
+
+.pianoroll-loop-controls input[type="number"] {
+  width: 72px;
+  min-height: 32px;
+  padding: 5px 7px;
+  color: var(--neutral-100);
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.pianoroll-loop-controls .button { min-height: 32px; }
+.pianoroll-footer .field-help { margin: 0; }
+
 .variation-panel {
   margin-top: 16px;
   padding: 16px;
@@ -1150,12 +1272,13 @@ body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 7; 
    発生しない）。 */
 body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 2; grid-row: 1; align-self: center; }
 body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 2; grid-row: 2 / 4; }
-body.is-fullscreen .app-shell > #audition-card > #pianoroll-status { grid-column: 2; grid-row: 4; align-self: start; }
+body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 2; grid-row: 4; align-self: start; }
 body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 2; grid-row: 5; align-self: start; }
 body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 2; grid-row: 6; align-self: start; }
 
 body.is-fullscreen #audition-card { display: contents; }
 body.is-fullscreen #audition-card > .card-heading { display: none; }
+body.is-fullscreen #pianoroll-help { display: none; }
 /* display:contentsの要素自体はボックスを持たずopacityが効かないため、
    .disabled-section（!ready時に薄く見せる）を子要素へ付け替える。 */
 body.is-fullscreen #audition-card:not(.ready) > * { opacity: 0.58; }
@@ -1211,6 +1334,10 @@ body.is-fullscreen #tracks-card .table-scroll {
 /* トラック表だけを伸縮・スクロール対象にすることで、SoundFont設定は
    常に左カラムの下端に残る。 */
 body.is-fullscreen #tracks-card .soundfont-field {
+  flex: 0 0 auto;
+}
+
+body.is-fullscreen #tracks-card .ensemble-preset-field {
   flex: 0 0 auto;
 }
 
@@ -1380,7 +1507,7 @@ body.is-fullscreen .pianoroll-card {
   body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 2; }
   body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 1; grid-row: 3; }
   body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 1; grid-row: 4; }
-  body.is-fullscreen .app-shell > #audition-card > #pianoroll-status { grid-column: 1; grid-row: 5; }
+  body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 1; grid-row: 5; }
   body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 1; grid-row: 6; }
   body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column: 1; grid-row: 7; }
   body.is-fullscreen .pianoroll-card { height: 320px; }
@@ -1391,4 +1518,11 @@ body.is-fullscreen .pianoroll-card {
      と同じ理由で明示的なheightを持つのと同じ問題）。明示的な高さを与えて
      この循環を断ち切る。 */
   body.is-fullscreen #tracks-card { height: min(60vh, 520px); }
+}
+
+@media (max-width: 700px) {
+  .ensemble-preset-row { align-items: stretch; flex-direction: column; }
+  .ensemble-preset-actions { justify-content: flex-end; }
+  .ensemble-preset-program-grid { grid-template-columns: 1fr; gap: 4px; }
+  .ensemble-preset-program-grid > label:not(:first-child) { margin-top: 8px; }
 }

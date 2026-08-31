@@ -88,7 +88,7 @@
               <th scope="col" role="columnheader" data-sort-key="index" aria-sort="ascending"><button type="button" class="sort-button" data-sort-key="index">トラック<span class="sort-indicator" aria-hidden="true">▲</span></button></th>
               <th scope="col" role="columnheader" data-sort-key="channel"><button type="button" class="sort-button" data-sort-key="channel">ch<span class="sort-indicator" aria-hidden="true"></span></button></th>
               <th scope="col" role="columnheader" data-sort-key="source"><button type="button" class="sort-button" data-sort-key="source">音源<span class="sort-indicator" aria-hidden="true"></span></button></th>
-              <th scope="col" role="columnheader" data-sort-key="instrument"><button type="button" class="sort-button" data-sort-key="instrument">楽器<span class="sort-indicator" aria-hidden="true"></span></button></th>
+              <th scope="col" role="columnheader" data-sort-key="instrument"><button type="button" class="sort-button" data-sort-key="instrument"><span class="track-instrument-header-label">楽器</span><span class="sort-indicator" aria-hidden="true"></span></button></th>
               <th scope="col" role="columnheader" data-sort-key="volume"><button type="button" class="sort-button" data-sort-key="volume">音量<span class="sort-indicator" aria-hidden="true"></span></button></th>
             </tr>
           </thead>
@@ -96,6 +96,20 @@
         </table>
       </div>
       <p class="field-help" id="tracks-empty">MIDIを読み込むとここにトラック一覧が表示されます。</p>
+      <div class="field-group ensemble-preset-field">
+        <label class="field-label" for="ensemble-preset-select">編成プリセット</label>
+        <div class="ensemble-preset-row">
+          <select id="ensemble-preset-select" class="program-select" aria-describedby="ensemble-preset-help" disabled>
+            <option value="">プリセット解除</option>
+          </select>
+          <div class="ensemble-preset-actions" role="group" aria-label="編成プリセットの操作">
+            <button type="button" class="button ghost small" id="ensemble-preset-new">新規</button>
+            <button type="button" class="button ghost small" id="ensemble-preset-edit" disabled>編集</button>
+            <button type="button" class="button ghost small danger" id="ensemble-preset-delete" disabled>削除</button>
+          </div>
+        </div>
+        <p class="field-help" id="ensemble-preset-help">適用中は、各トラックの楽器欄が役割選択に切り替わります。</p>
+      </div>
       <div class="field-group soundfont-field">
         <label class="field-label" for="soundfont-select">SoundFont</label>
         <div class="soundfont-row">
@@ -229,6 +243,7 @@
                 aria-valuenow="0"
                 aria-valuetext="0秒"
               >ピアノロール表示。再生コントロールやキーボードでも再生位置を変更できます。</canvas>
+              <span class="pianoroll-loop-region" id="pianoroll-loop-region" aria-hidden="true" hidden></span>
               <span class="pianoroll-playhead" id="pianoroll-playhead" aria-hidden="true" hidden></span>
             </div>
           </div>
@@ -240,7 +255,23 @@
           <button type="button" id="pianoroll-zoom-in" aria-label="時間軸を拡大" disabled>＋</button>
         </div>
       </div>
-      <p class="field-help" id="pianoroll-status"></p>
+      <div class="pianoroll-footer">
+        <div class="pianoroll-loop-controls" role="group" aria-label="区間ループ">
+          <label class="pianoroll-loop-toggle" for="pianoroll-loop-enabled">
+            <input type="checkbox" id="pianoroll-loop-enabled" disabled>
+            <span>区間ループ</span>
+          </label>
+          <label for="pianoroll-loop-start">開始</label>
+          <input type="number" id="pianoroll-loop-start" min="0" step="0.1" inputmode="decimal" placeholder="0.0" disabled>
+          <span aria-hidden="true">秒</span>
+          <label for="pianoroll-loop-end">終了</label>
+          <input type="number" id="pianoroll-loop-end" min="0" step="0.1" inputmode="decimal" placeholder="0.0" disabled>
+          <span aria-hidden="true">秒</span>
+          <button type="button" class="button ghost small" id="pianoroll-loop-clear" disabled>解除</button>
+        </div>
+        <p class="field-help" id="pianoroll-help">クリックで再生位置を移動、横方向のドラッグでループ範囲を選択します。</p>
+        <p class="field-help" id="pianoroll-status"></p>
+      </div>
       <div class="toolbar download-toolbar" aria-label="ダウンロード">
         <button type="button" class="button secondary" id="download-button">MIDIをダウンロード</button>
         <button type="button" class="button secondary" id="download-wav-button">WAVをダウンロード</button>
@@ -273,6 +304,38 @@
       </details>
     </article>
   </main>
+
+  <dialog class="ensemble-preset-dialog" id="ensemble-preset-dialog" aria-labelledby="ensemble-preset-dialog-title">
+    <form method="dialog" id="ensemble-preset-form">
+      <div class="dialog-heading">
+        <h2 id="ensemble-preset-dialog-title">編成プリセットを編集</h2>
+        <p>役割ごとの音色を指定します。適用中のプリセットを保存すると、現在の役割へすぐ反映されます。</p>
+      </div>
+      <div class="convert-field">
+        <label for="ensemble-preset-name">プリセット名</label>
+        <input type="text" id="ensemble-preset-name" maxlength="48" required autocomplete="off">
+      </div>
+      <fieldset class="ensemble-preset-programs">
+        <legend>役割ごとの音色</legend>
+        <div class="ensemble-preset-program-grid">
+          <label for="ensemble-preset-program-melody">主旋律</label>
+          <select id="ensemble-preset-program-melody" class="program-select"></select>
+          <label for="ensemble-preset-program-counterMelody">対旋律</label>
+          <select id="ensemble-preset-program-counterMelody" class="program-select"></select>
+          <label for="ensemble-preset-program-bass">ベース</label>
+          <select id="ensemble-preset-program-bass" class="program-select"></select>
+          <label for="ensemble-preset-program-accompaniment">伴奏</label>
+          <select id="ensemble-preset-program-accompaniment" class="program-select"></select>
+          <label for="ensemble-preset-program-percussion">打楽器</label>
+          <select id="ensemble-preset-program-percussion" class="program-select"></select>
+        </div>
+      </fieldset>
+      <div class="dialog-actions">
+        <button type="button" class="button ghost" id="ensemble-preset-cancel">キャンセル</button>
+        <button type="submit" class="button primary">保存</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="global-status" class="status-toast" hidden></div>
 </body>

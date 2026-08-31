@@ -18,7 +18,34 @@ const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
 const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 const PLAYBACK_SEEK_SECONDS = 1;
+const LOOP_DRAG_THRESHOLD_PX = 6;
+const MIN_LOOP_SECONDS = 0.1;
 const PREWARM_DELAY_MS = 500;
+const TRACK_ROLES = [
+  { id: "melody", label: "主旋律" },
+  { id: "counterMelody", label: "対旋律" },
+  { id: "bass", label: "ベース" },
+  { id: "accompaniment", label: "伴奏" },
+  { id: "percussion", label: "打楽器" },
+];
+const NEW_ENSEMBLE_PRESET_PROGRAMS = {
+  melody: 80,
+  counterMelody: 81,
+  bass: 38,
+  accompaniment: 88,
+  percussion: 24,
+};
+const PERCUSSION_KIT_PROGRAMS = [
+  { program: 0, name: "Standard Kit" },
+  { program: 8, name: "Room Kit" },
+  { program: 16, name: "Power Kit" },
+  { program: 24, name: "Electronic Kit" },
+  { program: 25, name: "TR-808 Kit" },
+  { program: 32, name: "Jazz Kit" },
+  { program: 40, name: "Brush Kit" },
+  { program: 48, name: "Orchestra Kit" },
+  { program: 56, name: "SFX Kit" },
+];
 // crossfadeToRender()が再生中の乗り換えに使う等パワークロスフェードの長さ（ms）。
 const CROSSFADE_MS = 120;
 const POINTER_FOCUS_CONTROL_SELECTOR = [
@@ -71,11 +98,21 @@ const state = {
   pianorollSize: null,
   pianorollTimelineWidth: 0,
   pianorollScrollFrameId: null,
-  isPianorollSeeking: false,
   pianorollPointerId: null,
+  pianorollPointerStartClientX: null,
+  pianorollPointerAnchorSeconds: null,
+  isPianorollLoopDragging: false,
   pianorollZoom: 1,
   isPianorollAutoFollowing: false,
   pianorollAutoScrollTarget: null,
+  loopStartSeconds: null,
+  loopEndSeconds: null,
+  isLoopEnabled: false,
+  highlightedTrackIndex: null,
+  ensemblePresets: [],
+  ensemblePresetId: null,
+  trackRoles: {},
+  ensemblePresetSnapshot: null,
   playbackTimeFrameId: null,
   pointerActivatedControl: null,
   renderMode: "fast",
@@ -240,6 +277,8 @@ async function loadPreferences() {
     const payload = await response.json();
     state.pinnedPrograms = new Set(payload.pinnedPrograms || []);
     state.usageCounts = payload.usageCounts || {};
+    state.ensemblePresets = payload.ensemblePresets || [];
+    renderEnsemblePresetOptions();
   } catch (_error) {
     // 読み込めなくても機能自体は空の状態で継続する。
   }
@@ -743,6 +782,64 @@ function applyMuteToAllTracks(shouldMute, originIndex) {
   }
 }
 
+function setHighlightedTrack(trackIndex) {
+  if (state.highlightedTrackIndex === trackIndex) return;
+  state.highlightedTrackIndex = trackIndex;
+  redrawPianorollStatic();
+}
+
+// トラック名とカラーバーを一つのネイティブbuttonとして扱い、ポインターまたは
+// キーボードを押している間だけピアノロール上の対象トラックを強調する。
+// clickで状態を固定しないため、再生・ミュート・ソロの状態には一切影響しない。
+function setupTrackHighlightControl(control, trackIndex) {
+  const beginHighlight = () => setHighlightedTrack(trackIndex);
+  const endHighlight = () => {
+    if (state.highlightedTrackIndex === trackIndex) setHighlightedTrack(null);
+  };
+  control.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    control.setPointerCapture(event.pointerId);
+    beginHighlight();
+  });
+  control.addEventListener("pointerup", endHighlight);
+  control.addEventListener("pointercancel", endHighlight);
+  control.addEventListener("lostpointercapture", endHighlight);
+  control.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key) || event.repeat) return;
+    if (event.key === " ") event.preventDefault();
+    beginHighlight();
+  });
+  control.addEventListener("keyup", (event) => {
+    if (["Enter", " "].includes(event.key)) endHighlight();
+  });
+  control.addEventListener("blur", endHighlight);
+}
+
+function activeEnsemblePreset() {
+  return state.ensemblePresets.find((preset) => preset.id === state.ensemblePresetId) || null;
+}
+
+function createTrackRoleControl(track, trackRowRef) {
+  const select = document.createElement("select");
+  select.className = "program-select role-select";
+  select.dataset.trackIndex = String(track.index);
+  select.setAttribute("aria-label", `${track.name}の役割`);
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "役割を選択";
+  select.appendChild(emptyOption);
+  for (const role of TRACK_ROLES) {
+    const option = document.createElement("option");
+    option.value = role.id;
+    option.textContent = role.label;
+    select.appendChild(option);
+  }
+  select.value = state.trackRoles[track.index] || "";
+  select.addEventListener("change", () => onTrackRoleChange(track.index, select.value));
+  trackRowRef.roleSelect = select;
+  return select;
+}
+
 async function buildTrackRow(track, rowState = state) {
   const row = document.createElement("tr");
   row.className = "track-row";
@@ -755,6 +852,7 @@ async function buildTrackRow(track, rowState = state) {
     sourceVolumePercent: track.sourceVolumePercent ?? 100,
     sourceInputs: null,
     programSelect: null,
+    roleSelect: null,
     volumeSlider: null,
     muteButton: null,
     soloButton: null,
@@ -763,8 +861,10 @@ async function buildTrackRow(track, rowState = state) {
 
   const nameCell = document.createElement("td");
   nameCell.className = "track-name-cell";
-  const nameLabel = document.createElement("div");
+  const nameLabel = document.createElement("button");
+  nameLabel.type = "button";
   nameLabel.className = "track-name";
+  nameLabel.setAttribute("aria-label", `${track.name}を押している間、ピアノロールで強調表示`);
   const colorBar = document.createElement("span");
   colorBar.className = "track-color-bar";
   colorBar.setAttribute("aria-hidden", "true");
@@ -773,6 +873,7 @@ async function buildTrackRow(track, rowState = state) {
   nameText.className = "track-name-text";
   nameText.textContent = track.name;
   nameLabel.append(colorBar, nameText);
+  setupTrackHighlightControl(nameLabel, track.index);
   nameCell.appendChild(nameLabel);
   row.appendChild(nameCell);
 
@@ -795,6 +896,9 @@ async function buildTrackRow(track, rowState = state) {
   const instrumentCell = document.createElement("td");
   instrumentCell.className = "track-instrument-cell";
   if (track.editable) {
+    if (activeEnsemblePreset()) {
+      instrumentCell.appendChild(createTrackRoleControl(track, trackRowRef));
+    } else {
     const fragment = await loadInstrumentOptions();
     const select = document.createElement("select");
     select.className = "program-select instrument-select";
@@ -863,6 +967,7 @@ async function buildTrackRow(track, rowState = state) {
       instrumentCell.appendChild(warningControl.tooltip);
     }
     instrumentCell.appendChild(selectRow);
+    }
   } else {
     const reason = document.createElement("span");
     reason.className = "lock-reason";
@@ -1032,6 +1137,310 @@ function onSourceChange(trackIndex, source) {
   state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
 }
 
+function captureEnsemblePresetSnapshot() {
+  const assignments = {};
+  const sources = {};
+  for (const track of state.session?.tracks || []) {
+    assignments[track.index] = track.assignedProgram ?? null;
+    sources[track.index] = track.source;
+  }
+  return { assignments, sources };
+}
+
+function queueTrackRoleAssignment(trackIndex, roleId) {
+  const preset = activeEnsemblePreset();
+  const track = state.session?.tracks.find((item) => item.index === trackIndex);
+  if (!preset || !track || !roleId) return;
+  const program = preset.programs[roleId];
+  if (program === undefined) return;
+  clearSoloStateIfActive();
+  state.pendingAssignments[trackIndex] = program;
+  if (track.availableSources.includes("soundfont")) {
+    state.pendingSources[trackIndex] = "soundfont";
+  }
+}
+
+function onTrackRoleChange(trackIndex, roleId) {
+  if (TRACK_ROLES.some((role) => role.id === roleId)) {
+    state.trackRoles[trackIndex] = roleId;
+    queueTrackRoleAssignment(trackIndex, roleId);
+  } else {
+    delete state.trackRoles[trackIndex];
+    const snapshot = state.ensemblePresetSnapshot;
+    if (snapshot) {
+      state.pendingAssignments[trackIndex] = snapshot.assignments[trackIndex] ?? null;
+      state.pendingSources[trackIndex] = snapshot.sources[trackIndex];
+    }
+  }
+  clearTimeout(state.patchTimer);
+  state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
+}
+
+function pianorollTrackStatistics(track) {
+  const payload = state.pianoroll;
+  if (!payload || !track?.notes?.length) return { averageNote: 0, density: 0 };
+  const offsets = pianorollFieldOffsets(payload);
+  let noteTotal = 0;
+  let noteCount = 0;
+  for (let offset = 0; offset < track.notes.length; offset += payload.stride) {
+    noteTotal += track.notes[offset + offsets.note];
+    noteCount += 1;
+  }
+  return {
+    averageNote: noteCount > 0 ? noteTotal / noteCount : 0,
+    density: noteCount / Math.max(1, payload.durationSeconds),
+  };
+}
+
+// MIDIチャンネル、トラック名、音域、発音密度から初期役割を提案する。
+// 結果は確定値ではなく各行の<select>へ入る初期候補で、ユーザーが自由に修正できる。
+function suggestTrackRoles() {
+  const tracks = (state.session?.tracks || []).filter((track) => track.editable && track.noteCount > 0);
+  const pianoTracks = new Map((state.pianoroll?.tracks || []).map((track) => [track.index, track]));
+  const suggested = {};
+  const pitched = [];
+  for (const track of tracks) {
+    const isPercussion = track.channels.includes(9)
+      || /drum|perc|rhythm|noise|kick|snare|打楽器|ドラム|ノイズ/i.test(track.name);
+    if (isPercussion) {
+      suggested[track.index] = "percussion";
+      continue;
+    }
+    const statistics = pianorollTrackStatistics(pianoTracks.get(track.index));
+    pitched.push({ track, ...statistics });
+  }
+  if (pitched.length === 1) {
+    suggested[pitched[0].track.index] = "melody";
+  } else if (pitched.length > 1) {
+    const byPitch = pitched.slice().sort((left, right) => left.averageNote - right.averageNote);
+    const bass = byPitch.shift();
+    suggested[bass.track.index] = "bass";
+    const byLeadScore = byPitch.sort((left, right) => (
+      (right.averageNote + right.density * 2) - (left.averageNote + left.density * 2)
+    ));
+    const melody = byLeadScore.shift();
+    if (melody) suggested[melody.track.index] = "melody";
+    const counterMelody = byLeadScore.shift();
+    if (counterMelody) suggested[counterMelody.track.index] = "counterMelody";
+    for (const item of byLeadScore) suggested[item.track.index] = "accompaniment";
+  }
+  state.trackRoles = suggested;
+  return Object.keys(suggested).length;
+}
+
+function renderEnsemblePresetOptions() {
+  const select = $("#ensemble-preset-select");
+  if (!select) return;
+  select.replaceChildren();
+  const clearOption = document.createElement("option");
+  clearOption.value = "";
+  clearOption.textContent = "プリセット解除";
+  select.appendChild(clearOption);
+  for (const preset of state.ensemblePresets) {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    select.appendChild(option);
+  }
+  updateEnsemblePresetControls();
+}
+
+function updateEnsemblePresetControls() {
+  const select = $("#ensemble-preset-select");
+  if (!select) return;
+  select.value = state.ensemblePresetId || "";
+  select.disabled = !(state.session && state.session.tracks.length > 0);
+  $("#ensemble-preset-new").disabled = false;
+  $("#ensemble-preset-edit").disabled = !activeEnsemblePreset();
+  $("#ensemble-preset-delete").disabled = !activeEnsemblePreset();
+  const header = $(".track-instrument-header-label");
+  if (header) header.textContent = state.ensemblePresetId ? "役割" : "楽器";
+}
+
+async function handleEnsemblePresetChange(event) {
+  const nextPresetId = event.target.value || null;
+  clearTimeout(state.patchTimer);
+  if (!(await flushPendingTrackSettings())) {
+    updateEnsemblePresetControls();
+    return false;
+  }
+  if (!nextPresetId) {
+    const previousPresetId = state.ensemblePresetId;
+    const snapshot = state.ensemblePresetSnapshot;
+    state.ensemblePresetId = null;
+    if (snapshot) {
+      Object.assign(state.pendingAssignments, snapshot.assignments);
+      Object.assign(state.pendingSources, snapshot.sources);
+    }
+    state.ensemblePresetSnapshot = null;
+    updateEnsemblePresetControls();
+    if (snapshot) {
+      const didRestore = await flushPendingTrackSettings();
+      if (!didRestore) {
+        state.ensemblePresetId = previousPresetId;
+        state.ensemblePresetSnapshot = snapshot;
+        updateEnsemblePresetControls();
+      }
+      return didRestore;
+    }
+    await renderTrackList();
+    return true;
+  }
+  if (!state.ensemblePresets.some((preset) => preset.id === nextPresetId)) {
+    updateEnsemblePresetControls();
+    return false;
+  }
+  if (!state.ensemblePresetId) {
+    state.ensemblePresetSnapshot = captureEnsemblePresetSnapshot();
+  }
+  state.ensemblePresetId = nextPresetId;
+  if (Object.keys(state.trackRoles).length === 0) {
+    const suggestionCount = suggestTrackRoles();
+    if (suggestionCount > 0) {
+      showStatus(`${suggestionCount}トラックの役割を提案しました。必要に応じて変更できます。`);
+    }
+  }
+  for (const [trackIndex, roleId] of Object.entries(state.trackRoles)) {
+    queueTrackRoleAssignment(Number(trackIndex), roleId);
+  }
+  updateEnsemblePresetControls();
+  if (Object.keys(state.pendingAssignments).length > 0 || Object.keys(state.pendingSources).length > 0) {
+    return flushPendingTrackSettings();
+  }
+  await renderTrackList();
+  return true;
+}
+
+function createEnsemblePresetId() {
+  const suffix = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `custom-${suffix}`;
+}
+
+function createPercussionKitOptions(select) {
+  for (const kit of PERCUSSION_KIT_PROGRAMS) {
+    const option = document.createElement("option");
+    option.value = String(kit.program);
+    option.textContent = kit.name;
+    select.appendChild(option);
+  }
+}
+
+async function populateEnsemblePresetDialog(preset = null) {
+  const form = $("#ensemble-preset-form");
+  const isEditing = !!preset;
+  const programs = preset?.programs || NEW_ENSEMBLE_PRESET_PROGRAMS;
+  form.dataset.presetId = preset?.id || "";
+  $("#ensemble-preset-dialog-title").textContent = isEditing ? "編成プリセットを編集" : "編成プリセットを新規作成";
+  $("#ensemble-preset-name").value = preset?.name || "";
+  const instrumentOptions = await loadInstrumentOptions();
+  for (const role of TRACK_ROLES) {
+    const select = $(`#ensemble-preset-program-${role.id}`);
+    select.replaceChildren();
+    if (role.id === "percussion") createPercussionKitOptions(select);
+    else select.appendChild(instrumentOptions.cloneNode(true));
+    if (!Array.from(select.options).some((option) => option.value === String(programs[role.id]))) {
+      const option = document.createElement("option");
+      option.value = String(programs[role.id]);
+      option.textContent = `ドラムキット（プログラム ${Number(programs[role.id]) + 1}）`;
+      select.appendChild(option);
+    }
+    select.value = String(programs[role.id]);
+  }
+}
+
+async function openEnsemblePresetDialog(preset = null) {
+  const dialog = $("#ensemble-preset-dialog");
+  try {
+    await populateEnsemblePresetDialog(preset);
+    dialog.showModal();
+    $("#ensemble-preset-name").focus();
+  } catch (error) {
+    showStatus(error.message, "error");
+  }
+}
+
+function collectEnsemblePresetPrograms() {
+  return Object.fromEntries(TRACK_ROLES.map((role) => [
+    role.id,
+    Number($(`#ensemble-preset-program-${role.id}`).value),
+  ]));
+}
+
+async function saveEnsemblePresets(presets) {
+  const response = await apiFetch("/api/preferences", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ensemblePresets: presets }),
+  });
+  const payload = await response.json();
+  state.ensemblePresets = payload.ensemblePresets || [];
+  renderEnsemblePresetOptions();
+}
+
+async function applyActiveEnsemblePreset() {
+  for (const [trackIndex, roleId] of Object.entries(state.trackRoles)) {
+    queueTrackRoleAssignment(Number(trackIndex), roleId);
+  }
+  if (Object.keys(state.pendingAssignments).length > 0 || Object.keys(state.pendingSources).length > 0) {
+    await flushPendingTrackSettings();
+  } else {
+    await renderTrackList();
+  }
+}
+
+async function handleEnsemblePresetSave(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const presetId = form.dataset.presetId || createEnsemblePresetId();
+  const preset = {
+    id: presetId,
+    name: $("#ensemble-preset-name").value.trim(),
+    programs: collectEnsemblePresetPrograms(),
+  };
+  const existingIndex = state.ensemblePresets.findIndex((item) => item.id === presetId);
+  const nextPresets = existingIndex < 0
+    ? [...state.ensemblePresets, preset]
+    : state.ensemblePresets.map((item, index) => (index === existingIndex ? preset : item));
+  try {
+    await saveEnsemblePresets(nextPresets);
+    $("#ensemble-preset-dialog").close();
+    if (state.ensemblePresetId === presetId) await applyActiveEnsemblePreset();
+    showStatus(`編成プリセット「${preset.name}」を保存しました。`, "success");
+  } catch (error) {
+    showStatus(error.message, "error");
+  }
+}
+
+async function handleEnsemblePresetDelete() {
+  const preset = activeEnsemblePreset();
+  if (!preset || !window.confirm(`編成プリセット「${preset.name}」を削除しますか？`)) return;
+  try {
+    if (!(await handleEnsemblePresetChange({ target: { value: "" } }))) return;
+    await saveEnsemblePresets(state.ensemblePresets.filter((item) => item.id !== preset.id));
+    showStatus(`編成プリセット「${preset.name}」を削除しました。`, "success");
+  } catch (error) {
+    showStatus(error.message, "error");
+  }
+}
+
+function setupEnsemblePresets() {
+  const select = $("#ensemble-preset-select");
+  select.addEventListener("change", handleEnsemblePresetChange);
+  $("#ensemble-preset-new").addEventListener("click", () => openEnsemblePresetDialog());
+  $("#ensemble-preset-edit").addEventListener("click", () => {
+    openEnsemblePresetDialog(activeEnsemblePreset());
+  });
+  $("#ensemble-preset-delete").addEventListener("click", handleEnsemblePresetDelete);
+  $("#ensemble-preset-form").addEventListener("submit", handleEnsemblePresetSave);
+  $("#ensemble-preset-cancel").addEventListener("click", () => {
+    $("#ensemble-preset-dialog").close();
+  });
+  renderEnsemblePresetOptions();
+  updateEnsemblePresetControls();
+}
+
 // 指定トラック以外を音量0にしてレンダリング・再生する「ソロ試聴」を
 // 開始／解除する。もう一度同じボタンを押すと解除に切り替わる。
 async function toggleTrackSolo(trackIndex) {
@@ -1170,6 +1579,7 @@ function trackSortValue(track, key) {
   if (key === "index") return track.index;
   if (key === "channel") return track.channels[0] ?? null;
   if (key === "source") return track.source || "";
+  if (key === "instrument" && state.ensemblePresetId) return state.trackRoles[track.index] || "";
   if (key === "instrument") return track.assignedProgram ?? track.currentProgram ?? -1;
   if (key === "volume") return track.volumePercent;
   return track.index;
@@ -1268,6 +1678,106 @@ function formatPlaybackClock(seconds) {
   };
 }
 
+function normalizePianorollLoopRange(startSeconds, endSeconds) {
+  const duration = state.pianoroll?.durationSeconds || 0;
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || duration <= 0) return null;
+  const start = Math.min(duration, Math.max(0, startSeconds));
+  const end = Math.min(duration, Math.max(0, endSeconds));
+  if (end - start < MIN_LOOP_SECONDS) return null;
+  return { start, end };
+}
+
+function selectedPianorollLoopRange() {
+  return normalizePianorollLoopRange(state.loopStartSeconds, state.loopEndSeconds);
+}
+
+function activePianorollLoopRange() {
+  return state.isLoopEnabled ? selectedPianorollLoopRange() : null;
+}
+
+function formatLoopInputValue(seconds) {
+  return Number(seconds.toFixed(3)).toString();
+}
+
+function updatePianorollLoopRegion() {
+  const region = $("#pianoroll-loop-region");
+  const range = selectedPianorollLoopRange();
+  const payload = state.pianoroll;
+  const size = state.pianorollSize;
+  const timelineWidth = state.pianorollTimelineWidth;
+  if (!region || !range || !payload || !size || !timelineWidth || payload.durationSeconds <= 0) {
+    if (region) region.hidden = true;
+    return;
+  }
+  const scrollLeft = $("#pianoroll-scroll").scrollLeft;
+  const startX = range.start / payload.durationSeconds * timelineWidth - scrollLeft;
+  const endX = range.end / payload.durationSeconds * timelineWidth - scrollLeft;
+  const visibleStart = Math.max(0, startX);
+  const visibleEnd = Math.min(size.width, endX);
+  if (visibleEnd <= visibleStart) {
+    region.hidden = true;
+    return;
+  }
+  region.hidden = false;
+  region.classList.toggle("is-enabled", state.isLoopEnabled);
+  region.style.inlineSize = `${visibleEnd - visibleStart}px`;
+  region.style.transform = `translate3d(${visibleStart}px, 0, 0)`;
+}
+
+function updatePianorollLoopControls() {
+  const startInput = $("#pianoroll-loop-start");
+  const endInput = $("#pianoroll-loop-end");
+  const enabledInput = $("#pianoroll-loop-enabled");
+  const clearButton = $("#pianoroll-loop-clear");
+  if (!startInput || !endInput || !enabledInput || !clearButton) return;
+  const duration = state.pianoroll?.durationSeconds || 0;
+  const range = selectedPianorollLoopRange();
+  const canEdit = duration > 0;
+  startInput.disabled = !canEdit;
+  endInput.disabled = !canEdit;
+  startInput.max = String(duration);
+  endInput.max = String(duration);
+  startInput.value = range ? formatLoopInputValue(range.start) : "";
+  endInput.value = range ? formatLoopInputValue(range.end) : "";
+  enabledInput.disabled = !range;
+  enabledInput.checked = !!range && state.isLoopEnabled;
+  clearButton.disabled = !range;
+  updatePianorollLoopRegion();
+}
+
+function setPianorollLoopRange(startSeconds, endSeconds, { enable = state.isLoopEnabled } = {}) {
+  const range = normalizePianorollLoopRange(startSeconds, endSeconds);
+  if (!range) return false;
+  state.loopStartSeconds = range.start;
+  state.loopEndSeconds = range.end;
+  state.isLoopEnabled = enable;
+  updatePianorollLoopControls();
+  return true;
+}
+
+function clearPianorollLoop() {
+  state.loopStartSeconds = null;
+  state.loopEndSeconds = null;
+  state.isLoopEnabled = false;
+  updatePianorollLoopControls();
+}
+
+function applyPianorollLoopInputs() {
+  const startInput = $("#pianoroll-loop-start");
+  const endInput = $("#pianoroll-loop-end");
+  startInput.setCustomValidity("");
+  endInput.setCustomValidity("");
+  if (!startInput.value || !endInput.value) return;
+  const start = Number(startInput.value);
+  const end = Number(endInput.value);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < MIN_LOOP_SECONDS) {
+    endInput.setCustomValidity(`終了は開始より${MIN_LOOP_SECONDS}秒以上後にしてください`);
+    endInput.reportValidity();
+    return;
+  }
+  setPianorollLoopRange(start, end);
+}
+
 function setPianorollMessage(message, status = "") {
   $("#pianoroll-empty").textContent = message;
   $("#pianoroll-empty").hidden = !message;
@@ -1276,6 +1786,7 @@ function setPianorollMessage(message, status = "") {
 
 function clearPianoroll(message = "MIDIを読み込むとここに表示されます。") {
   state.pianoroll = null;
+  clearPianorollLoop();
   resetPianorollZoom();
   setPianorollMessage(message);
   updatePianorollInteraction();
@@ -1287,6 +1798,12 @@ function clearPianoroll(message = "MIDIを読み込むとここに表示され�
 // 呼ぶ共通の「適用」部分。
 function applyPianorollPayload(payload) {
   state.pianoroll = payload;
+  const existingRange = selectedPianorollLoopRange();
+  if (existingRange) {
+    setPianorollLoopRange(existingRange.start, existingRange.end);
+  } else {
+    clearPianorollLoop();
+  }
   updatePlaybackTime();
   const status = payload.truncated
     ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
@@ -1372,6 +1889,7 @@ function redrawPianorollStatic() {
   context.clearRect(0, 0, canvas.width, canvas.height);
   if (!payload) {
     updatePianorollPlayhead();
+    updatePianorollLoopRegion();
     return;
   }
   const scrollLeft = $("#pianoroll-scroll").scrollLeft;
@@ -1379,8 +1897,12 @@ function redrawPianorollStatic() {
   context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
   drawPianorollGrid(context, size.width, size.height, timelineWidth, scrollLeft);
   if (payload.noteCount > 0 && payload.durationSeconds > 0) {
-    const mutedIndices = new Set((state.session?.tracks || [])
-      .filter((track) => track.volumePercent === 0).map((track) => track.index));
+    const mutedIndices = state.highlightedTrackIndex === null
+      ? new Set((state.session?.tracks || [])
+        .filter((track) => track.volumePercent === 0).map((track) => track.index))
+      : new Set(payload.tracks
+        .filter((track) => track.index !== state.highlightedTrackIndex)
+        .map((track) => track.index));
     const layout = {
       payload, offsets: pianorollFieldOffsets(payload), width: size.width, height: size.height,
       timelineWidth, scrollLeft,
@@ -1390,6 +1912,7 @@ function redrawPianorollStatic() {
     for (const track of payload.tracks) drawPianorollTrack(context, track, layout, mutedIndices);
   }
   updatePianorollPlayhead();
+  updatePianorollLoopRegion();
 }
 
 // 再生中に毎フレーム動くのは2px幅のDOMレイヤーだけに限定する。transformは
@@ -1543,14 +2066,20 @@ function resizePianoroll(entry) {
   redrawPianorollStatic();
 }
 
-function seekPianorollAt(clientX) {
-  if (!state.session?.hasRender || !state.pianoroll) return;
+function pianorollSecondsAt(clientX) {
+  if (!state.pianoroll || !state.pianorollTimelineWidth) return null;
   const canvas = $("#pianoroll-canvas");
   const scrollArea = $("#pianoroll-scroll");
   const rect = canvas.getBoundingClientRect();
   const x = scrollArea.scrollLeft + clientX - rect.left;
   const ratio = Math.min(1, Math.max(0, x / state.pianorollTimelineWidth));
-  seekPlaybackTo(ratio * state.pianoroll.durationSeconds);
+  return ratio * state.pianoroll.durationSeconds;
+}
+
+function seekPianorollAt(clientX) {
+  if (!state.session?.hasRender) return;
+  const seconds = pianorollSecondsAt(clientX);
+  if (seconds !== null) seekPlaybackTo(seconds);
 }
 
 // 再生位置のシーク（←→・Home/End・PageUp/PageDown）。以前はピアノロールの
@@ -1615,28 +2144,54 @@ function setupPianoroll() {
   resizeObserver.observe(canvas, supportsDevicePixels ? { box: "device-pixel-content-box" } : {});
   viewportObserver.observe(scrollArea);
   canvas.addEventListener("pointerdown", (event) => {
-    if (!state.session?.hasRender || event.pointerType === "touch") return;
-    state.isPianorollSeeking = true;
+    if (!state.pianoroll || event.pointerType === "touch" || event.button !== 0) return;
     state.pianorollPointerId = event.pointerId;
+    state.pianorollPointerStartClientX = event.clientX;
+    state.pianorollPointerAnchorSeconds = pianorollSecondsAt(event.clientX);
+    state.isPianorollLoopDragging = false;
     canvas.setPointerCapture(event.pointerId);
-    seekPianorollAt(event.clientX);
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (state.isPianorollSeeking && event.pointerId === state.pianorollPointerId) {
-      seekPianorollAt(event.clientX);
-    }
-  });
-  const finishSeek = (event) => {
     if (event.pointerId !== state.pianorollPointerId) return;
-    state.isPianorollSeeking = false;
+    const anchor = state.pianorollPointerAnchorSeconds;
+    const current = pianorollSecondsAt(event.clientX);
+    if (anchor === null || current === null) return;
+    const distance = Math.abs(event.clientX - state.pianorollPointerStartClientX);
+    if (!state.isPianorollLoopDragging && distance < LOOP_DRAG_THRESHOLD_PX) return;
+    state.isPianorollLoopDragging = true;
+    setPianorollLoopRange(Math.min(anchor, current), Math.max(anchor, current), { enable: true });
+  });
+  const finishPointerInteraction = (event) => {
+    if (event.pointerId !== state.pianorollPointerId) return;
+    const wasDragging = state.isPianorollLoopDragging;
+    if (!wasDragging && event.type === "pointerup") seekPianorollAt(event.clientX);
+    if (wasDragging) {
+      const range = activePianorollLoopRange();
+      if (range) seekPlaybackTo(range.start);
+    }
     state.pianorollPointerId = null;
+    state.pianorollPointerStartClientX = null;
+    state.pianorollPointerAnchorSeconds = null;
+    state.isPianorollLoopDragging = false;
   };
-  canvas.addEventListener("pointerup", finishSeek);
-  canvas.addEventListener("pointercancel", finishSeek);
+  canvas.addEventListener("pointerup", finishPointerInteraction);
+  canvas.addEventListener("pointercancel", finishPointerInteraction);
   canvas.addEventListener("wheel", handlePianorollWheel, { passive: false });
   document.addEventListener("keydown", handleSeekKeydown);
   $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
   $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));
+  $("#pianoroll-loop-start").addEventListener("change", applyPianorollLoopInputs);
+  $("#pianoroll-loop-end").addEventListener("change", applyPianorollLoopInputs);
+  $("#pianoroll-loop-enabled").addEventListener("change", (event) => {
+    state.isLoopEnabled = event.target.checked && !!selectedPianorollLoopRange();
+    const range = activePianorollLoopRange();
+    if (range) {
+      const current = getDisplayPlaybackSeconds();
+      if (current < range.start || current >= range.end) seekPlaybackTo(range.start);
+    }
+    updatePianorollLoopControls();
+  });
+  $("#pianoroll-loop-clear").addEventListener("click", clearPianorollLoop);
   for (const eventName of ["wheel", "pointerdown", "touchstart"]) {
     scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
   }
@@ -1648,6 +2203,7 @@ function setupPianoroll() {
   }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawPianorollStatic);
   updatePianorollZoomControls();
+  updatePianorollLoopControls();
 }
 
 function updateSectionsReadiness() {
@@ -1668,6 +2224,8 @@ function updateSectionsReadiness() {
   $("#upload-filename").textContent = state.session && state.session.filename
     ? state.session.filename
     : "";
+  updateEnsemblePresetControls();
+  updatePianorollLoopControls();
   updatePlaybackControls();
 }
 
@@ -1713,13 +2271,38 @@ function renderDownloadFilenameField(payload) {
   $("#download-filename").value = stem;
 }
 
-async function refreshFromSession(payload, { restoreConvertedOptions = false } = {}) {
+function restoreProjectEnsemblePreset(uiState) {
+  const preset = uiState?.ensemblePresetDefinition;
+  if (!preset || typeof preset !== "object") return;
+  const index = state.ensemblePresets.findIndex((item) => item.id === preset.id);
+  if (index < 0) state.ensemblePresets.push(preset);
+  else state.ensemblePresets[index] = preset;
+  renderEnsemblePresetOptions();
+}
+
+async function refreshFromSession(payload, { restoreConvertedOptions = false, uiState = null } = {}) {
   cancelAutoRender();
   // 新しいMIDI/音源の読み込みでトラック構成自体が変わりうるため、
   // 古いセッションのトラック番号を指したソロ試聴状態は持ち越さない。
   state.soloTrackIndex = null;
   state.soloVolumeSnapshot = null;
+  state.highlightedTrackIndex = null;
+  restoreProjectEnsemblePreset(uiState);
+  state.ensemblePresetId = state.ensemblePresets.some(
+    (preset) => preset.id === uiState?.ensemblePreset,
+  ) ? uiState.ensemblePreset : null;
+  state.trackRoles = uiState?.trackRoles && typeof uiState.trackRoles === "object"
+    ? { ...uiState.trackRoles }
+    : {};
+  clearPianorollLoop();
   state.session = payload;
+  const savedSnapshot = uiState?.ensemblePresetSnapshot;
+  state.ensemblePresetSnapshot = state.ensemblePresetId && savedSnapshot
+    ? {
+      assignments: { ...savedSnapshot.assignments },
+      sources: { ...savedSnapshot.sources },
+    }
+    : (state.ensemblePresetId ? captureEnsemblePresetSnapshot() : null);
   if (["fast", "quality"].includes(payload.renderMode)) {
     state.renderMode = payload.renderMode;
     const modeInput = $(`#render-mode-${state.renderMode}`);
@@ -1734,11 +2317,17 @@ async function refreshFromSession(payload, { restoreConvertedOptions = false } =
   );
   renderTransformFields(payload);
   renderDownloadFilenameField(payload);
+  updateEnsemblePresetControls();
   // hasGameSoundfontの変化を#soundfont-helpへ即座に反映する（新規fetchはしない）。
   if (state.soundfontPayload) {
     renderSoundfontOptions(state.soundfontPayload);
   }
   await loadPianoroll();
+  if (uiState?.loop) {
+    setPianorollLoopRange(uiState.loop.start, uiState.loop.end, {
+      enable: uiState.loop.enabled,
+    });
+  }
   if (!payload.tracks || payload.tracks.length === 0) return;
   if (payload.hasRender && payload.renderId) {
     clearRenderStale();
@@ -2351,6 +2940,13 @@ async function ensureLatestRender() {
 }
 
 async function playPreparedPlayer(player) {
+  const loopRange = activePianorollLoopRange();
+  if (
+    loopRange
+    && (player.currentTime < loopRange.start || player.currentTime >= loopRange.end)
+  ) {
+    player.currentTime = loopRange.start;
+  }
   try {
     await player.play();
   } catch (_error) {
@@ -2466,9 +3062,19 @@ function updatePlayerVolume() {
 }
 
 function updatePlaybackProgress() {
+  enforcePianorollLoop();
   updatePianorollPlayhead();
   updatePlaybackTime();
   followPianorollPlayback();
+}
+
+function enforcePianorollLoop() {
+  const range = activePianorollLoopRange();
+  const player = activePlayer();
+  if (!range || player.paused || !player.getAttribute("src")) return false;
+  if (player.currentTime >= range.start && player.currentTime < range.end - 0.02) return false;
+  player.currentTime = range.start;
+  return true;
 }
 
 function seekPlaybackTo(seconds) {
@@ -2530,7 +3136,9 @@ function setupPlaybackControls() {
     "click",
     () => seekPlaybackBy(PLAYBACK_SEEK_SECONDS),
   );
-  $("#playback-start").addEventListener("click", () => seekPlaybackTo(0));
+  $("#playback-start").addEventListener("click", () => {
+    seekPlaybackTo(activePianorollLoopRange()?.start ?? 0);
+  });
   $("#playback-toggle").addEventListener("click", togglePlayback);
   $("#player-volume").addEventListener("input", (event) => {
     state.userVolume = Number(event.target.value) / 100;
@@ -2555,7 +3163,13 @@ function setupPlaybackControls() {
     stopPlaybackTimeAnimation();
     updatePlaybackControls();
   });
-  onActivePlayerEvent("ended", () => {
+  onActivePlayerEvent("ended", async (event) => {
+    const loopRange = activePianorollLoopRange();
+    if (loopRange) {
+      event.target.currentTime = loopRange.start;
+      await playPreparedPlayer(event.target);
+      return;
+    }
     setPianorollAutoFollow(false);
     stopPlaybackTimeAnimation();
     updatePlaybackControls();
@@ -2686,6 +3300,30 @@ function handleDownloadWav() {
   );
 }
 
+function projectUiStatePayload() {
+  const payload = { renderMode: selectedRenderMode() };
+  const loopRange = selectedPianorollLoopRange();
+  if (loopRange) {
+    payload.loop = {
+      start: loopRange.start,
+      end: loopRange.end,
+      enabled: state.isLoopEnabled,
+    };
+  }
+  if (state.ensemblePresetId) {
+    payload.ensemblePreset = state.ensemblePresetId;
+    payload.ensemblePresetDefinition = activeEnsemblePreset();
+    payload.trackRoles = { ...state.trackRoles };
+    if (state.ensemblePresetSnapshot) {
+      payload.ensemblePresetSnapshot = {
+        assignments: { ...state.ensemblePresetSnapshot.assignments },
+        sources: { ...state.ensemblePresetSnapshot.sources },
+      };
+    }
+  }
+  return payload;
+}
+
 async function handleSaveProject() {
   if (!state.session || state.session.tracks.length === 0) return;
   setBusy(true, "プロジェクトを保存中…");
@@ -2702,7 +3340,7 @@ async function handleSaveProject() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ renderMode: selectedRenderMode() }),
+        body: JSON.stringify(projectUiStatePayload()),
       },
     );
     if (didDownload) showStatus("プロジェクトを保存しました。", "success");
@@ -2736,7 +3374,10 @@ async function handleOpenProject(file) {
       if (modeInput) modeInput.checked = true;
     }
     resetPlayer();
-    await refreshFromSession(payload.session, { restoreConvertedOptions: true });
+    await refreshFromSession(payload.session, {
+      restoreConvertedOptions: true,
+      uiState: payload.uiState,
+    });
     await loadSoundfonts();
     if (payload.warnings?.length) showStatus(payload.warnings.join(" "));
     else showStatus("プロジェクトを読み込みました。", "success");
@@ -2881,6 +3522,7 @@ async function init() {
   }
   setupDropZone();
   setupFullscreenLayout();
+  setupEnsemblePresets();
   setupTrackSorting();
   $("#hide-empty-tracks").addEventListener("change", (event) => {
     state.hideEmptyTracks = event.target.checked;

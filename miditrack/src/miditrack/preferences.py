@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,45 @@ from .gm import GM_PROGRAM_NAMES
 
 MIN_PROGRAM = 0
 MAX_PROGRAM = len(GM_PROGRAM_NAMES) - 1
+MAX_ENSEMBLE_PRESETS = 24
+MAX_ENSEMBLE_PRESET_NAME_LENGTH = 48
+TRACK_ROLE_IDS = ("melody", "counterMelody", "bass", "accompaniment", "percussion")
+PRESET_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+DEFAULT_ENSEMBLE_PRESETS = (
+    {
+        "id": "game-leads",
+        "name": "ゲームリード",
+        "programs": {
+            "melody": 80,
+            "counterMelody": 81,
+            "bass": 38,
+            "accompaniment": 88,
+            "percussion": 24,
+        },
+    },
+    {
+        "id": "acoustic",
+        "name": "アコースティック",
+        "programs": {
+            "melody": 24,
+            "counterMelody": 40,
+            "bass": 32,
+            "accompaniment": 0,
+            "percussion": 0,
+        },
+    },
+    {
+        "id": "jazz-quartet",
+        "name": "ジャズカルテット",
+        "programs": {
+            "melody": 65,
+            "counterMelody": 56,
+            "bass": 32,
+            "accompaniment": 0,
+            "percussion": 32,
+        },
+    },
+)
 
 
 def preferences_path() -> Path:
@@ -36,7 +76,24 @@ def preferences_path() -> Path:
 
 
 def _empty_preferences() -> dict[str, Any]:
-    return {"pinnedPrograms": [], "usageCounts": {}, "selectedSoundfont": None}
+    return {
+        "pinnedPrograms": [],
+        "usageCounts": {},
+        "selectedSoundfont": None,
+        "ensemblePresets": build_default_ensemble_presets(),
+    }
+
+
+def build_default_ensemble_presets() -> list[dict[str, Any]]:
+    """編集可能な既定編成プリセットの複製を返す。"""
+    return [
+        {
+            "id": preset["id"],
+            "name": preset["name"],
+            "programs": dict(preset["programs"]),
+        }
+        for preset in DEFAULT_ENSEMBLE_PRESETS
+    ]
 
 
 def load_preferences() -> dict[str, Any]:
@@ -59,10 +116,15 @@ def load_preferences() -> dict[str, Any]:
     pinned = data.get("pinnedPrograms")
     usage = data.get("usageCounts")
     selected_soundfont = data.get("selectedSoundfont")
+    try:
+        ensemble_presets = validate_ensemble_presets(data.get("ensemblePresets"))
+    except WebValidationError:
+        ensemble_presets = build_default_ensemble_presets()
     return {
         "pinnedPrograms": pinned if isinstance(pinned, list) else [],
         "usageCounts": usage if isinstance(usage, dict) else {},
         "selectedSoundfont": selected_soundfont if isinstance(selected_soundfont, str) else None,
+        "ensemblePresets": ensemble_presets,
     }
 
 
@@ -109,6 +171,41 @@ def _validate_selected_soundfont(value: Any) -> str | None:
     return value
 
 
+def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
+    """編成プリセット一覧を検証し、保存用の正規化済みデータを返す。"""
+    if value is None:
+        return build_default_ensemble_presets()
+    if not isinstance(value, list) or len(value) > MAX_ENSEMBLE_PRESETS:
+        raise WebValidationError(f"ensemblePresetsは最大{MAX_ENSEMBLE_PRESETS}件のリストで指定してください")
+    validated: list[dict[str, Any]] = []
+    preset_ids: set[str] = set()
+    preset_names: set[str] = set()
+    for preset in value:
+        if not isinstance(preset, dict):
+            raise WebValidationError("ensemblePresetsの各項目はオブジェクトで指定してください")
+        preset_id = preset.get("id")
+        name = preset.get("name")
+        programs = preset.get("programs")
+        if not isinstance(preset_id, str) or not PRESET_ID_RE.fullmatch(preset_id):
+            raise WebValidationError("編成プリセットIDが不正です")
+        if not isinstance(name, str) or not (name := name.strip()) or len(name) > MAX_ENSEMBLE_PRESET_NAME_LENGTH:
+            raise WebValidationError(f"編成プリセット名は1〜{MAX_ENSEMBLE_PRESET_NAME_LENGTH}文字で指定してください")
+        if preset_id in preset_ids or name.casefold() in preset_names:
+            raise WebValidationError("編成プリセットのIDまたは名前が重複しています")
+        if not isinstance(programs, dict) or set(programs) != set(TRACK_ROLE_IDS):
+            raise WebValidationError("編成プリセットの役割設定が不正です")
+        validated_programs: dict[str, int] = {}
+        for role_id in TRACK_ROLE_IDS:
+            program = programs[role_id]
+            if isinstance(program, bool) or not isinstance(program, int) or not MIN_PROGRAM <= program <= MAX_PROGRAM:
+                raise WebValidationError(f"編成プリセットの{role_id}音色が不正です")
+            validated_programs[role_id] = program
+        preset_ids.add(preset_id)
+        preset_names.add(name.casefold())
+        validated.append({"id": preset_id, "name": name, "programs": validated_programs})
+    return validated
+
+
 def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
     """既存の設定へ updates を部分適用し、検証してファイルへ保存した結果を返す。
 
@@ -121,6 +218,8 @@ def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
         current["usageCounts"] = _validate_usage_counts(updates["usageCounts"])
     if "selectedSoundfont" in updates:
         current["selectedSoundfont"] = _validate_selected_soundfont(updates["selectedSoundfont"])
+    if "ensemblePresets" in updates:
+        current["ensemblePresets"] = validate_ensemble_presets(updates["ensemblePresets"])
 
     path = preferences_path()
     path.parent.mkdir(parents=True, exist_ok=True)

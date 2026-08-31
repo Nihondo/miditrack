@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 import re
 import secrets
 import shutil
@@ -53,6 +54,7 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_PROJECT_UPLOAD_BYTES = 512 * 1024 * 1024
 ALLOWED_MIDI_EXTENSIONS = (".mid", ".midi")
 PROJECT_EXTENSION = ".miditrack"
+TRACK_ROLE_IDS = set(preferences.TRACK_ROLE_IDS)
 
 # トラック音源が実機チップレンダリング（原曲の音源をSoundFontではなく実機/
 # エミュレーションで鳴らす方式）を持つフォーマット。SPCの"game"はBRRサンプル
@@ -744,11 +746,123 @@ def create_app(
             return relative_path
         return f"source/{relative_path}"
 
-    def build_project_archive(render_mode: str) -> Path:
+    def validate_project_loop(raw_loop: Any) -> dict[str, Any]:
+        """プロジェクトの区間ループ設定を検証する。"""
+        if not isinstance(raw_loop, dict):
+            raise WebValidationError("区間ループ設定が不正です")
+        start = raw_loop.get("start")
+        end = raw_loop.get("end")
+        enabled = raw_loop.get("enabled", False)
+        is_valid = (
+            not isinstance(start, bool)
+            and isinstance(start, (int, float))
+            and not isinstance(end, bool)
+            and isinstance(end, (int, float))
+            and math.isfinite(start)
+            and math.isfinite(end)
+            and start >= 0
+            and end > start
+            and isinstance(enabled, bool)
+        )
+        if not is_valid:
+            raise WebValidationError("区間ループの開始・終了設定が不正です")
+        return {"start": float(start), "end": float(end), "enabled": enabled}
+
+    def validate_project_roles(raw_roles: Any, track_indices: set[int]) -> dict[str, str]:
+        """プロジェクトのトラック役割を検証する。"""
+        if not isinstance(raw_roles, dict):
+            raise WebValidationError("トラック役割設定が不正です")
+        roles: dict[str, str] = {}
+        for raw_index, role_id in raw_roles.items():
+            try:
+                track_index = int(raw_index)
+            except (TypeError, ValueError):
+                raise WebValidationError("トラック役割のトラック番号が不正です") from None
+            if str(track_index) != str(raw_index) or track_index not in track_indices:
+                raise WebValidationError("トラック役割のトラック番号が不正です")
+            if not isinstance(role_id, str) or role_id not in TRACK_ROLE_IDS:
+                raise WebValidationError("トラック役割が不正です")
+            roles[str(track_index)] = role_id
+        return roles
+
+    def validate_preset_snapshot(raw_snapshot: Any, track_indices: set[int]) -> dict[str, Any]:
+        """プリセット解除時に戻す音源・楽器設定を検証する。"""
+        if not isinstance(raw_snapshot, dict):
+            raise WebValidationError("編成プリセットの復元設定が不正です")
+        raw_assignments = raw_snapshot.get("assignments")
+        raw_sources = raw_snapshot.get("sources")
+        expected_keys = {str(track_index) for track_index in track_indices}
+        if (
+            not isinstance(raw_assignments, dict)
+            or not isinstance(raw_sources, dict)
+            or set(raw_assignments) != expected_keys
+            or set(raw_sources) != expected_keys
+        ):
+            raise WebValidationError("編成プリセットの復元設定が不正です")
+        assignments: dict[str, int | None] = {}
+        sources: dict[str, str] = {}
+        for key in expected_keys:
+            assignment = raw_assignments[key]
+            source = raw_sources[key]
+            if (
+                isinstance(assignment, bool)
+                or (assignment is not None and not isinstance(assignment, int))
+                or (isinstance(assignment, int) and not 0 <= assignment <= 127)
+                or source not in {"soundfont", "game"}
+            ):
+                raise WebValidationError("編成プリセットの復元設定が不正です")
+            assignments[key] = assignment
+            sources[key] = source
+        return {"assignments": assignments, "sources": sources}
+
+    def validate_project_ui(raw_ui: Any, tracks: list[TrackInfo]) -> dict[str, Any]:
+        """プロジェクトへ保存するブラウザUI状態を検証する。"""
+        if not isinstance(raw_ui, dict):
+            raise WebValidationError("プロジェクトの画面設定はオブジェクトで指定してください")
+        validated: dict[str, Any] = {
+            "renderMode": _validate_render_mode(raw_ui.get("renderMode"))
+        }
+        track_indices = {track.index for track in tracks}
+        if raw_ui.get("loop") is not None:
+            validated["loop"] = validate_project_loop(raw_ui["loop"])
+        preset_id = raw_ui.get("ensemblePreset")
+        preset_definition = None
+        if "ensemblePresetDefinition" in raw_ui and preset_id is None:
+            raise WebValidationError("編成プリセットが指定されていません")
+        if preset_id is not None:
+            if not isinstance(preset_id, str):
+                raise WebValidationError("編成プリセットが不正です")
+            raw_definition = raw_ui.get("ensemblePresetDefinition")
+            if raw_definition is not None:
+                definitions = preferences.validate_ensemble_presets([raw_definition])
+                preset_definition = definitions[0]
+                if preset_definition["id"] != preset_id:
+                    raise WebValidationError("編成プリセットの定義が一致しません")
+            configured_ids = {
+                preset["id"] for preset in preferences.load_preferences()["ensemblePresets"]
+            }
+            if preset_id not in configured_ids and preset_definition is None:
+                raise WebValidationError("編成プリセットが見つかりません")
+            validated["ensemblePreset"] = preset_id
+            if preset_definition is not None:
+                validated["ensemblePresetDefinition"] = preset_definition
+        if "trackRoles" in raw_ui:
+            validated["trackRoles"] = validate_project_roles(raw_ui["trackRoles"], track_indices)
+        if "ensemblePresetSnapshot" in raw_ui:
+            validated["ensemblePresetSnapshot"] = validate_preset_snapshot(
+                raw_ui["ensemblePresetSnapshot"], track_indices
+            )
+        dependent_fields = {
+            "trackRoles", "ensemblePresetDefinition", "ensemblePresetSnapshot",
+        }
+        if dependent_fields.intersection(validated) and preset_id is None:
+            raise WebValidationError("編成プリセットが指定されていません")
+        return validated
+
+    def build_project_archive(ui_state: dict[str, Any]) -> Path:
         """現在の編集可能なセッションを`.miditrack`へ書き出す。"""
         if web_session.root is None or web_session.original_path is None:
             raise WebValidationError("先にMIDIファイルを読み込んでください")
-        render_mode = _validate_render_mode(render_mode)
         files: dict[str, Path] = {"midi/original.mid": web_session.original_path}
         source_section: dict[str, Any] | None = None
         if web_session.source_format is not None:
@@ -817,7 +931,7 @@ def create_app(
             "source": source_section,
             "assets": assets,
             "soundfontPath": str(web_session.soundfont_override) if web_session.soundfont_override else None,
-            "ui": {"renderMode": render_mode},
+            "ui": ui_state,
         }
         archive_path = web_session.root / f"{_effective_download_stem(web_session)}{PROJECT_EXTENSION}"
         project.create_archive(archive_path, manifest, files)
@@ -954,9 +1068,7 @@ def create_app(
                     warnings.append("保存されたSoundFontが見つからないため、既定を使用します。")
 
             raw_ui = manifest.get("ui", {})
-            if not isinstance(raw_ui, dict):
-                raise WebValidationError("プロジェクトの画面設定が不正です")
-            ui_state = {"renderMode": _validate_render_mode(raw_ui.get("renderMode"))}
+            ui_state = validate_project_ui(raw_ui, tracks)
             return candidate, ui_state, warnings
         except Exception:
             shutil.rmtree(project_root, ignore_errors=True)
@@ -976,7 +1088,7 @@ def create_app(
 
     @app.patch("/api/preferences")
     def update_preferences() -> Response:
-        """楽器選択の「よく使う」設定（ピン留め・使用回数）を部分更新する。
+        """楽器選択の設定と編成プリセットを部分更新する。
 
         ブラウザセッションではなくプロセス全体で共有する設定なので、
         WebSessionではなくユーザーホーム配下のファイルへ直接読み書きする
@@ -984,8 +1096,9 @@ def create_app(
         オリジンが変わってしまう問題を回避するため）。
         """
         body = request.get_json(silent=True) or {}
-        if "pinnedPrograms" not in body and "usageCounts" not in body:
-            raise WebValidationError("pinnedProgramsまたはusageCountsを指定してください")
+        allowed_fields = {"pinnedPrograms", "usageCounts", "ensemblePresets"}
+        if not any(field in body for field in allowed_fields):
+            raise WebValidationError("更新する設定を指定してください")
         return jsonify(**preferences.save_preferences(body))
 
     @app.get("/api/soundfonts")
@@ -1019,7 +1132,7 @@ def create_app(
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict):
             raise WebValidationError("プロジェクトの画面設定はオブジェクトで指定してください")
-        archive_path = build_project_archive(body.get("renderMode"))
+        archive_path = build_project_archive(validate_project_ui(body, web_session.require_tracks()))
         download_name = f"{_effective_download_stem(web_session)}{PROJECT_EXTENSION}"
         return send_file(
             archive_path,
