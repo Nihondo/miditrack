@@ -3678,6 +3678,18 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function setFullscreenLayout", javascript)
         self.assertIn("function saveDisplayMode", javascript)
         self.assertIn('displayMode: state.displayMode', javascript)
+        fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(
+            "\n}\n\nfunction setupDropZone", 1
+        )[0]
+        self.assertIn('if (event.key !== "Escape") return;', fullscreen_setup_block)
+        self.assertIn(
+            'setFullscreenLayout(!document.body.classList.contains("is-fullscreen"), { shouldPersist: true });',
+            fullscreen_setup_block,
+        )
+        self.assertNotIn(
+            'if (!document.body.classList.contains("is-fullscreen")) return;',
+            fullscreen_setup_block,
+        )
 
 
 class TestResolveStartupSoundfontOverride(unittest.TestCase):

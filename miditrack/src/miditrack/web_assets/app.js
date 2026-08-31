@@ -3518,16 +3518,16 @@ function setupFullscreenLayout() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (!document.body.classList.contains("is-fullscreen")) return;
     // isPlaybackShortcutBlocked()はBUTTON/AUDIOも除外するが、それはSpaceが
     // それらの既定動作（クリック等）と衝突するため。EscapeにBUTTON上での
     // 既定動作は無く、キーボードでフォーカスしたボタン（例えばこの全画面
-    // ボタン自身）からもEscapeで抜けられるべきなので、ここではテキスト編集
-    // 系（input/textarea/select/contenteditable）だけを素通しの対象にする。
+    // ボタン自身）からもEscapeで表示モードを切り替えられるべきなので、ここ
+    // ではテキスト編集系（input/textarea/select/contenteditable）だけを
+    // 素通しの対象にする。
     const target = event.target;
     if (target?.isContentEditable) return;
     if (["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName)) return;
-    setFullscreenLayout(false, { shouldPersist: true });
+    setFullscreenLayout(!document.body.classList.contains("is-fullscreen"), { shouldPersist: true });
   });
 }
 

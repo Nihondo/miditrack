@@ -2127,9 +2127,9 @@ natively — so this costs nothing outside `body.is-fullscreen`.
 native behavior *is* to activate on Space, so the global playback shortcut
 must yield to it) but wrong for Escape — a keyboard-focused button (e.g.
 the fullscreen toggle itself, right after being activated via Enter/Space)
-has no native Escape behavior to preserve, and blocking Escape there would
-make the fullscreen toggle temporarily un-exitable from the keyboard. The
-dedicated guard in `setupFullscreenLayout()` only defers to
+has no native Escape behavior to preserve. `setupFullscreenLayout()` makes
+Escape a bidirectional normal/fullscreen layout toggle, so the same shortcut
+can enter the DAW layout and leave it. Its dedicated guard only defers to
 `isContentEditable`/`INPUT`/`TEXTAREA`/`SELECT` — the actual text-entry and
 native-dropdown cases where Escape already has a browser-native meaning to
 protect.
