@@ -1712,10 +1712,6 @@ function activePianorollLoopRange() {
   return state.isLoopEnabled ? selectedPianorollLoopRange() : null;
 }
 
-function formatLoopInputValue(seconds) {
-  return Number(seconds.toFixed(3)).toString();
-}
-
 function updatePianorollLoopRegion() {
   const region = $("#pianoroll-loop-region");
   const range = selectedPianorollLoopRange();
@@ -1741,34 +1737,13 @@ function updatePianorollLoopRegion() {
   region.style.transform = `translate3d(${visibleStart}px, 0, 0)`;
 }
 
-function updatePianorollLoopControls() {
-  const startInput = $("#pianoroll-loop-start");
-  const endInput = $("#pianoroll-loop-end");
-  const enabledInput = $("#pianoroll-loop-enabled");
-  const clearButton = $("#pianoroll-loop-clear");
-  if (!startInput || !endInput || !enabledInput || !clearButton) return;
-  const duration = state.pianoroll?.durationSeconds || 0;
-  const range = selectedPianorollLoopRange();
-  const canEdit = duration > 0;
-  startInput.disabled = !canEdit;
-  endInput.disabled = !canEdit;
-  startInput.max = String(duration);
-  endInput.max = String(duration);
-  startInput.value = range ? formatLoopInputValue(range.start) : "";
-  endInput.value = range ? formatLoopInputValue(range.end) : "";
-  enabledInput.disabled = !range;
-  enabledInput.checked = !!range && state.isLoopEnabled;
-  clearButton.disabled = !range;
-  updatePianorollLoopRegion();
-}
-
 function setPianorollLoopRange(startSeconds, endSeconds, { enable = state.isLoopEnabled } = {}) {
   const range = normalizePianorollLoopRange(startSeconds, endSeconds);
   if (!range) return false;
   state.loopStartSeconds = range.start;
   state.loopEndSeconds = range.end;
   state.isLoopEnabled = enable;
-  updatePianorollLoopControls();
+  updatePianorollLoopRegion();
   return true;
 }
 
@@ -1776,23 +1751,7 @@ function clearPianorollLoop() {
   state.loopStartSeconds = null;
   state.loopEndSeconds = null;
   state.isLoopEnabled = false;
-  updatePianorollLoopControls();
-}
-
-function applyPianorollLoopInputs() {
-  const startInput = $("#pianoroll-loop-start");
-  const endInput = $("#pianoroll-loop-end");
-  startInput.setCustomValidity("");
-  endInput.setCustomValidity("");
-  if (!startInput.value || !endInput.value) return;
-  const start = Number(startInput.value);
-  const end = Number(endInput.value);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < MIN_LOOP_SECONDS) {
-    endInput.setCustomValidity(`終了は開始より${MIN_LOOP_SECONDS}秒以上後にしてください`);
-    endInput.reportValidity();
-    return;
-  }
-  setPianorollLoopRange(start, end);
+  updatePianorollLoopRegion();
 }
 
 function setPianorollMessage(message, status = "") {
@@ -2240,10 +2199,20 @@ function setupPianoroll() {
     state.isPianorollLoopDragging = true;
     setPianorollLoopRange(Math.min(anchor, current), Math.max(anchor, current), { enable: true });
   });
+  // クリック（ドラッグではない）時の挙動: 有効なループ範囲内をクリックした場合は
+  // 区間を維持したまま再生位置だけをクリック箇所へ移動し、範囲外をクリックした場合は
+  // ループ選択自体を解除してから再生位置を移動する。
   const finishPointerInteraction = (event) => {
     if (event.pointerId !== state.pianorollPointerId) return;
     const wasDragging = state.isPianorollLoopDragging;
-    if (!wasDragging && event.type === "pointerup") seekPianorollAt(event.clientX);
+    if (!wasDragging && event.type === "pointerup") {
+      const range = activePianorollLoopRange();
+      const seconds = pianorollSecondsAt(event.clientX);
+      if (range && seconds !== null && (seconds < range.start || seconds >= range.end)) {
+        clearPianorollLoop();
+      }
+      seekPianorollAt(event.clientX);
+    }
     if (wasDragging) {
       const range = activePianorollLoopRange();
       if (range) seekPlaybackTo(range.start);
@@ -2259,18 +2228,6 @@ function setupPianoroll() {
   document.addEventListener("keydown", handleSeekKeydown);
   $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
   $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));
-  $("#pianoroll-loop-start").addEventListener("change", applyPianorollLoopInputs);
-  $("#pianoroll-loop-end").addEventListener("change", applyPianorollLoopInputs);
-  $("#pianoroll-loop-enabled").addEventListener("change", (event) => {
-    state.isLoopEnabled = event.target.checked && !!selectedPianorollLoopRange();
-    const range = activePianorollLoopRange();
-    if (range) {
-      const current = getDisplayPlaybackSeconds();
-      if (current < range.start || current >= range.end) seekPlaybackTo(range.start);
-    }
-    updatePianorollLoopControls();
-  });
-  $("#pianoroll-loop-clear").addEventListener("click", clearPianorollLoop);
   for (const eventName of ["wheel", "pointerdown", "touchstart"]) {
     scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
   }
@@ -2282,7 +2239,7 @@ function setupPianoroll() {
   }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawPianorollStatic);
   updatePianorollZoomControls();
-  updatePianorollLoopControls();
+  updatePianorollLoopRegion();
 }
 
 function updateSectionsReadiness() {
@@ -2304,7 +2261,7 @@ function updateSectionsReadiness() {
     ? state.session.filename
     : "";
   updateEnsemblePresetControls();
-  updatePianorollLoopControls();
+  updatePianorollLoopRegion();
   updatePlaybackControls();
 }
 

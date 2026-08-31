@@ -236,7 +236,7 @@
                 tabindex="0"
                 aria-label="ピアノロールの再生位置"
                 aria-orientation="horizontal"
-                aria-describedby="pianoroll-help pianoroll-status"
+                aria-describedby="pianoroll-status"
                 aria-disabled="true"
                 aria-valuemin="0"
                 aria-valuemax="0"
@@ -256,20 +256,6 @@
         </div>
       </div>
       <div class="pianoroll-footer">
-        <div class="pianoroll-loop-controls" role="group" aria-label="区間ループ">
-          <label class="pianoroll-loop-toggle" for="pianoroll-loop-enabled">
-            <input type="checkbox" id="pianoroll-loop-enabled" disabled>
-            <span>区間ループ</span>
-          </label>
-          <label for="pianoroll-loop-start">開始</label>
-          <input type="number" id="pianoroll-loop-start" min="0" step="0.1" inputmode="decimal" placeholder="0.0" disabled>
-          <span aria-hidden="true">秒</span>
-          <label for="pianoroll-loop-end">終了</label>
-          <input type="number" id="pianoroll-loop-end" min="0" step="0.1" inputmode="decimal" placeholder="0.0" disabled>
-          <span aria-hidden="true">秒</span>
-          <button type="button" class="button ghost small" id="pianoroll-loop-clear" disabled>解除</button>
-        </div>
-        <p class="field-help" id="pianoroll-help">クリックで再生位置を移動、横方向のドラッグでループ範囲を選択します。</p>
         <p class="field-help" id="pianoroll-status"></p>
       </div>
       <div class="toolbar download-toolbar" aria-label="ダウンロード">

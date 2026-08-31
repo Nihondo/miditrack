@@ -1110,38 +1110,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   gap: 4px;
 }
 
-.pianoroll-loop-controls {
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  color: var(--neutral-60);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.pianoroll-loop-toggle {
-  min-height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--neutral-80);
-}
-
-.pianoroll-loop-controls input[type="number"] {
-  width: 72px;
-  min-height: 32px;
-  padding: 5px 7px;
-  color: var(--neutral-100);
-  background: var(--neutral-0);
-  border: 1px solid var(--neutral-40);
-  border-radius: 6px;
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-}
-
-.pianoroll-loop-controls .button { min-height: 32px; }
 .pianoroll-footer .field-help { margin: 0; }
 
 .variation-panel {
@@ -1278,7 +1246,6 @@ body.is-fullscreen .app-shell > #audition-card > .variation-panel { grid-column:
 
 body.is-fullscreen #audition-card { display: contents; }
 body.is-fullscreen #audition-card > .card-heading { display: none; }
-body.is-fullscreen #pianoroll-help { display: none; }
 /* display:contentsの要素自体はボックスを持たずopacityが効かないため、
    .disabled-section（!ready時に薄く見せる）を子要素へ付け替える。 */
 body.is-fullscreen #audition-card:not(.ready) > * { opacity: 0.58; }

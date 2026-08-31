@@ -3668,7 +3668,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function handleOpenProject(file)", javascript)
         self.assertIn("await flushPendingDownloadFilename();", javascript)
         self.assertIn('apiFetch("/api/project/import"', javascript)
-        self.assertIn('id="pianoroll-loop-enabled"', html)
+        self.assertIn('id="pianoroll-loop-region"', html)
         self.assertIn('id="ensemble-preset-select"', html)
         self.assertIn('id="ensemble-preset-new"', html)
         self.assertIn('id="ensemble-preset-dialog"', html)
