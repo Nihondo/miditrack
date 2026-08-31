@@ -2257,9 +2257,6 @@ function updateSectionsReadiness() {
   // バリエーション一括生成はensure_render()を経由しないため事前の試聴レンダリングは
   // 不要（hasRenderではなくhasDownload = MIDIアップロード済みかどうかで活性化する）。
   $("#variation-button").disabled = !(state.session && state.session.hasDownload);
-  $("#upload-filename").textContent = state.session && state.session.filename
-    ? state.session.filename
-    : "";
   updateEnsemblePresetControls();
   updatePianorollLoopRegion();
   updatePlaybackControls();
