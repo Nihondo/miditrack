@@ -589,11 +589,24 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-weight: 700;
 }
 
-/* SoundFont設定はトラック一覧の末尾に置くため、一覧との間隔を確保し、
-   ラベル下だけを少し広げる。説明文の後ろには次のフォーム用の余白を追加しない。 */
-.ensemble-preset-field,
-.soundfont-field {
-  margin: 12px 0 0;
+/* 編成プリセット・SoundFont設定は、他のサブパネル（.convert-panel/
+   .variation-panel）と同じ角丸矩形でまとめて囲み、トラック一覧との
+   境界を視覚的に示す。 */
+.settings-panel {
+  margin-top: 12px;
+  padding: 16px;
+  background: var(--neutral-10);
+  border: 1px solid var(--neutral-30);
+  border-radius: 12px;
+}
+
+.settings-panel > .ensemble-preset-field,
+.settings-panel > .soundfont-field {
+  margin: 0;
+}
+
+.settings-panel > .soundfont-field {
+  margin-top: 16px;
 }
 
 .ensemble-preset-row {
@@ -1298,13 +1311,9 @@ body.is-fullscreen #tracks-card .table-scroll {
   overflow-y: auto;
 }
 
-/* トラック表だけを伸縮・スクロール対象にすることで、SoundFont設定は
-   常に左カラムの下端に残る。 */
-body.is-fullscreen #tracks-card .soundfont-field {
-  flex: 0 0 auto;
-}
-
-body.is-fullscreen #tracks-card .ensemble-preset-field {
+/* トラック表だけを伸縮・スクロール対象にすることで、設定パネル
+   （編成プリセット・SoundFont）は常に左カラムの下端に残る。 */
+body.is-fullscreen #tracks-card .settings-panel {
   flex: 0 0 auto;
 }
 

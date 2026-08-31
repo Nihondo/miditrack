@@ -95,36 +95,38 @@
         </table>
       </div>
       <p class="field-help" id="tracks-empty">MIDIを読み込むとここにトラック一覧が表示されます。</p>
-      <div class="field-group ensemble-preset-field">
-        <label class="field-label" for="ensemble-preset-select">編成プリセット</label>
-        <div class="ensemble-preset-row">
-          <select id="ensemble-preset-select" class="program-select" aria-describedby="ensemble-preset-help" disabled>
-            <option value="">プリセット解除</option>
-          </select>
-          <div class="ensemble-preset-actions" role="group" aria-label="編成プリセットの操作">
-            <button type="button" class="button ghost small" id="ensemble-preset-new">新規</button>
-            <button type="button" class="button ghost small" id="ensemble-preset-edit" disabled>編集</button>
-            <button type="button" class="button ghost small danger" id="ensemble-preset-delete" disabled>削除</button>
-          </div>
-        </div>
-        <p class="field-help" id="ensemble-preset-help">適用中は、各トラックの楽器欄が役割選択に切り替わります。</p>
-      </div>
-      <div class="field-group soundfont-field">
-        <label class="field-label" for="soundfont-select">SoundFont</label>
-        <div class="soundfont-row">
-          <select id="soundfont-select" class="program-select" aria-describedby="soundfont-help"></select>
-          <fieldset class="render-mode-field">
-            <legend class="visually-hidden">試聴モード</legend>
-            <div class="render-mode-options">
-              <input class="render-mode-input" type="radio" name="render-mode" id="render-mode-fast" value="fast" checked>
-              <label for="render-mode-fast">高速</label>
-              <input class="render-mode-input" type="radio" name="render-mode" id="render-mode-quality" value="quality">
-              <label for="render-mode-quality">品質</label>
+      <div class="settings-panel">
+        <div class="field-group ensemble-preset-field">
+          <label class="field-label" for="ensemble-preset-select">編成プリセット</label>
+          <div class="ensemble-preset-row">
+            <select id="ensemble-preset-select" class="program-select" aria-describedby="ensemble-preset-help" disabled>
+              <option value="">プリセット解除</option>
+            </select>
+            <div class="ensemble-preset-actions" role="group" aria-label="編成プリセットの操作">
+              <button type="button" class="button ghost small" id="ensemble-preset-new">新規</button>
+              <button type="button" class="button ghost small" id="ensemble-preset-edit" disabled>編集</button>
+              <button type="button" class="button ghost small danger" id="ensemble-preset-delete" disabled>削除</button>
             </div>
-          </fieldset>
-          <span class="render-spinner" id="render-spinner" aria-hidden="true" hidden></span>
+          </div>
+          <p class="field-help" id="ensemble-preset-help">適用中は、各トラックの楽器欄が役割選択に切り替わります。</p>
         </div>
-        <p class="field-help" id="soundfont-help"></p>
+        <div class="field-group soundfont-field">
+          <label class="field-label" for="soundfont-select">SoundFont</label>
+          <div class="soundfont-row">
+            <select id="soundfont-select" class="program-select" aria-describedby="soundfont-help"></select>
+            <fieldset class="render-mode-field">
+              <legend class="visually-hidden">試聴モード</legend>
+              <div class="render-mode-options">
+                <input class="render-mode-input" type="radio" name="render-mode" id="render-mode-fast" value="fast" checked>
+                <label for="render-mode-fast">高速</label>
+                <input class="render-mode-input" type="radio" name="render-mode" id="render-mode-quality" value="quality">
+                <label for="render-mode-quality">品質</label>
+              </div>
+            </fieldset>
+            <span class="render-spinner" id="render-spinner" aria-hidden="true" hidden></span>
+          </div>
+          <p class="field-help" id="soundfont-help"></p>
+        </div>
       </div>
     </article>
 
