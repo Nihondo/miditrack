@@ -3315,6 +3315,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertEqual(payload["pinnedPrograms"], [])
         self.assertEqual(payload["usageCounts"], {})
         self.assertIsNone(payload["selectedSoundfont"])
+        self.assertEqual(payload["displayMode"], "normal")
         self.assertEqual(
             [preset["name"] for preset in payload["ensemblePresets"]],
             ["ゲームリード", "アコースティック", "ジャズカルテット"],
@@ -3328,6 +3329,29 @@ class TestWebAppPreferences(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["pinnedPrograms"], [80, 40])
+
+    def test_display_mode_persists_across_separate_apps(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"displayMode": "fullscreen"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["displayMode"], "fullscreen")
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertEqual(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["displayMode"],
+            "fullscreen",
+        )
+
+    def test_patch_rejects_invalid_display_mode(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"displayMode": "unsupported"}),
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_patch_persists_across_requests(self) -> None:
         self.client.patch(
@@ -3628,6 +3652,9 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function suggestTrackRoles()", javascript)
         self.assertIn("function handleEnsemblePresetSave", javascript)
         self.assertIn("function setupTrackHighlightControl", javascript)
+        self.assertIn("function setFullscreenLayout", javascript)
+        self.assertIn("function saveDisplayMode", javascript)
+        self.assertIn('displayMode: state.displayMode', javascript)
 
 
 class TestResolveStartupSoundfontOverride(unittest.TestCase):

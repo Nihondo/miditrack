@@ -61,6 +61,7 @@ DEFAULT_ENSEMBLE_PRESETS = (
         },
     },
 )
+DISPLAY_MODES = frozenset({"normal", "fullscreen"})
 
 
 def preferences_path() -> Path:
@@ -80,6 +81,7 @@ def _empty_preferences() -> dict[str, Any]:
         "pinnedPrograms": [],
         "usageCounts": {},
         "selectedSoundfont": None,
+        "displayMode": "normal",
         "ensemblePresets": build_default_ensemble_presets(),
     }
 
@@ -116,6 +118,7 @@ def load_preferences() -> dict[str, Any]:
     pinned = data.get("pinnedPrograms")
     usage = data.get("usageCounts")
     selected_soundfont = data.get("selectedSoundfont")
+    display_mode = data.get("displayMode")
     try:
         ensemble_presets = validate_ensemble_presets(data.get("ensemblePresets"))
     except WebValidationError:
@@ -124,6 +127,7 @@ def load_preferences() -> dict[str, Any]:
         "pinnedPrograms": pinned if isinstance(pinned, list) else [],
         "usageCounts": usage if isinstance(usage, dict) else {},
         "selectedSoundfont": selected_soundfont if isinstance(selected_soundfont, str) else None,
+        "displayMode": display_mode if display_mode in DISPLAY_MODES else "normal",
         "ensemblePresets": ensemble_presets,
     }
 
@@ -168,6 +172,12 @@ def _validate_selected_soundfont(value: Any) -> str | None:
         return None
     if not isinstance(value, str) or not value:
         raise WebValidationError(f"selectedSoundfontは文字列またはnullで指定してください: {value!r}")
+    return value
+
+
+def _validate_display_mode(value: Any) -> str:
+    if value not in DISPLAY_MODES:
+        raise WebValidationError("displayModeはnormalまたはfullscreenで指定してください")
     return value
 
 
@@ -218,6 +228,8 @@ def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
         current["usageCounts"] = _validate_usage_counts(updates["usageCounts"])
     if "selectedSoundfont" in updates:
         current["selectedSoundfont"] = _validate_selected_soundfont(updates["selectedSoundfont"])
+    if "displayMode" in updates:
+        current["displayMode"] = _validate_display_mode(updates["displayMode"])
     if "ensemblePresets" in updates:
         current["ensemblePresets"] = validate_ensemble_presets(updates["ensemblePresets"])
 

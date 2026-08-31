@@ -35,23 +35,21 @@ class TestPreferences(unittest.TestCase):
         self.assertEqual(preferences.preferences_path(), self.path)
 
     def test_load_missing_file_returns_empty_defaults(self) -> None:
-        self.assertEqual(
-            preferences.load_preferences(), {"pinnedPrograms": [], "usageCounts": {}, "selectedSoundfont": None}
-        )
+        loaded = preferences.load_preferences()
+        self.assertEqual(loaded["pinnedPrograms"], [])
+        self.assertEqual(loaded["usageCounts"], {})
+        self.assertIsNone(loaded["selectedSoundfont"])
+        self.assertEqual(loaded["displayMode"], "normal")
 
     def test_load_corrupt_json_returns_empty_defaults(self) -> None:
         self.path.parent.mkdir(parents=True)
         self.path.write_text("not valid json{{{", encoding="utf-8")
-        self.assertEqual(
-            preferences.load_preferences(), {"pinnedPrograms": [], "usageCounts": {}, "selectedSoundfont": None}
-        )
+        self.assertEqual(preferences.load_preferences()["displayMode"], "normal")
 
     def test_load_non_dict_json_returns_empty_defaults(self) -> None:
         self.path.parent.mkdir(parents=True)
         self.path.write_text("[1, 2, 3]", encoding="utf-8")
-        self.assertEqual(
-            preferences.load_preferences(), {"pinnedPrograms": [], "usageCounts": {}, "selectedSoundfont": None}
-        )
+        self.assertEqual(preferences.load_preferences()["displayMode"], "normal")
 
     def test_save_creates_parent_directories(self) -> None:
         self.assertFalse(self.path.parent.exists())
@@ -134,6 +132,14 @@ class TestPreferences(unittest.TestCase):
     def test_selected_soundfont_rejects_empty_string(self) -> None:
         with self.assertRaises(WebValidationError):
             preferences.save_preferences({"selectedSoundfont": ""})
+
+    def test_display_mode_round_trips(self) -> None:
+        preferences.save_preferences({"displayMode": "fullscreen"})
+        self.assertEqual(preferences.load_preferences()["displayMode"], "fullscreen")
+
+    def test_display_mode_rejects_invalid_value(self) -> None:
+        with self.assertRaises(WebValidationError):
+            preferences.save_preferences({"displayMode": "windowed"})
 
     def test_load_non_string_selected_soundfont_falls_back_to_none(self) -> None:
         self.path.parent.mkdir(parents=True)

@@ -71,6 +71,7 @@ const state = {
   // 変わりlocalStorageのオリジンも変わってしまうため、ブラウザ側には保存しない。
   pinnedPrograms: new Set(), // 手動ピン留めされたGMプログラム番号のSet
   usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
+  displayMode: "normal",    // 通常表示または全画面DAW表示。サーバー側の設定に永続化する。
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -277,10 +278,26 @@ async function loadPreferences() {
     const payload = await response.json();
     state.pinnedPrograms = new Set(payload.pinnedPrograms || []);
     state.usageCounts = payload.usageCounts || {};
+    state.displayMode = payload.displayMode === "fullscreen" ? "fullscreen" : "normal";
+    setFullscreenLayout(state.displayMode === "fullscreen");
     state.ensemblePresets = payload.ensemblePresets || [];
     renderEnsemblePresetOptions();
   } catch (_error) {
     // 読み込めなくても機能自体は空の状態で継続する。
+  }
+}
+
+// 表示モードの変更をサーバー側設定へ保存する。起動ごとにポートが変わるため、
+// localStorageではなく/api/preferencesを使う。
+async function saveDisplayMode() {
+  try {
+    await apiFetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ displayMode: state.displayMode }),
+    });
+  } catch (_error) {
+    // 保存に失敗しても、現在の表示モードはそのまま使い続ける。
   }
 }
 
@@ -3466,21 +3483,24 @@ async function handleReset() {
   }
 }
 
-// 全画面（DAW風）レイアウトへの切り替え。body.is-fullscreenの付け外しだけを行い、
-// レイアウト自体はapp.cssのdisplay:contents/grid配置に任せる。再生・レンダリング・
-// ピアノロール描画のロジックには一切触れない — ピアノロールのcanvasはsetupPianoroll()の
-// ResizeObserverが高さの変化を検知して自動的に再描画するため、ここでの追加処理は不要。
+// 全画面（DAW風）レイアウトを反映する。レイアウト自体はapp.cssの
+// display:contents/grid配置に任せる。ピアノロールのcanvasはResizeObserverが
+// 高さの変化を検知して自動的に再描画するため、ここでの追加処理は不要。
+function setFullscreenLayout(isFullscreen, { shouldPersist = false } = {}) {
+  document.body.classList.toggle("is-fullscreen", isFullscreen);
+  $("#fullscreen-toggle").setAttribute("aria-pressed", String(isFullscreen));
+  state.displayMode = isFullscreen ? "fullscreen" : "normal";
+  // 読み込みカードは全画面では折りたたんで小さく表示するため、CSSでは開閉を
+  // 制御できない<details>のopenをここで明示的に閉じる。
+  if (isFullscreen) $("#upload-card").open = false;
+  if (shouldPersist) saveDisplayMode();
+}
+
+// 表示モードの切替操作を登録する。
 function setupFullscreenLayout() {
   const toggle = $("#fullscreen-toggle");
-  const setFullscreen = (isFullscreen) => {
-    document.body.classList.toggle("is-fullscreen", isFullscreen);
-    toggle.setAttribute("aria-pressed", String(isFullscreen));
-    // 読み込みカードは全画面では折りたたんで小さく表示するため、CSSでは開閉を
-    // 制御できない<details>のopenをここで明示的に閉じる。
-    if (isFullscreen) $("#upload-card").open = false;
-  };
   toggle.addEventListener("click", () => {
-    setFullscreen(!document.body.classList.contains("is-fullscreen"));
+    setFullscreenLayout(!document.body.classList.contains("is-fullscreen"), { shouldPersist: true });
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
@@ -3493,7 +3513,7 @@ function setupFullscreenLayout() {
     const target = event.target;
     if (target?.isContentEditable) return;
     if (["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName)) return;
-    setFullscreen(false);
+    setFullscreenLayout(false, { shouldPersist: true });
   });
 }
 
