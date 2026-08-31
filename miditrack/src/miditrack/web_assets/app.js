@@ -1854,9 +1854,9 @@ function pianorollFieldOffsets(payload) {
   return Object.fromEntries(payload.fields.map((field, index) => [field, index]));
 }
 
-function drawPianorollGrid(context, width, height, timelineWidth, scrollLeft) {
+function drawPianorollGrid(context, width, noteHeight, timelineWidth, scrollLeft) {
   context.fillStyle = cssColor("--neutral-10", "#fafbfc");
-  context.fillRect(0, 0, width, height);
+  context.fillRect(0, 0, width, noteHeight);
   context.strokeStyle = cssColor("--neutral-30", "#ebecf0");
   context.lineWidth = 1;
   context.beginPath();
@@ -1864,13 +1864,62 @@ function drawPianorollGrid(context, width, height, timelineWidth, scrollLeft) {
     const x = Math.round(timelineWidth * index / 8 - scrollLeft) + 0.5;
     if (x < 0 || x > width) continue;
     context.moveTo(x, 0);
-    context.lineTo(x, height);
+    context.lineTo(x, noteHeight);
   }
   for (let index = 1; index < 6; index += 1) {
-    const y = Math.round(height * index / 6) + 0.5;
+    const y = Math.round(noteHeight * index / 6) + 0.5;
     context.moveTo(0, y);
     context.lineTo(width, y);
   }
+  context.stroke();
+}
+
+function pianorollPitchY(pitch, layout) {
+  return layout.height - ((pitch - layout.minNote + 1) / layout.noteSpan * layout.height);
+}
+
+function drawPitchAutomationGrid(context, layout) {
+  const { width, noteHeight, automationHeight } = layout;
+  const top = noteHeight;
+  context.fillStyle = cssColor("--neutral-20", "#f4f5f7");
+  context.fillRect(0, top, width, automationHeight);
+  context.strokeStyle = cssColor("--neutral-30", "#ebecf0");
+  context.lineWidth = 1;
+  context.beginPath();
+  const center = Math.round(top + automationHeight / 2) + 0.5;
+  context.moveTo(0, center);
+  context.lineTo(width, center);
+  context.stroke();
+  context.fillStyle = cssColor("--neutral-60", "#6b778c");
+  context.font = "10px system-ui, sans-serif";
+  context.textBaseline = "middle";
+  context.fillText("PITCH", 7, center);
+}
+
+function drawPitchAutomation(context, path, start, duration, track, layout) {
+  const { payload, timelineWidth, scrollLeft, noteHeight, automationHeight } = layout;
+  const xAt = (time) => time / payload.durationSeconds * timelineWidth - scrollLeft;
+  const points = [];
+  for (let offset = 0; offset < path.points.length; offset += 2) {
+    const elapsed = Math.min(duration, Math.max(0, path.points[offset]));
+    const bend = path.points[offset + 1];
+    if (points.length && points.at(-1).time === elapsed) points[points.length - 1] = { time: elapsed, bend };
+    else points.push({ time: elapsed, bend });
+  }
+  if (!points.length || points[0].time !== 0) points.unshift({ time: 0, bend: 0 });
+  if (points.at(-1).time !== duration) points.push({ time: duration, bend: points.at(-1).bend });
+  const maximumBend = Math.max(1, ...points.map((point) => Math.abs(point.bend)));
+  const yAt = (bend) => noteHeight + automationHeight / 2 - bend / maximumBend * (automationHeight * 0.36);
+  context.beginPath();
+  context.moveTo(xAt(start + points[0].time), yAt(points[0].bend));
+  for (let index = 1; index < points.length; index += 1) {
+    const point = points[index];
+    const previous = points[index - 1];
+    context.lineTo(xAt(start + point.time), yAt(previous.bend));
+    context.lineTo(xAt(start + point.time), yAt(point.bend));
+  }
+  context.strokeStyle = getTrackColor(track.index, layout.trackCount, 0.9);
+  context.lineWidth = 2;
   context.stroke();
 }
 
@@ -1884,15 +1933,24 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     trackCount,
     mutedIndices.has(track.index) ? 0.18 : 0.72,
   );
+  const pitchPaths = new Map((track.pitchPaths || []).map((path) => [path.noteIndex, path]));
+  let noteIndex = 0;
   for (let offset = 0; offset < track.notes.length; offset += payload.stride) {
     const start = track.notes[offset + offsets.start];
     const duration = track.notes[offset + offsets.duration];
     const note = track.notes[offset + offsets.note];
+    const pitchPath = pitchPaths.get(noteIndex);
+    noteIndex += 1;
     const x = start / payload.durationSeconds * timelineWidth - scrollLeft;
     const noteWidth = Math.max(1, duration / payload.durationSeconds * timelineWidth);
     if (x > width || x + noteWidth < 0) continue;
-    const y = height - ((note - minNote + 1) / noteSpan * height);
-    context.fillRect(x, y, noteWidth, Math.max(1.5, height / noteSpan * 0.72));
+    // 音高1段ぶんの高さを超えると、低い表示領域で隣接音高の矩形が重なる。
+    // 通常は1.5pxを確保しつつ、想定外に高さが縮んだ場合も段間隔の80%以内に
+    // 抑えて、異なるノートを別行として判別できるようにする。
+    const pitchHeight = height / noteSpan;
+    const noteHeight = Math.min(Math.max(1.5, pitchHeight * 0.72), pitchHeight * 0.8);
+    context.fillRect(x, pianorollPitchY(note, layout), noteWidth, noteHeight);
+    if (pitchPath) drawPitchAutomation(context, pitchPath, start, duration, track, layout);
   }
 }
 
@@ -1912,7 +1970,11 @@ function redrawPianorollStatic() {
   const scrollLeft = $("#pianoroll-scroll").scrollLeft;
   const timelineWidth = state.pianorollTimelineWidth || size.width;
   context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-  drawPianorollGrid(context, size.width, size.height, timelineWidth, scrollLeft);
+  const hasPitchAutomation = payload.tracks.some((track) => track.pitchPaths?.length);
+  const automationHeight = hasPitchAutomation ? Math.min(72, Math.max(48, size.height * 0.18)) : 0;
+  const noteHeight = size.height - automationHeight;
+  drawPianorollGrid(context, size.width, noteHeight, timelineWidth, scrollLeft);
+  if (hasPitchAutomation) drawPitchAutomationGrid(context, { width: size.width, noteHeight, automationHeight });
   if (payload.noteCount > 0 && payload.durationSeconds > 0) {
     const mutedIndices = state.highlightedTrackIndex === null
       ? new Set((state.session?.tracks || [])
@@ -1921,10 +1983,10 @@ function redrawPianorollStatic() {
         .filter((track) => track.index !== state.highlightedTrackIndex)
         .map((track) => track.index));
     const layout = {
-      payload, offsets: pianorollFieldOffsets(payload), width: size.width, height: size.height,
+      payload, offsets: pianorollFieldOffsets(payload), width: size.width, height: noteHeight,
       timelineWidth, scrollLeft,
       minNote: payload.minNote, noteSpan: payload.maxNote - payload.minNote + 3,
-      trackCount: payload.tracks.length,
+      trackCount: payload.tracks.length, noteHeight, automationHeight,
     };
     for (const track of payload.tracks) drawPianorollTrack(context, track, layout, mutedIndices);
   }

@@ -63,6 +63,16 @@ The canvas backing store follows the visible viewport's device-pixel
 `ResizeObserver` size, so 4x/8x zoom does not multiply canvas allocation by the
 zoom factor. Scroll events request at most one static repaint per animation
 frame, and `drawPianorollTrack()` culls notes outside that visible slice.
+In the full-screen DAW layout, `.pianoroll-card` keeps a 260px minimum height
+so a full MIDI pitch range retains visible row separation. `drawPianorollTrack()`
+also caps each note rectangle at 80% of one pitch row; this defensive cap keeps
+adjacent pitches from overlapping if any future layout makes the canvas smaller.
+`GET /api/pianoroll` additionally returns an optional per-track `pitchPaths`
+array for notes with MIDI pitchwheel events. Each path pairs elapsed seconds with
+the bend offset in semitones, after applying that channel's RPN 0 bend range
+(default ±2 semitones). Like a conventional DAW, note rectangles remain horizontal;
+`drawPitchAutomation()` renders the discrete bend values as stepped automation in
+a dedicated PITCH lane below the piano roll.
 Playback never repaints or copies the canvas: `#pianoroll-playhead` is a 2px DOM
 overlay whose compositor-friendly `translate3d()` is the only visual property
 updated by the playback rAF loop. Pointer coordinates remain in CSS pixels;

@@ -1482,7 +1482,10 @@ body.is-fullscreen .audition-toolbar {
    重ねて効くと間隔が二重になる。 */
 body.is-fullscreen .pianoroll-card {
   height: auto;
-  min-height: 0;
+  /* MIDI全128音を表示しても、最低1.5pxのノート矩形が隣接音高と重ならない
+     高さを確保する。実際の低解像度時にもapp.js側がノート高を段間隔以内へ
+     制限するため、表示領域がさらに縮んでも音高行は重ならない。 */
+  min-height: 260px;
   margin-top: 0;
 }
 

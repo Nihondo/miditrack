@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ MAX_PIANOROLL_NOTES = 20_000
 NOTE_STRIDE = 4
 NOTE_FIELDS = ["start", "duration", "note", "velocity"]
 TIME_DECIMALS = 3
+DEFAULT_PITCH_BEND_RANGE_SEMITONES = 2.0
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,16 @@ class _TickNote:
     note: int
     velocity: int
     order: int
+    pitch_points: tuple[tuple[int, float], ...] = ()
+
+
+@dataclass
+class _ActiveNote:
+    """ノートオフまでの発音状態と、ノート内のピッチベンド軌跡を保持する。"""
+
+    start_tick: int
+    velocity: int
+    pitch_points: list[tuple[int, float]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -100,28 +111,84 @@ def _transposed_note(channel: int, note: int, transpose: int) -> int | None:
 
 
 def _close_note(
-    notes: list[_TickNote], active_note: tuple[int, int], channel: int, note: int,
+    notes: list[_TickNote], active_note: _ActiveNote, channel: int, note: int,
     end_tick: int, track_index: int, transpose: int, order: int,
 ) -> int:
-    start_tick, velocity = active_note
     rendered_note = _transposed_note(channel, note, transpose)
     if rendered_note is not None:
         notes.append(
-            _TickNote(track_index, start_tick, end_tick, rendered_note, velocity, order)
+            _TickNote(
+                track_index,
+                active_note.start_tick,
+                end_tick,
+                rendered_note,
+                active_note.velocity,
+                order,
+                tuple(active_note.pitch_points),
+            )
         )
         return order + 1
     return order
 
 
+def _pitch_offset_semitones(pitch: int, pitch_range: float) -> float:
+    """14bitのMIDIピッチベンド値を、RPN 0に基づく半音差へ変換する。"""
+    divisor = 8192 if pitch < 0 else 8191
+    return pitch / divisor * pitch_range
+
+
+def _append_pitch_point(active_note: _ActiveNote, tick: int, offset: float) -> None:
+    """同値の連続イベントを除いて、ノート内のピッチ変化点を追加する。"""
+    if active_note.pitch_points and active_note.pitch_points[-1][0] == tick:
+        active_note.pitch_points[-1] = (tick, offset)
+    elif not active_note.pitch_points or active_note.pitch_points[-1][1] != offset:
+        active_note.pitch_points.append((tick, offset))
+
+
+def _append_channel_pitch_point(
+    active: dict[tuple[int, int], _ActiveNote], channel: int, tick: int, offset: float,
+) -> None:
+    """指定チャンネルで発音中の全ノートへピッチ変化点を追加する。"""
+    for (active_channel, _note), active_note in active.items():
+        if active_channel == channel:
+            _append_pitch_point(active_note, tick, offset)
+
+
 def _extract_track_notes(
     track: Any, track_index: int, transpose: int, start_order: int,
 ) -> tuple[list[_TickNote], int, int]:
-    active: dict[tuple[int, int], tuple[int, int]] = {}
+    active: dict[tuple[int, int], _ActiveNote] = {}
     notes: list[_TickNote] = []
+    pitch_values: dict[int, int] = {}
+    pitch_ranges: dict[int, float] = {}
+    rpn_selection: dict[int, list[int | None]] = {}
+    rpn_data_entry: dict[int, list[int]] = {}
     absolute_tick = 0
     order = start_order
     for message in track:
         absolute_tick += message.time
+        if message.type == "control_change":
+            selection = rpn_selection.setdefault(message.channel, [None, None])
+            data_entry = rpn_data_entry.setdefault(message.channel, [0, 0])
+            if message.control == 101:
+                selection[0] = message.value
+            elif message.control == 100:
+                selection[1] = message.value
+            elif message.control in (6, 38) and selection == [0, 0]:
+                data_entry[0 if message.control == 6 else 1] = message.value
+                pitch_ranges[message.channel] = data_entry[0] + data_entry[1] / 100
+                offset = _pitch_offset_semitones(
+                    pitch_values.get(message.channel, 0), pitch_ranges[message.channel]
+                )
+                _append_channel_pitch_point(active, message.channel, absolute_tick, offset)
+            continue
+        if message.type == "pitchwheel":
+            pitch_values[message.channel] = message.pitch
+            offset = _pitch_offset_semitones(
+                message.pitch, pitch_ranges.get(message.channel, DEFAULT_PITCH_BEND_RANGE_SEMITONES)
+            )
+            _append_channel_pitch_point(active, message.channel, absolute_tick, offset)
+            continue
         if message.type not in ("note_on", "note_off"):
             continue
         key = (message.channel, message.note)
@@ -131,7 +198,13 @@ def _extract_track_notes(
                 notes, active.pop(key), *key, absolute_tick, track_index, transpose, order
             )
         if is_note_on:
-            active[key] = (absolute_tick, message.velocity)
+            offset = _pitch_offset_semitones(
+                pitch_values.get(message.channel, 0),
+                pitch_ranges.get(message.channel, DEFAULT_PITCH_BEND_RANGE_SEMITONES),
+            )
+            active[key] = _ActiveNote(
+                absolute_tick, message.velocity, [(absolute_tick, offset)]
+            )
         elif key in active:
             order = _close_note(
                 notes, active.pop(key), *key, absolute_tick, track_index, transpose, order
@@ -157,17 +230,42 @@ def _flatten_notes(notes: list[_TickNote], tempo_map: _TempoMap) -> list[float |
     return flattened
 
 
+def _flatten_pitch_path(note: _TickNote, tempo_map: _TempoMap) -> list[float]:
+    """ノート開始からの秒数と半音差を交互にしたピッチ軌跡を返す。"""
+    start = tempo_map.to_seconds(note.start_tick)
+    flattened: list[float] = []
+    for tick, offset in note.pitch_points:
+        elapsed = max(0.0, tempo_map.to_seconds(tick) - start)
+        flattened.extend([round(elapsed, TIME_DECIMALS), round(offset, TIME_DECIMALS)])
+    return flattened
+
+
+def _has_pitch_motion(note: _TickNote) -> bool:
+    return any(abs(offset) > 0.000_001 for _tick, offset in note.pitch_points)
+
+
 def _group_tracks(
     notes: list[_TickNote], track_count: int, tempo_map: _TempoMap,
 ) -> list[dict[str, Any]]:
     grouped: list[list[_TickNote]] = [[] for _ in range(track_count)]
     for note in notes:
         grouped[note.track_index].append(note)
-    return [
-        {"index": index, "noteCount": len(track_notes),
-         "notes": _flatten_notes(track_notes, tempo_map)}
-        for index, track_notes in enumerate(grouped)
-    ]
+    tracks: list[dict[str, Any]] = []
+    for index, track_notes in enumerate(grouped):
+        track_payload: dict[str, Any] = {
+            "index": index,
+            "noteCount": len(track_notes),
+            "notes": _flatten_notes(track_notes, tempo_map),
+        }
+        pitch_paths = [
+            {"noteIndex": note_index, "points": _flatten_pitch_path(note, tempo_map)}
+            for note_index, note in enumerate(track_notes)
+            if _has_pitch_motion(note)
+        ]
+        if pitch_paths:
+            track_payload["pitchPaths"] = pitch_paths
+        tracks.append(track_payload)
+    return tracks
 
 
 def _build_payload(
@@ -178,7 +276,11 @@ def _build_payload(
     kept_notes = all_notes[:MAX_PIANOROLL_NOTES]
     truncated = total_note_count > len(kept_notes)
     truncated_at = tempo_map.to_seconds(all_notes[MAX_PIANOROLL_NOTES].start_tick) if truncated else None
-    note_numbers = [note.note for note in kept_notes]
+    note_numbers = [
+        round(note.note + offset, TIME_DECIMALS)
+        for note in kept_notes
+        for _tick, offset in note.pitch_points
+    ]
     duration = tempo_map.to_seconds(max(end_ticks, default=0))
     return {
         "ticksPerBeat": midi_file.ticks_per_beat,

@@ -87,6 +87,35 @@ class TestExtractNotes(unittest.TestCase):
         self.assertEqual(payload["unreleasedNoteCount"], 1)
         self.assertEqual(payload["tracks"][0]["notes"][0:8], [0.0, 0.125, 60, 90, 0.125, 0.125, 60, 80])
 
+    def test_pitchwheel_is_exported_as_a_note_pitch_path(self) -> None:
+        track = mido.MidiTrack([
+            mido.Message("pitchwheel", pitch=4096, channel=0, time=0),
+            mido.Message("note_on", note=60, velocity=100, channel=0, time=0),
+            mido.Message("pitchwheel", pitch=-2048, channel=0, time=240),
+            mido.Message("note_off", note=60, velocity=0, channel=0, time=240),
+        ])
+        save_midi(self.path, [track])
+        payload = pianoroll.extract_notes(self.path)
+        self.assertEqual(payload["tracks"][0]["notes"], [0.0, 0.5, 60, 100])
+        self.assertEqual(
+            payload["tracks"][0]["pitchPaths"],
+            [{"noteIndex": 0, "points": [0.0, 1.0, 0.25, -0.5]}],
+        )
+        self.assertEqual((payload["minNote"], payload["maxNote"]), (59.5, 61.0))
+
+    def test_pitchwheel_uses_the_rpn_pitch_bend_range(self) -> None:
+        track = mido.MidiTrack([
+            mido.Message("control_change", control=101, value=0, channel=0, time=0),
+            mido.Message("control_change", control=100, value=0, channel=0, time=0),
+            mido.Message("control_change", control=6, value=12, channel=0, time=0),
+            mido.Message("pitchwheel", pitch=4096, channel=0, time=0),
+            mido.Message("note_on", note=60, velocity=100, channel=0, time=0),
+            mido.Message("note_off", note=60, velocity=0, channel=0, time=480),
+        ])
+        save_midi(self.path, [track])
+        path = pianoroll.extract_notes(self.path)["tracks"][0]["pitchPaths"][0]
+        self.assertEqual(path["points"], [0.0, 6.001])
+
     def test_channels_with_same_note_do_not_pair_together(self) -> None:
         track = mido.MidiTrack([
             mido.Message("note_on", note=60, velocity=90, channel=0, time=0),

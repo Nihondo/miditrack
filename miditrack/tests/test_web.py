@@ -314,6 +314,29 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("pointer-events: none", playhead_rule)
         self.assertIn("transform: translate3d", playhead_rule)
 
+    def test_pianoroll_preserves_vertical_pitch_separation(self) -> None:
+        """低い全画面領域でも隣接する音高のノート矩形を重ねない。"""
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        fullscreen_roll_rule = css.split("body.is-fullscreen .pianoroll-card {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-height: 260px", fullscreen_roll_rule)
+        draw_track_block = javascript.split("function drawPianorollTrack", 1)[1].split(
+            "function redrawPianorollStatic", 1
+        )[0]
+        self.assertIn("const pitchHeight = height / noteSpan", draw_track_block)
+        self.assertIn("pitchHeight * 0.8", draw_track_block)
+
+    def test_pianoroll_draws_pitchwheel_paths(self) -> None:
+        """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        self.assertIn("function drawPitchAutomationGrid", javascript)
+        self.assertIn("function drawPitchAutomation", javascript)
+        self.assertIn("track.pitchPaths || []", javascript)
+        self.assertIn('context.fillText("PITCH", 7, center)', javascript)
+        self.assertIn("context.fillRect(x, pianorollPitchY(note, layout), noteWidth, noteHeight)", javascript)
+
     def test_song_picker_is_shown_only_when_multiple_candidates_exist(self) -> None:
         """単一候補は隠しつつ、その曲番号を変換時に送ることを確認する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
