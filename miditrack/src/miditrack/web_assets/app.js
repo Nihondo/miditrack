@@ -1855,7 +1855,7 @@ function drawPitchAutomationGrid(context, layout) {
   context.fillText("PITCH", 7, center);
 }
 
-function drawPitchAutomation(context, path, start, duration, track, layout) {
+function drawPitchAutomation(context, path, start, duration, track, layout, opacity) {
   const { payload, timelineWidth, scrollLeft, noteHeight, automationHeight } = layout;
   const xAt = (time) => time / payload.durationSeconds * timelineWidth - scrollLeft;
   const points = [];
@@ -1877,7 +1877,7 @@ function drawPitchAutomation(context, path, start, duration, track, layout) {
     context.lineTo(xAt(start + point.time), yAt(previous.bend));
     context.lineTo(xAt(start + point.time), yAt(point.bend));
   }
-  context.strokeStyle = getTrackColor(track.index, layout.trackCount, 0.9);
+  context.strokeStyle = getTrackColor(track.index, layout.trackCount, opacity);
   context.lineWidth = 2;
   context.stroke();
 }
@@ -1887,11 +1887,9 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     payload, offsets, width, height, timelineWidth, scrollLeft,
     minNote, noteSpan, trackCount,
   } = layout;
-  context.fillStyle = getTrackColor(
-    track.index,
-    trackCount,
-    mutedIndices.has(track.index) ? 0.18 : 0.72,
-  );
+  const isMuted = mutedIndices.has(track.index);
+  context.fillStyle = getTrackColor(track.index, trackCount, isMuted ? 0.18 : 0.72);
+  const pitchOpacity = isMuted ? 0.18 : 0.9;
   const pitchPaths = new Map((track.pitchPaths || []).map((path) => [path.noteIndex, path]));
   let noteIndex = 0;
   for (let offset = 0; offset < track.notes.length; offset += payload.stride) {
@@ -1909,7 +1907,7 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     const pitchHeight = height / noteSpan;
     const noteHeight = Math.min(Math.max(1.5, pitchHeight * 0.72), pitchHeight * 0.8);
     context.fillRect(x, pianorollPitchY(note, layout), noteWidth, noteHeight);
-    if (pitchPath) drawPitchAutomation(context, pitchPath, start, duration, track, layout);
+    if (pitchPath) drawPitchAutomation(context, pitchPath, start, duration, track, layout, pitchOpacity);
   }
 }
 
