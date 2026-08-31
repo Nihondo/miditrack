@@ -84,6 +84,7 @@ def _empty_preferences() -> dict[str, Any]:
         "displayMode": "normal",
         "roundedPianorollNotes": True,
         "outlinedPianorollNotes": True,
+        "showPianorollKeyboard": True,
         "ensemblePresets": build_default_ensemble_presets(),
     }
 
@@ -123,6 +124,7 @@ def load_preferences() -> dict[str, Any]:
     display_mode = data.get("displayMode")
     rounded_pianoroll_notes = data.get("roundedPianorollNotes")
     outlined_pianoroll_notes = data.get("outlinedPianorollNotes")
+    show_pianoroll_keyboard = data.get("showPianorollKeyboard")
     try:
         ensemble_presets = validate_ensemble_presets(data.get("ensemblePresets"))
     except WebValidationError:
@@ -137,6 +139,9 @@ def load_preferences() -> dict[str, Any]:
         ),
         "outlinedPianorollNotes": (
             outlined_pianoroll_notes if isinstance(outlined_pianoroll_notes, bool) else True
+        ),
+        "showPianorollKeyboard": (
+            show_pianoroll_keyboard if isinstance(show_pianoroll_keyboard, bool) else True
         ),
         "ensemblePresets": ensemble_presets,
     }
@@ -203,6 +208,13 @@ def _validate_outlined_pianoroll_notes(value: Any) -> bool:
     return value
 
 
+def _validate_show_pianoroll_keyboard(value: Any) -> bool:
+    """ピアノロール鍵盤の表示設定を検証する。"""
+    if not isinstance(value, bool):
+        raise WebValidationError("showPianorollKeyboardは真偽値で指定してください")
+    return value
+
+
 def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
     """編成プリセット一覧を検証し、保存用の正規化済みデータを返す。"""
     if value is None:
@@ -259,6 +271,10 @@ def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
     if "outlinedPianorollNotes" in updates:
         current["outlinedPianorollNotes"] = _validate_outlined_pianoroll_notes(
             updates["outlinedPianorollNotes"]
+        )
+    if "showPianorollKeyboard" in updates:
+        current["showPianorollKeyboard"] = _validate_show_pianoroll_keyboard(
+            updates["showPianorollKeyboard"]
         )
     if "ensemblePresets" in updates:
         current["ensemblePresets"] = validate_ensemble_presets(updates["ensemblePresets"])

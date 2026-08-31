@@ -1142,6 +1142,7 @@ def create_app(
             "displayMode",
             "roundedPianorollNotes",
             "outlinedPianorollNotes",
+            "showPianorollKeyboard",
             "ensemblePresets",
         }
         if not any(field in body for field in allowed_fields):

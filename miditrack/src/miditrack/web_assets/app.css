@@ -20,6 +20,11 @@
   --neutral-60: #5e6c84;
   --neutral-80: #42526e;
   --neutral-100: #172b4d;
+  --pianoroll-key-white: #fff;
+  --pianoroll-key-black: #172b4d;
+  --pianoroll-key-border: #dfe1e6;
+  --pianoroll-key-label: #334155;
+  --pianoroll-key-automation: #f4f5f7;
   --success: #16a34a;
   --warning: #b45309;
   --danger: #d92d20;
@@ -47,6 +52,11 @@
     --neutral-60: #9aa7bb;
     --neutral-80: #c3ccdb;
     --neutral-100: #eef1f6;
+    --pianoroll-key-white: #e8edf4;
+    --pianoroll-key-black: #10151d;
+    --pianoroll-key-border: #7d899a;
+    --pianoroll-key-label: #334155;
+    --pianoroll-key-automation: #262d37;
     --warning: #eab308;
     --toast-bg: #10151d;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
@@ -916,6 +926,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
    常に2倍になり、専用の縦ズームUIなしで視認性が上がる。 */
 .pianoroll-card {
   position: relative;
+  display: flex;
   height: 380px;
   margin-top: 16px;
   overflow: hidden;
@@ -925,13 +936,29 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .pianoroll-scroll {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-color: var(--neutral-60) var(--neutral-20);
   scrollbar-width: thin;
 }
+
+/* 鍵盤は横スクロール領域の外に置き、ロールの音高行と同じ高さで固定する。 */
+.pianoroll-keyboard {
+  flex: 0 0 48px;
+  min-width: 48px;
+  max-width: 48px;
+  width: 48px;
+  height: 100%;
+  display: block;
+  background: var(--neutral-0);
+  border-right: 1px solid var(--neutral-30);
+  pointer-events: none;
+}
+
+.pianoroll-keyboard[hidden] { display: none; }
 
 .pianoroll-timeline {
   position: relative;

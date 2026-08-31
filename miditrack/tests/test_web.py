@@ -3664,6 +3664,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertEqual(payload["displayMode"], "normal")
         self.assertTrue(payload["roundedPianorollNotes"])
         self.assertTrue(payload["outlinedPianorollNotes"])
+        self.assertTrue(payload["showPianorollKeyboard"])
         self.assertEqual(
             [preset["name"] for preset in payload["ensemblePresets"]],
             ["ゲームリード", "アコースティック", "ジャズカルテット"],
@@ -3742,6 +3743,28 @@ class TestWebAppPreferences(unittest.TestCase):
             "/api/preferences",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
             data=json.dumps({"outlinedPianorollNotes": "yes"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_pianoroll_keyboard_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"showPianorollKeyboard": False}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["showPianorollKeyboard"])
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertFalse(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["showPianorollKeyboard"]
+        )
+
+    def test_patch_rejects_invalid_pianoroll_keyboard_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"showPianorollKeyboard": "yes"}),
         )
         self.assertEqual(response.status_code, 400)
 
@@ -4029,6 +4052,7 @@ class TestWebAppPreferences(unittest.TestCase):
 
     def test_project_controls_and_deferred_patches_are_wired(self) -> None:
         html = self.client.get("/").get_data(as_text=True)
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
         self.assertIn('id="open-project-button"', html)
         self.assertIn('id="save-project-button"', html)
@@ -4048,12 +4072,34 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function saveDisplayMode", javascript)
         self.assertIn('id="pianoroll-rounded-notes"', html)
         self.assertIn('id="pianoroll-outlined-notes"', html)
+        self.assertIn('id="pianoroll-keyboard"', html)
+        self.assertIn('class="pianoroll-keyboard"', html)
+        self.assertIn('id="pianoroll-show-keyboard"', html)
         self.assertIn("function drawPianorollNote", javascript)
         self.assertIn("context.roundRect", javascript)
         self.assertIn("function getTrackOutlineColor", javascript)
         self.assertIn("context.strokeRect", javascript)
         self.assertIn("function saveRoundedPianorollNotes", javascript)
         self.assertIn("function saveOutlinedPianorollNotes", javascript)
+        self.assertIn("function drawPianorollKeyboard", javascript)
+        self.assertIn("function isPianorollBlackKey", javascript)
+        self.assertIn("function pianorollPitchCenterY", javascript)
+        self.assertIn("function pianorollWhiteKeyBounds", javascript)
+        self.assertIn("adjacentPianorollWhitePitch", javascript)
+        self.assertIn("pianorollPitchCenterY(pitch, layout)", javascript)
+        self.assertIn("function pianorollOctaveLabel", javascript)
+        self.assertIn("Math.floor(pitch / 12) - 1", javascript)
+        self.assertIn("function savePianorollKeyboardVisibility", javascript)
+        self.assertIn("keyboardResizeObserver.observe", javascript)
+        self.assertIn("showPianorollKeyboard", javascript)
+        self.assertIn('cssColor("--pianoroll-key-white"', javascript)
+        self.assertIn('cssColor("--pianoroll-key-black"', javascript)
+        keyboard_rule = css.split(".pianoroll-keyboard {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-width: 48px", keyboard_rule)
+        self.assertIn("max-width: 48px", keyboard_rule)
+        self.assertIn("--pianoroll-key-white", css)
+        self.assertIn("--pianoroll-key-black", css)
+        self.assertIn("--pianoroll-key-label: #334155", css)
         self.assertIn('displayMode: state.displayMode', javascript)
         fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(
             "\n}\n\nfunction setupDropZone", 1

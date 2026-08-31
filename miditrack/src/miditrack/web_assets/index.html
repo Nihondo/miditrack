@@ -228,6 +228,12 @@
         </div>
       </div>
       <div class="pianoroll-card">
+        <canvas
+          id="pianoroll-keyboard"
+          class="pianoroll-keyboard"
+          aria-hidden="true"
+          hidden
+        >ピアノロールの音高を示す鍵盤です。</canvas>
         <div class="pianoroll-scroll" id="pianoroll-scroll">
           <div class="pianoroll-timeline" id="pianoroll-timeline">
             <div class="pianoroll-viewport" id="pianoroll-viewport">
@@ -264,6 +270,10 @@
         <label class="pianoroll-appearance-control" for="pianoroll-outlined-notes">
           <input type="checkbox" id="pianoroll-outlined-notes" checked>
           ノートに縁取りを付ける
+        </label>
+        <label class="pianoroll-appearance-control" for="pianoroll-show-keyboard">
+          <input type="checkbox" id="pianoroll-show-keyboard" checked>
+          鍵盤を表示
         </label>
         <p class="field-help" id="pianoroll-status"></p>
       </div>

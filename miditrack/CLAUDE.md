@@ -76,6 +76,13 @@ the rounded or rectangular note shape. Both are persistent display-only
 preferences in `preferences.json`: changing either redraws the static canvas
 immediately but must not fetch the piano-roll payload, alter the project
 archive, or trigger an audio/MIDI render.
+`showPianorollKeyboard` is a third persistent display-only preference, enabled
+by default. It places a separate fixed-width canvas beside the horizontal
+scroll area, so `drawPianorollKeyboard()` can reuse the exact note-row layout
+without moving during scrolling or playback. It draws white keys, shorter black
+keys, and only C labels (`MIDI 60 = C4`); it is hidden when no notes are
+available. Its backing store must follow its own device-pixel `ResizeObserver`,
+and toggling it must relayout and redraw only the static canvases.
 `GET /api/pianoroll` additionally returns an optional per-track `pitchPaths`
 array for notes with MIDI pitchwheel events. Each path pairs elapsed seconds with
 the bend offset in semitones, after applying that channel's RPN 0 bend range

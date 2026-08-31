@@ -21,6 +21,7 @@ const PLAYBACK_SEEK_SECONDS = 1;
 const LOOP_DRAG_THRESHOLD_PX = 6;
 const MIN_LOOP_SECONDS = 0.1;
 const PREWARM_DELAY_MS = 500;
+const BLACK_PIANO_KEY_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
 const TRACK_ROLES = [
   { id: "melody", label: "主旋律" },
   { id: "counterMelody", label: "対旋律" },
@@ -74,6 +75,7 @@ const state = {
   displayMode: "normal",    // 通常表示または全画面DAW表示。サーバー側の設定に永続化する。
   hasRoundedPianorollNotes: true, // ピアノロールのノートを角丸で描くか。設定として永続化する。
   hasOutlinedPianorollNotes: true, // ピアノロールのノートに濃い縁取りを描くか。設定として永続化する。
+  isPianorollKeyboardVisible: true, // ピアノロール左端の鍵盤を表示するか。設定として永続化する。
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -99,6 +101,7 @@ const state = {
   pianoroll: null,
   pianorollLoadId: 0,
   pianorollSize: null,
+  pianorollKeyboardSize: null,
   pianorollTimelineWidth: 0,
   pianorollScrollFrameId: null,
   pianorollPointerId: null,
@@ -283,8 +286,11 @@ async function loadPreferences() {
     state.displayMode = payload.displayMode === "fullscreen" ? "fullscreen" : "normal";
     state.hasRoundedPianorollNotes = payload.roundedPianorollNotes !== false;
     state.hasOutlinedPianorollNotes = payload.outlinedPianorollNotes !== false;
+    state.isPianorollKeyboardVisible = payload.showPianorollKeyboard !== false;
     $("#pianoroll-rounded-notes").checked = state.hasRoundedPianorollNotes;
     $("#pianoroll-outlined-notes").checked = state.hasOutlinedPianorollNotes;
+    $("#pianoroll-show-keyboard").checked = state.isPianorollKeyboardVisible;
+    updatePianorollKeyboardVisibility();
     setFullscreenLayout(state.displayMode === "fullscreen");
     state.ensemblePresets = payload.ensemblePresets || [];
     renderEnsemblePresetOptions();
@@ -329,6 +335,20 @@ async function saveOutlinedPianorollNotes() {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ outlinedPianorollNotes: state.hasOutlinedPianorollNotes }),
+    });
+  } catch (_error) {
+    // 保存に失敗しても今回の表示は維持する。
+  }
+}
+
+// ピアノロール鍵盤の表示状態をサーバー側設定へ保存する。設定変更ではCanvasの
+// レイアウトと静的描画だけを更新し、MIDIや試聴音声を再生成しない。
+async function savePianorollKeyboardVisibility() {
+  try {
+    await apiFetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ showPianorollKeyboard: state.isPianorollKeyboardVisible }),
     });
   } catch (_error) {
     // 保存に失敗しても今回の表示は維持する。
@@ -1803,11 +1823,12 @@ function setPianorollMessage(message, status = "") {
 
 function clearPianoroll(message = "MIDIを読み込むとここに表示されます。") {
   state.pianoroll = null;
+  updatePianorollKeyboardVisibility();
   clearPianorollLoop();
   resetPianorollZoom();
   setPianorollMessage(message);
   updatePianorollInteraction();
-  redrawPianorollStatic();
+  refreshPianorollLayout();
 }
 
 // 取得済みのペイロードをstate.pianorollへ反映して再描画する。loadPianoroll()と
@@ -1826,7 +1847,8 @@ function applyPianorollPayload(payload) {
     ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
     : "";
   setPianorollMessage(payload.noteCount > 0 ? "" : "表示できるノートがありません。", status);
-  redrawPianorollStatic();
+  updatePianorollKeyboardVisibility();
+  refreshPianorollLayout();
   updatePianorollInteraction();
   updatePianorollZoomControls();
 }
@@ -1876,6 +1898,101 @@ function drawPianorollGrid(context, width, noteHeight, timelineWidth, scrollLeft
 
 function pianorollPitchY(pitch, layout) {
   return layout.height - ((pitch - layout.minNote + 1) / layout.noteSpan * layout.height);
+}
+
+function isPianorollBlackKey(pitch) {
+  return BLACK_PIANO_KEY_PITCH_CLASSES.has((pitch % 12 + 12) % 12);
+}
+
+function pianorollOctaveLabel(pitch) {
+  return pitch % 12 === 0 ? `C${Math.floor(pitch / 12) - 1}` : "";
+}
+
+function pianorollPitchCenterY(pitch, layout) {
+  return pianorollPitchY(pitch, layout) + layout.height / layout.noteSpan / 2;
+}
+
+function adjacentPianorollWhitePitch(pitch, direction) {
+  let adjacentPitch = pitch + direction;
+  while (isPianorollBlackKey(adjacentPitch)) adjacentPitch += direction;
+  return adjacentPitch;
+}
+
+// 黒鍵のMIDI音高行を鍵盤の基準にし、前後の白鍵中心との中点を白鍵の境界にする。
+// これにより黒鍵がロール上のC#/D#などの行と一致し、白鍵も正しい間隔で連続する。
+function pianorollWhiteKeyBounds(pitch, layout) {
+  const pitchHeight = layout.height / layout.noteSpan;
+  const center = pianorollPitchCenterY(pitch, layout);
+  const higherPitch = adjacentPianorollWhitePitch(pitch, 1);
+  const lowerPitch = adjacentPianorollWhitePitch(pitch, -1);
+  const top = (center + pianorollPitchCenterY(higherPitch, layout)) / 2;
+  const bottom = (center + pianorollPitchCenterY(lowerPitch, layout)) / 2;
+  return {
+    top: Math.max(0, top),
+    bottom: Math.min(layout.noteHeight, Math.max(top + pitchHeight, bottom)),
+  };
+}
+
+function updatePianorollKeyboardVisibility() {
+  const keyboard = $("#pianoroll-keyboard");
+  keyboard.hidden = !(state.isPianorollKeyboardVisible && state.pianoroll?.noteCount > 0);
+}
+
+function clearPianorollKeyboard() {
+  const keyboard = $("#pianoroll-keyboard");
+  const context = keyboard.getContext("2d");
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, keyboard.width, keyboard.height);
+}
+
+// 鍵盤はノートCanvasと同じ音高計算を使う。黒鍵のMIDI音高行を基準に暗色で塗り、
+// その間を白鍵で埋めることで、ロールの半音行に正しく揃えた鍵盤を描く。
+function drawPianorollKeyboard(layout) {
+  const keyboard = $("#pianoroll-keyboard");
+  const size = state.pianorollKeyboardSize;
+  if (keyboard.hidden || !size || size.width <= 0 || size.height <= 0) return;
+  const context = keyboard.getContext("2d");
+  const keyboardNoteHeight = Math.min(layout.noteHeight, size.height);
+  const pitchHeight = layout.height / layout.noteSpan;
+  const blackKeyHeight = Math.max(1, pitchHeight * 0.78);
+  const blackKeyWidth = Math.round(size.width * 0.64);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, keyboard.width, keyboard.height);
+  context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
+  context.fillStyle = cssColor("--pianoroll-key-black", "#172b4d");
+  context.fillRect(0, 0, size.width, keyboardNoteHeight);
+  context.fillStyle = cssColor("--pianoroll-key-automation", "#f4f5f7");
+  context.fillRect(0, keyboardNoteHeight, size.width, size.height - keyboardNoteHeight);
+  context.fillStyle = cssColor("--pianoroll-key-white", "#ffffff");
+  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+    if (isPianorollBlackKey(pitch)) continue;
+    const { top, bottom } = pianorollWhiteKeyBounds(pitch, layout);
+    context.fillRect(0, top, size.width, bottom - top);
+  }
+  context.strokeStyle = cssColor("--pianoroll-key-border", "#dfe1e6");
+  context.lineWidth = 1;
+  context.beginPath();
+  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+    if (isPianorollBlackKey(pitch)) continue;
+    const { top } = pianorollWhiteKeyBounds(pitch, layout);
+    context.moveTo(0, Math.round(top) + 0.5);
+    context.lineTo(size.width, Math.round(top) + 0.5);
+  }
+  context.stroke();
+  context.fillStyle = cssColor("--pianoroll-key-black", "#172b4d");
+  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+    if (!isPianorollBlackKey(pitch)) continue;
+    const y = pianorollPitchCenterY(pitch, layout) - blackKeyHeight / 2;
+    context.fillRect(0, y, blackKeyWidth, blackKeyHeight);
+  }
+  context.fillStyle = cssColor("--pianoroll-key-label", "#6b778c");
+  context.font = "700 11px system-ui, sans-serif";
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+    const label = pianorollOctaveLabel(pitch);
+    if (label) context.fillText(label, size.width - 4, pianorollPitchCenterY(pitch, layout));
+  }
 }
 
 function drawPitchAutomationGrid(context, layout) {
@@ -1990,6 +2107,7 @@ function redrawPianorollStatic() {
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.clearRect(0, 0, canvas.width, canvas.height);
   if (!payload) {
+    clearPianorollKeyboard();
     updatePianorollPlayhead();
     updatePianorollLoopRegion();
     return;
@@ -2012,10 +2130,14 @@ function redrawPianorollStatic() {
     const layout = {
       payload, offsets: pianorollFieldOffsets(payload), width: size.width, height: noteHeight,
       timelineWidth, scrollLeft,
-      minNote: payload.minNote, noteSpan: payload.maxNote - payload.minNote + 3,
+      minNote: payload.minNote, maxNote: payload.maxNote,
+      noteSpan: payload.maxNote - payload.minNote + 3,
       trackCount: payload.tracks.length, noteHeight, automationHeight,
     };
     for (const track of payload.tracks) drawPianorollTrack(context, track, layout, mutedIndices);
+    drawPianorollKeyboard(layout);
+  } else {
+    clearPianorollKeyboard();
   }
   updatePianorollPlayhead();
   updatePianorollLoopRegion();
@@ -2172,6 +2294,32 @@ function resizePianoroll(entry) {
   redrawPianorollStatic();
 }
 
+function resizePianorollKeyboard(entry) {
+  const keyboard = $("#pianoroll-keyboard");
+  if (keyboard.hidden) {
+    state.pianorollKeyboardSize = null;
+    return;
+  }
+  const rect = keyboard.getBoundingClientRect();
+  const deviceBox = entry?.devicePixelContentBoxSize?.[0];
+  const pixelWidth = deviceBox?.inlineSize || Math.round(rect.width * window.devicePixelRatio);
+  const pixelHeight = deviceBox?.blockSize || Math.round(rect.height * window.devicePixelRatio);
+  if (pixelWidth <= 0 || pixelHeight <= 0) return;
+  keyboard.width = pixelWidth;
+  keyboard.height = pixelHeight;
+  state.pianorollKeyboardSize = {
+    width: rect.width, height: rect.height, pixelWidth, pixelHeight,
+    scaleX: pixelWidth / rect.width, scaleY: pixelHeight / rect.height,
+  };
+  redrawPianorollStatic();
+}
+
+function refreshPianorollLayout() {
+  resizePianorollViewport();
+  resizePianorollKeyboard();
+  resizePianoroll();
+}
+
 function pianorollSecondsAt(clientX) {
   if (!state.pianoroll || !state.pianorollTimelineWidth) return null;
   const canvas = $("#pianoroll-canvas");
@@ -2241,13 +2389,16 @@ function handlePianorollWheel(event) {
 
 function setupPianoroll() {
   const canvas = $("#pianoroll-canvas");
+  const keyboard = $("#pianoroll-keyboard");
   const scrollArea = $("#pianoroll-scroll");
   resizePianorollViewport();
   const resizeObserver = new ResizeObserver(([entry]) => resizePianoroll(entry));
+  const keyboardResizeObserver = new ResizeObserver(([entry]) => resizePianorollKeyboard(entry));
   const viewportObserver = new ResizeObserver(resizePianorollViewport);
   const supportsDevicePixels = typeof ResizeObserverEntry !== "undefined"
     && "devicePixelContentBoxSize" in ResizeObserverEntry.prototype;
   resizeObserver.observe(canvas, supportsDevicePixels ? { box: "device-pixel-content-box" } : {});
+  keyboardResizeObserver.observe(keyboard, supportsDevicePixels ? { box: "device-pixel-content-box" } : {});
   viewportObserver.observe(scrollArea);
   canvas.addEventListener("pointerdown", (event) => {
     if (!state.pianoroll || event.pointerType === "touch" || event.button !== 0) return;
@@ -2305,6 +2456,12 @@ function setupPianoroll() {
     state.hasOutlinedPianorollNotes = event.target.checked;
     redrawPianorollStatic();
     saveOutlinedPianorollNotes();
+  });
+  $("#pianoroll-show-keyboard").addEventListener("change", (event) => {
+    state.isPianorollKeyboardVisible = event.target.checked;
+    updatePianorollKeyboardVisibility();
+    refreshPianorollLayout();
+    savePianorollKeyboardVisibility();
   });
   for (const eventName of ["wheel", "pointerdown", "touchstart"]) {
     scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
