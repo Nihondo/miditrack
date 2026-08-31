@@ -82,6 +82,7 @@ def _empty_preferences() -> dict[str, Any]:
         "usageCounts": {},
         "selectedSoundfont": None,
         "displayMode": "normal",
+        "roundedPianorollNotes": True,
         "ensemblePresets": build_default_ensemble_presets(),
     }
 
@@ -119,6 +120,7 @@ def load_preferences() -> dict[str, Any]:
     usage = data.get("usageCounts")
     selected_soundfont = data.get("selectedSoundfont")
     display_mode = data.get("displayMode")
+    rounded_pianoroll_notes = data.get("roundedPianorollNotes")
     try:
         ensemble_presets = validate_ensemble_presets(data.get("ensemblePresets"))
     except WebValidationError:
@@ -128,6 +130,9 @@ def load_preferences() -> dict[str, Any]:
         "usageCounts": usage if isinstance(usage, dict) else {},
         "selectedSoundfont": selected_soundfont if isinstance(selected_soundfont, str) else None,
         "displayMode": display_mode if display_mode in DISPLAY_MODES else "normal",
+        "roundedPianorollNotes": (
+            rounded_pianoroll_notes if isinstance(rounded_pianoroll_notes, bool) else True
+        ),
         "ensemblePresets": ensemble_presets,
     }
 
@@ -181,6 +186,12 @@ def _validate_display_mode(value: Any) -> str:
     return value
 
 
+def _validate_rounded_pianoroll_notes(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise WebValidationError("roundedPianorollNotesはtrueまたはfalseで指定してください")
+    return value
+
+
 def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
     """編成プリセット一覧を検証し、保存用の正規化済みデータを返す。"""
     if value is None:
@@ -230,6 +241,10 @@ def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
         current["selectedSoundfont"] = _validate_selected_soundfont(updates["selectedSoundfont"])
     if "displayMode" in updates:
         current["displayMode"] = _validate_display_mode(updates["displayMode"])
+    if "roundedPianorollNotes" in updates:
+        current["roundedPianorollNotes"] = _validate_rounded_pianoroll_notes(
+            updates["roundedPianorollNotes"]
+        )
     if "ensemblePresets" in updates:
         current["ensemblePresets"] = validate_ensemble_presets(updates["ensemblePresets"])
 

@@ -72,6 +72,7 @@ const state = {
   pinnedPrograms: new Set(), // 手動ピン留めされたGMプログラム番号のSet
   usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
   displayMode: "normal",    // 通常表示または全画面DAW表示。サーバー側の設定に永続化する。
+  hasRoundedPianorollNotes: true, // ピアノロールのノートを角丸で描くか。設定として永続化する。
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -279,6 +280,8 @@ async function loadPreferences() {
     state.pinnedPrograms = new Set(payload.pinnedPrograms || []);
     state.usageCounts = payload.usageCounts || {};
     state.displayMode = payload.displayMode === "fullscreen" ? "fullscreen" : "normal";
+    state.hasRoundedPianorollNotes = payload.roundedPianorollNotes !== false;
+    $("#pianoroll-rounded-notes").checked = state.hasRoundedPianorollNotes;
     setFullscreenLayout(state.displayMode === "fullscreen");
     state.ensemblePresets = payload.ensemblePresets || [];
     renderEnsemblePresetOptions();
@@ -298,6 +301,20 @@ async function saveDisplayMode() {
     });
   } catch (_error) {
     // 保存に失敗しても、現在の表示モードはそのまま使い続ける。
+  }
+}
+
+// ピアノロールのノート形状をサーバー側設定へ保存する。設定変更は静的Canvasの
+// 再描画だけで完結するため、MIDIや試聴音声を再生成する必要はない。
+async function saveRoundedPianorollNotes() {
+  try {
+    await apiFetch("/api/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roundedPianorollNotes: state.hasRoundedPianorollNotes }),
+    });
+  } catch (_error) {
+    // 保存に失敗しても今回の表示は維持する。
   }
 }
 
@@ -1882,6 +1899,20 @@ function drawPitchAutomation(context, path, start, duration, track, layout, opac
   context.stroke();
 }
 
+// 角丸設定が有効な時だけroundRect()でノートを描く。角丸の半径はノートの短辺の
+// 半分以下に制限し、短いノートでも形状が崩れないようにする。古いCanvas実装では
+// 従来どおりのfillRect()へフォールバックする。
+function drawPianorollNote(context, x, y, width, height) {
+  if (!state.hasRoundedPianorollNotes || typeof context.roundRect !== "function") {
+    context.fillRect(x, y, width, height);
+    return;
+  }
+  const radius = Math.min(3, width / 2, height / 2);
+  context.beginPath();
+  context.roundRect(x, y, width, height, radius);
+  context.fill();
+}
+
 function drawPianorollTrack(context, track, layout, mutedIndices) {
   const {
     payload, offsets, width, height, timelineWidth, scrollLeft,
@@ -1906,7 +1937,7 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     // 抑えて、異なるノートを別行として判別できるようにする。
     const pitchHeight = height / noteSpan;
     const noteHeight = Math.min(Math.max(1.5, pitchHeight * 0.72), pitchHeight * 0.8);
-    context.fillRect(x, pianorollPitchY(note, layout), noteWidth, noteHeight);
+    drawPianorollNote(context, x, pianorollPitchY(note, layout), noteWidth, noteHeight);
     if (pitchPath) drawPitchAutomation(context, pitchPath, start, duration, track, layout, pitchOpacity);
   }
 }
@@ -2226,6 +2257,11 @@ function setupPianoroll() {
   document.addEventListener("keydown", handleSeekKeydown);
   $("#pianoroll-zoom-out").addEventListener("click", () => changePianorollZoom(-1));
   $("#pianoroll-zoom-in").addEventListener("click", () => changePianorollZoom(1));
+  $("#pianoroll-rounded-notes").addEventListener("change", (event) => {
+    state.hasRoundedPianorollNotes = event.target.checked;
+    redrawPianorollStatic();
+    saveRoundedPianorollNotes();
+  });
   for (const eventName of ["wheel", "pointerdown", "touchstart"]) {
     scrollArea.addEventListener(eventName, () => setPianorollAutoFollow(false), { passive: true });
   }

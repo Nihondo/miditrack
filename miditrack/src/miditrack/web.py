@@ -1136,7 +1136,13 @@ def create_app(
         オリジンが変わってしまう問題を回避するため）。
         """
         body = request.get_json(silent=True) or {}
-        allowed_fields = {"pinnedPrograms", "usageCounts", "displayMode", "ensemblePresets"}
+        allowed_fields = {
+            "pinnedPrograms",
+            "usageCounts",
+            "displayMode",
+            "roundedPianorollNotes",
+            "ensemblePresets",
+        }
         if not any(field in body for field in allowed_fields):
             raise WebValidationError("更新する設定を指定してください")
         return jsonify(**preferences.save_preferences(body))

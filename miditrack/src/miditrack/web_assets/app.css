@@ -1129,11 +1129,30 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .pianoroll-footer {
   margin-top: 8px;
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: center;
 }
 
 .pianoroll-footer .field-help { margin: 0; }
+
+.pianoroll-appearance-control {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--neutral-60);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pianoroll-appearance-control input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--brand-dark);
+}
 
 .output-panel {
   margin-top: 16px;
