@@ -329,8 +329,8 @@ class TestWebApp(unittest.TestCase):
         draw_track_block = javascript.split("function drawPianorollTrack", 1)[1].split(
             "function redrawPianorollStatic", 1
         )[0]
-        self.assertIn("const pitchHeight = height / noteSpan", draw_track_block)
-        self.assertIn("pitchHeight * 0.8", draw_track_block)
+        self.assertIn("const pitchBounds = pianorollPitchBounds(note, layout)", draw_track_block)
+        self.assertIn("pitchBounds.height * 0.8", draw_track_block)
 
     def test_fullscreen_upload_panel_shows_conversion_action_without_inner_scroll(self) -> None:
         """全画面で開いたファイルパネルは、変換操作までを内部スクロールせずに表示する。"""
@@ -357,7 +357,7 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("track.pitchPaths || []", javascript)
         self.assertIn('context.fillText("PITCH", 7, center)', javascript)
         self.assertIn("drawPianorollNote(", javascript)
-        self.assertIn("pianorollPitchY(note, layout)", javascript)
+        self.assertIn("pianorollPitchBounds(note, layout)", javascript)
 
     def test_song_picker_is_shown_only_when_multiple_candidates_exist(self) -> None:
         """単一候補は隠しつつ、その曲番号を変換時に送ることを確認する。"""
@@ -4084,9 +4084,15 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function drawPianorollKeyboard", javascript)
         self.assertIn("function isPianorollBlackKey", javascript)
         self.assertIn("function pianorollPitchCenterY", javascript)
+        self.assertIn("function pianorollPitchBounds", javascript)
+        self.assertIn("const top = Math.round(pianorollPitchY(pitch, layout))", javascript)
         self.assertIn("function pianorollWhiteKeyBounds", javascript)
         self.assertIn("adjacentPianorollWhitePitch", javascript)
         self.assertIn("pianorollPitchCenterY(pitch, layout)", javascript)
+        self.assertIn("const blackKeyWidth = Math.round(size.width * 0.72)", javascript)
+        self.assertIn("const { top, height } = pianorollPitchBounds(pitch, layout)", javascript)
+        self.assertIn("context.fillRect(0, top, blackKeyWidth, height)", javascript)
+        self.assertIn("const pitchBounds = pianorollPitchBounds(note, layout)", javascript)
         self.assertIn("function pianorollOctaveLabel", javascript)
         self.assertIn("Math.floor(pitch / 12) - 1", javascript)
         self.assertIn("function savePianorollKeyboardVisibility", javascript)
@@ -4097,8 +4103,11 @@ class TestWebAppPreferences(unittest.TestCase):
         keyboard_rule = css.split(".pianoroll-keyboard {", 1)[1].split("}", 1)[0]
         self.assertIn("min-width: 48px", keyboard_rule)
         self.assertIn("max-width: 48px", keyboard_rule)
+        self.assertIn("border-right: 1px solid var(--pianoroll-keyboard-divider)", keyboard_rule)
         self.assertIn("--pianoroll-key-white", css)
         self.assertIn("--pianoroll-key-black", css)
+        self.assertIn("--pianoroll-frame-border: #aeb9c9", css)
+        self.assertIn("--pianoroll-keyboard-divider: #7b899e", css)
         self.assertIn("--pianoroll-key-label: #334155", css)
         self.assertIn('displayMode: state.displayMode', javascript)
         fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(

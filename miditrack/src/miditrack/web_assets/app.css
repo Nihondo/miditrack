@@ -25,6 +25,8 @@
   --pianoroll-key-border: #dfe1e6;
   --pianoroll-key-label: #334155;
   --pianoroll-key-automation: #f4f5f7;
+  --pianoroll-frame-border: #aeb9c9;
+  --pianoroll-keyboard-divider: #7b899e;
   --success: #16a34a;
   --warning: #b45309;
   --danger: #d92d20;
@@ -57,6 +59,8 @@
     --pianoroll-key-border: #7d899a;
     --pianoroll-key-label: #334155;
     --pianoroll-key-automation: #262d37;
+    --pianoroll-frame-border: #4d5969;
+    --pianoroll-keyboard-divider: #718096;
     --warning: #eab308;
     --toast-bg: #10151d;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
@@ -931,7 +935,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   margin-top: 16px;
   overflow: hidden;
   background: var(--neutral-10);
-  border: 1px solid var(--neutral-30);
+  border: 1px solid var(--pianoroll-frame-border);
   border-radius: 10px;
 }
 
@@ -954,7 +958,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   height: 100%;
   display: block;
   background: var(--neutral-0);
-  border-right: 1px solid var(--neutral-30);
+  border-right: 1px solid var(--pianoroll-keyboard-divider);
   pointer-events: none;
 }
 

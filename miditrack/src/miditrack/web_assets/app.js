@@ -1900,6 +1900,14 @@ function pianorollPitchY(pitch, layout) {
   return layout.height - ((pitch - layout.minNote + 1) / layout.noteSpan * layout.height);
 }
 
+// ノートと鍵盤で同じ整数CSSピクセル境界を使う。音域を高さで割った値は多くの場合
+// 小数になるため、この境界を共有しないと隣り合うCanvasで最大1〜2pxずれる。
+function pianorollPitchBounds(pitch, layout) {
+  const top = Math.round(pianorollPitchY(pitch, layout));
+  const bottom = Math.round(pianorollPitchY(pitch - 1, layout));
+  return { top, bottom, height: Math.max(1, bottom - top) };
+}
+
 function isPianorollBlackKey(pitch) {
   return BLACK_PIANO_KEY_PITCH_CLASSES.has((pitch % 12 + 12) % 12);
 }
@@ -1909,7 +1917,8 @@ function pianorollOctaveLabel(pitch) {
 }
 
 function pianorollPitchCenterY(pitch, layout) {
-  return pianorollPitchY(pitch, layout) + layout.height / layout.noteSpan / 2;
+  const { top, height } = pianorollPitchBounds(pitch, layout);
+  return top + height / 2;
 }
 
 function adjacentPianorollWhitePitch(pitch, direction) {
@@ -1945,17 +1954,15 @@ function clearPianorollKeyboard() {
   context.clearRect(0, 0, keyboard.width, keyboard.height);
 }
 
-// 鍵盤はノートCanvasと同じ音高計算を使う。黒鍵のMIDI音高行を基準に暗色で塗り、
-// その間を白鍵で埋めることで、ロールの半音行に正しく揃えた鍵盤を描く。
+// 鍵盤はノートCanvasと同じ音高計算を使う。黒鍵は対応するMIDI半音行を
+// そのまま塗ることで、ノート行とのピクセル単位の整合を保つ。
 function drawPianorollKeyboard(layout) {
   const keyboard = $("#pianoroll-keyboard");
   const size = state.pianorollKeyboardSize;
   if (keyboard.hidden || !size || size.width <= 0 || size.height <= 0) return;
   const context = keyboard.getContext("2d");
   const keyboardNoteHeight = Math.min(layout.noteHeight, size.height);
-  const pitchHeight = layout.height / layout.noteSpan;
-  const blackKeyHeight = Math.max(1, pitchHeight * 0.78);
-  const blackKeyWidth = Math.round(size.width * 0.64);
+  const blackKeyWidth = Math.round(size.width * 0.72);
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.clearRect(0, 0, keyboard.width, keyboard.height);
   context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
@@ -1982,8 +1989,8 @@ function drawPianorollKeyboard(layout) {
   context.fillStyle = cssColor("--pianoroll-key-black", "#172b4d");
   for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
     if (!isPianorollBlackKey(pitch)) continue;
-    const y = pianorollPitchCenterY(pitch, layout) - blackKeyHeight / 2;
-    context.fillRect(0, y, blackKeyWidth, blackKeyHeight);
+    const { top, height } = pianorollPitchBounds(pitch, layout);
+    context.fillRect(0, top, blackKeyWidth, height);
   }
   context.fillStyle = cssColor("--pianoroll-key-label", "#6b778c");
   context.font = "700 11px system-ui, sans-serif";
@@ -2068,8 +2075,7 @@ function drawPianorollNote(context, x, y, width, height, outlineColor) {
 
 function drawPianorollTrack(context, track, layout, mutedIndices) {
   const {
-    payload, offsets, width, height, timelineWidth, scrollLeft,
-    minNote, noteSpan, trackCount,
+    payload, offsets, width, timelineWidth, scrollLeft, trackCount,
   } = layout;
   const isMuted = mutedIndices.has(track.index);
   context.fillStyle = getTrackColor(track.index, trackCount, isMuted ? 0.18 : 0.72);
@@ -2089,10 +2095,13 @@ function drawPianorollTrack(context, track, layout, mutedIndices) {
     // 音高1段ぶんの高さを超えると、低い表示領域で隣接音高の矩形が重なる。
     // 通常は1.5pxを確保しつつ、想定外に高さが縮んだ場合も段間隔の80%以内に
     // 抑えて、異なるノートを別行として判別できるようにする。
-    const pitchHeight = height / noteSpan;
-    const noteHeight = Math.min(Math.max(1.5, pitchHeight * 0.72), pitchHeight * 0.8);
+    const pitchBounds = pianorollPitchBounds(note, layout);
+    const noteHeight = Math.min(
+      Math.max(1.5, pitchBounds.height * 0.72),
+      pitchBounds.height * 0.8,
+    );
     drawPianorollNote(
-      context, x, pianorollPitchY(note, layout), noteWidth, noteHeight, outlineColor,
+      context, x, pitchBounds.top, noteWidth, noteHeight, outlineColor,
     );
     if (pitchPath) drawPitchAutomation(context, pitchPath, start, duration, track, layout, pitchOpacity);
   }
