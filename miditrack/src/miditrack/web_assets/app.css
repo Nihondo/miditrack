@@ -27,6 +27,14 @@
   --pianoroll-key-automation: #f4f5f7;
   --pianoroll-frame-border: #aeb9c9;
   --pianoroll-keyboard-divider: #7b899e;
+  /* ピアノロールの背景・PITCHレーン背景・グリッド線は、ユーザーが個別に色を
+     指定できるよう専用トークンを介して参照する（既定値はneutralスケール
+     由来なのでテーマ切り替えにも自動追従する）。ユーザー指定色は
+     applyPianorollColors()がこれらのトークンをdocumentElementへ直接
+     上書きする形で適用する。 */
+  --pianoroll-background: var(--neutral-10);
+  --pianoroll-automation-background: var(--neutral-20);
+  --pianoroll-grid-line: var(--neutral-30);
   --success: #16a34a;
   --warning: #b45309;
   --danger: #d92d20;
@@ -36,35 +44,38 @@
   --font-sans: "Lucida Grande", Verdana, AquaKana, ArialMT,
     "Hiragino Kaku Gothic ProN", "ヒラギノ角ゴ ProN W3", "メイリオ", Meiryo,
     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
-/* ダークモード: ニュートラル階調を反転し、常時ダークで固定したい
-   要素（--toast-bg等）は反転対象から切り離して別変数で定義する。 */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --brand-dark: #6a8ecf;
-    --brand-light: #253247;
-    --digital-text: #9bb8f3;
-    --neutral-0: #1b2129;
-    --neutral-10: #20262f;
-    --neutral-20: #262d37;
-    --neutral-30: #333c48;
-    --neutral-40: #414b59;
-    --neutral-60: #9aa7bb;
-    --neutral-80: #c3ccdb;
-    --neutral-100: #eef1f6;
-    --pianoroll-key-white: #e8edf4;
-    --pianoroll-key-black: #10151d;
-    --pianoroll-key-border: #7d899a;
-    --pianoroll-key-label: #334155;
-    --pianoroll-key-automation: #262d37;
-    --pianoroll-frame-border: #4d5969;
-    --pianoroll-keyboard-divider: #718096;
-    --warning: #eab308;
-    --toast-bg: #10151d;
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
-  }
+/* テーマは data-theme の具体値（light/dark）で切り替える。"システム追従" は
+   JS側のresolveTheme()/applyThemeSetting()がmatchMediaから解決してこの
+   属性へ書き込むため、CSSにOS追従用の@mediaブロックは持たせない
+   （index.html<head>の同期スクリプトが初回描画前の既定値を設定する）。
+   ニュートラル階調を反転し、常時ダークで固定したい要素（--toast-bg等）は
+   反転対象から切り離して別変数で定義する。 */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --brand-dark: #6a8ecf;
+  --brand-light: #253247;
+  --digital-text: #9bb8f3;
+  --neutral-0: #1b2129;
+  --neutral-10: #20262f;
+  --neutral-20: #262d37;
+  --neutral-30: #333c48;
+  --neutral-40: #414b59;
+  --neutral-60: #9aa7bb;
+  --neutral-80: #c3ccdb;
+  --neutral-100: #eef1f6;
+  --pianoroll-key-white: #e8edf4;
+  --pianoroll-key-black: #10151d;
+  --pianoroll-key-border: #7d899a;
+  --pianoroll-key-label: #334155;
+  --pianoroll-key-automation: #262d37;
+  --pianoroll-frame-border: #4d5969;
+  --pianoroll-keyboard-divider: #718096;
+  --warning: #eab308;
+  --toast-bg: #10151d;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
@@ -130,6 +141,31 @@ button { color: inherit; }
 
 .privacy-note { margin: 0; color: rgba(255, 255, 255, 0.9); font-size: 12px; }
 
+/* ヘッダーの表示操作は右端に一組として置く。白い文字・アイコンと輪郭を
+   使い、ブランドグラデーション上でも全画面切替と設定を明瞭に区別する。 */
+.header-actions {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-header .header-action-button {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px rgba(0, 51, 102, 0.35);
+}
+
+.app-header .header-action-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 51, 102, 0.25);
+}
+
+.app-header .header-action-button:focus-visible {
+  outline-color: #fff;
+}
+
 .app-shell {
   width: min(1000px, 100%);
   margin: 0 auto;
@@ -147,6 +183,10 @@ button { color: inherit; }
   border-radius: 16px;
   box-shadow: var(--shadow-card);
 }
+
+/* ファイル選択は最初の操作を案内する面であり、重ねたシートのように強く
+   浮かせる必要はない。ほかのカードの階層を保ったまま影を控えめにする。 */
+#upload-card { box-shadow: 0 1px 2px rgba(23, 43, 77, 0.035); }
 
 .card-heading {
   margin-bottom: 20px;
@@ -272,6 +312,12 @@ details[open] > summary.card-heading .disclosure-chevron { transform: rotate(180
 .button.danger { color: var(--danger); }
 .button.small { min-height: 32px; padding: 6px 10px; font-size: 12px; }
 .reset-action { margin-left: auto; }
+
+/* 歯車アイコンのような正方形のアイコンのみボタン。テキストラベルを持たず
+   svgだけを中央に置く。 */
+.icon-button { padding: 8px; min-width: 38px; }
+.icon-button.small { padding: 6px; min-width: 32px; }
+.icon-button svg { width: 18px; height: 18px; fill: currentColor; }
 .button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(86, 116, 185, 0.2); }
 .button:disabled { color: var(--neutral-60); background: var(--neutral-20); border-color: var(--neutral-30); box-shadow: none; cursor: not-allowed; }
 
@@ -581,8 +627,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .convert-field.is-checkbox label { margin-bottom: 0; }
 .convert-field.is-checkbox .field-help { flex-basis: 100%; }
 
-.convert-field.track-filter { margin-bottom: 12px; }
-
 .convert-field.is-disabled { opacity: 0.5; }
 .convert-field .field-help { margin: 4px 0 0; }
 
@@ -642,7 +686,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .ensemble-preset-row .program-select { min-width: 0; flex: 1 1 auto; }
 .ensemble-preset-actions { display: flex; flex: 0 0 auto; gap: 6px; }
 
-.ensemble-preset-dialog {
+/* .ensemble-preset-dialogと#settings-dialogが共有するモーダルの外枠。
+   前者は内容を<form>で包んでいるためpaddingはそのform側に付き、後者は
+   直下の子要素にpaddingを付ける（下の.settings-dialogルール）。 */
+.app-dialog {
   width: min(680px, calc(100% - 32px));
   max-height: min(760px, calc(100dvh - 32px));
   overflow: auto;
@@ -654,7 +701,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   box-shadow: 0 18px 50px rgba(23, 43, 77, 0.3);
 }
 
-.ensemble-preset-dialog::backdrop { background: rgba(23, 43, 77, 0.52); }
+.app-dialog::backdrop { background: rgba(23, 43, 77, 0.52); }
 .ensemble-preset-dialog form { padding: 24px; }
 .dialog-heading { margin-bottom: 20px; }
 .dialog-heading h2 { margin: 0 0 4px; font-size: 18px; }
@@ -689,20 +736,80 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .ensemble-preset-program-grid .program-select { width: 100%; }
 .dialog-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
 
+.settings-dialog { padding: 24px; }
+
+.settings-section + .settings-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--neutral-30);
+}
+
+.settings-section .output-section-title { margin: 0 0 12px; }
+.settings-section .convert-field.is-checkbox { margin-bottom: 10px; }
+.settings-section .field-group { margin-top: 12px; }
+.settings-section .field-group:first-child { margin-top: 0; }
+
+/* 関連する設定は横並びにして、視線移動を少なくする。チェックボックスは
+   内容幅のまま詰め、色・セレクト設定は同じ幅の2カラムに揃える。 */
+.settings-checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 18px;
+}
+
+.settings-checkbox-row .convert-field.is-checkbox { margin-bottom: 10px; }
+
+.settings-field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+/* 通常の.field-group上余白は、グリッド内では2番目の列だけに効いてしまう。
+   横並びの各項目は同じ上端から開始し、ラベルと操作部を揃える。 */
+.settings-field-row .field-group {
+  min-width: 0;
+  margin-top: 0;
+}
+.settings-field-row .program-select { width: 100%; }
+
+.settings-color-row { display: flex; align-items: center; gap: 10px; }
+
+/* ネイティブのcolor inputは既定サイズがブラウザ間で不揃いなので固定する。
+   「テーマ既定に戻す」ボタンはユーザー指定色をnullへ戻すためのもので、
+   ピッカー自体には「未指定」を表せないため別ボタンとして用意している。 */
+.settings-color-row input[type="color"] {
+  width: 40px;
+  height: 32px;
+  padding: 2px;
+  background: var(--neutral-0);
+  border: 1px solid var(--neutral-40);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 .soundfont-field .field-label {
   margin-bottom: 10px;
 }
 
 .soundfont-row {
   display: grid;
-  /* #render-spinner is display:none while idle, so reserve its lane explicitly.
-     This keeps the select and render-mode controls fixed when rendering starts. */
-  grid-template-columns: minmax(0, 1fr) auto 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
 }
 
 .soundfont-row .program-select { min-width: 0; }
+
+/* 再生操作と再生位置カウンタの間に常設する16pxの予約領域。hidden属性は
+   内側のスピナーだけへ付けるため、レンダリング中でなくてもカウンタ位置は動かない。 */
+.render-spinner-slot {
+  inline-size: 16px;
+  block-size: 16px;
+  flex: 0 0 16px;
+  display: grid;
+  place-items: center;
+}
 
 .render-spinner {
   inline-size: 16px;
@@ -711,7 +818,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border: 2px solid var(--neutral-30);
   border-top-color: var(--brand-dark);
   border-radius: 50%;
-  justify-self: center;
   animation: render-spinner-rotate 700ms linear infinite;
 }
 
@@ -795,6 +901,9 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 #playback-toggle[aria-pressed="true"] .playback-pause-icon { display: block; }
 
 .download-toolbar { margin-top: 12px; }
+
+/* 通常表示では、ダウンロードと一括出力をピアノロールから独立したカードにする。 */
+.output-card .download-toolbar { margin-top: 0; }
 
 .download-toolbar input[type="text"] {
   flex: 1 1 200px;
@@ -927,17 +1036,23 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 /* 高さ380pxは元の190pxの2倍。drawPianorollTrack()が音域をcanvas高さいっぱいに
    フィットさせて描画するため、この固定倍率だけでノート1音あたりの表示高さが
-   常に2倍になり、専用の縦ズームUIなしで視認性が上がる。 */
+   常に2倍になり、専用の縦ズームUIなしで視認性が上がる。
+   --pianoroll-card-heightは表示設定の「高さ」（小/標準/大）が
+   [data-height]属性経由で上書きする変数で、既定値380pxはこれまでの
+   標準サイズをそのまま引き継ぐ。 */
 .pianoroll-card {
   position: relative;
   display: flex;
-  height: 380px;
+  height: var(--pianoroll-card-height, 380px);
   margin-top: 16px;
   overflow: hidden;
-  background: var(--neutral-10);
+  background: var(--pianoroll-background);
   border: 1px solid var(--pianoroll-frame-border);
   border-radius: 10px;
 }
+
+.pianoroll-card[data-height="compact"] { --pianoroll-card-height: 240px; }
+.pianoroll-card[data-height="tall"] { --pianoroll-card-height: 560px; }
 
 .pianoroll-scroll {
   flex: 1 1 auto;
@@ -1168,23 +1283,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .pianoroll-footer .field-help { margin: 0; }
 
-.pianoroll-appearance-control {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  color: var(--neutral-60);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.pianoroll-appearance-control input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--brand-dark);
-}
-
 .output-panel {
   margin-top: 16px;
   padding: 16px;
@@ -1243,6 +1341,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 @media (max-width: 640px) {
   .header-inner { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .header-actions { margin-inline-start: 0; }
+  .settings-field-row { grid-template-columns: 1fr; }
   .audition-toolbar { align-items: flex-start; }
   .transform-controls { width: 100%; margin-inline-start: 0; }
   #convert-options.has-timing-group { grid-template-columns: 1fr; }
@@ -1317,7 +1417,8 @@ body.is-fullscreen .app-shell > #upload-card {
      内部スクロールを置くと、特に短めの全画面で主操作が隠れてしまう。 */
   max-height: none;
   overflow: visible;
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
+  /* 全画面でもファイル選択だけは他の面より強く浮かせない。 */
+  box-shadow: 0 1px 2px rgba(23, 43, 77, 0.035);
 }
 body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 7; }
 
@@ -1336,14 +1437,20 @@ body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 7; 
 body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 2; grid-row: 1; align-self: center; }
 body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 2; grid-row: 2 / 4; }
 body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 2; grid-row: 4; align-self: start; }
-body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 2; grid-row: 5; align-self: start; }
-body.is-fullscreen .app-shell > #audition-card > .output-panel { grid-column: 2; grid-row: 6; align-self: start; }
+body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 2; grid-row: 5; align-self: start; }
+body.is-fullscreen .app-shell > #output-card > .output-panel { grid-column: 2; grid-row: 6; align-self: start; }
 
 body.is-fullscreen #audition-card { display: contents; }
 body.is-fullscreen #audition-card > .card-heading { display: none; }
+/* 出力カードは通常表示でだけ独立した面として見せる。全画面では子要素を
+   従来どおりグリッドの5・6行目へ置くため、カード本体と見出しを消す。 */
+body.is-fullscreen #output-card { display: contents; }
+body.is-fullscreen #output-card > .output-card-heading { display: none; }
+body.is-fullscreen #output-card > .download-toolbar { margin-top: 12px; }
 /* display:contentsの要素自体はボックスを持たずopacityが効かないため、
    .disabled-section（!ready時に薄く見せる）を子要素へ付け替える。 */
 body.is-fullscreen #audition-card:not(.ready) > * { opacity: 0.58; }
+body.is-fullscreen #output-card:not(.ready) > * { opacity: 0.58; }
 
 /* 左パネル上部: 手順番号・説明文を省き、パネル見出しとして圧縮する。
    #upload-cardは<details>で、全画面へ入るとJS（setupFullscreenLayout()）
@@ -1581,8 +1688,8 @@ body.is-fullscreen .pianoroll-card {
   body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 1; grid-row: 3; }
   body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 1; grid-row: 4; }
   body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 1; grid-row: 5; }
-  body.is-fullscreen .app-shell > #audition-card > .download-toolbar { grid-column: 1; grid-row: 6; }
-  body.is-fullscreen .app-shell > #audition-card > .output-panel { grid-column: 1; grid-row: 7; }
+  body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 1; grid-row: 6; }
+  body.is-fullscreen .app-shell > #output-card > .output-panel { grid-column: 1; grid-row: 7; }
   body.is-fullscreen .pianoroll-card { height: 320px; }
   /* #tracks-cardはflex-column+overflow:hiddenで、内側の.table-scrollも
      overflow-y:auto/min-height:0 — grid-auto-rows: autoな行に

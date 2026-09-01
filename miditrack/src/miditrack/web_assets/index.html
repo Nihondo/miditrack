@@ -17,11 +17,17 @@
         <p class="eyebrow">LOCAL MIDI TOOL</p>
         <h1>miditrack GM Instrument Assigner</h1>
       </div>
-      <p class="privacy-note">MIDIはこのMacの中だけで処理されます。</p>
-      <button type="button" class="button ghost small" id="fullscreen-toggle" aria-pressed="false">
-        <span class="fullscreen-label-enter">全画面</span>
-        <span class="fullscreen-label-exit">全画面を終了</span>
-      </button>
+      <div class="header-actions" aria-label="表示操作">
+        <button type="button" class="button small header-action-button" id="fullscreen-toggle" aria-pressed="false">
+          <span class="fullscreen-label-enter">全画面</span>
+          <span class="fullscreen-label-exit">全画面を終了</span>
+        </button>
+        <button type="button" class="button small icon-button header-action-button" id="settings-open" aria-haspopup="dialog" aria-label="表示設定">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.94 3.5c0-.61-.06-1.2-.16-1.77l2.02-1.58a.75.75 0 0 0 .17-.96l-1.9-3.3a.75.75 0 0 0-.91-.33l-2.38.96a7.6 7.6 0 0 0-1.53-.89l-.36-2.53a.75.75 0 0 0-.74-.65h-3.8a.75.75 0 0 0-.74.65l-.36 2.53c-.55.22-1.07.52-1.53.89l-2.38-.96a.75.75 0 0 0-.91.33l-1.9 3.3a.75.75 0 0 0 .17.96l2.02 1.58c-.1.57-.16 1.16-.16 1.77s.06 1.2.16 1.77l-2.02 1.58a.75.75 0 0 0-.17.96l1.9 3.3c.19.32.58.45.91.33l2.38-.96c.46.37.98.67 1.53.89l.36 2.53c.06.37.38.65.74.65h3.8c.36 0 .68-.28.74-.65l.36-2.53c.55-.22 1.07-.52 1.53-.89l2.38.96c.33.12.72-.01.91-.33l1.9-3.3a.75.75 0 0 0-.17-.96l-2.02-1.58c.1-.57.16-1.16.16-1.77Z" />
+          </svg>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -75,10 +81,6 @@
           <p>対応する曲では、各トラックの音源を「原曲の音源」またはSoundFontから選べます。</p>
         </div>
       </div>
-      <div class="convert-field is-checkbox track-filter">
-        <input type="checkbox" id="hide-empty-tracks" checked>
-        <label for="hide-empty-tracks">ノート数が0のトラックを非表示にする</label>
-      </div>
       <div class="table-scroll">
         <table class="track-table" role="table">
           <caption class="visually-hidden">MIDIトラック一覧。列見出しで表示順を変更できます。</caption>
@@ -123,7 +125,6 @@
                 <label for="render-mode-quality">品質</label>
               </div>
             </fieldset>
-            <span class="render-spinner" id="render-spinner" aria-hidden="true" hidden></span>
           </div>
           <p class="field-help" id="soundfont-help"></p>
         </div>
@@ -154,6 +155,11 @@
             <svg class="playback-pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6h4v12H7V6zm6 0h4v12h-4V6z" /></svg>
           </button>
         </div>
+        <!-- スロットは常に16pxを確保する。中のスピナーだけをhiddenで切り替え、
+             レンダリング開始・終了で再生位置カウンタが横に動かないようにする。 -->
+        <span class="render-spinner-slot" aria-hidden="true">
+          <span class="render-spinner" id="render-spinner" hidden></span>
+        </span>
         <output class="playback-time" id="playback-time" aria-label="再生時間" aria-live="off">
           <span id="playback-current-time">
             <span class="playback-time-whole">00:00</span><span class="playback-time-dot">.</span><span class="playback-time-decimal">0</span>
@@ -263,19 +269,17 @@
         </div>
       </div>
       <div class="pianoroll-footer">
-        <label class="pianoroll-appearance-control" for="pianoroll-rounded-notes">
-          <input type="checkbox" id="pianoroll-rounded-notes" checked>
-          ノートを角丸にする
-        </label>
-        <label class="pianoroll-appearance-control" for="pianoroll-outlined-notes">
-          <input type="checkbox" id="pianoroll-outlined-notes" checked>
-          ノートに縁取りを付ける
-        </label>
-        <label class="pianoroll-appearance-control" for="pianoroll-show-keyboard">
-          <input type="checkbox" id="pianoroll-show-keyboard" checked>
-          鍵盤を表示
-        </label>
         <p class="field-help" id="pianoroll-status"></p>
+      </div>
+    </article>
+
+    <section class="card disabled-section output-card" id="output-card" aria-labelledby="output-card-title">
+      <div class="card-heading output-card-heading">
+        <span class="step-number">4</span>
+        <div>
+          <h2 id="output-card-title">出力</h2>
+          <p>編集結果のMIDIデータ、WAVファイルをダウンロードできます。</p>
+        </div>
       </div>
       <div class="toolbar download-toolbar" aria-label="ダウンロード">
         <button type="button" class="button secondary" id="download-button">MIDIをダウンロード</button>
@@ -321,10 +325,10 @@
           </section>
         </div>
       </details>
-    </article>
+    </section>
   </main>
 
-  <dialog class="ensemble-preset-dialog" id="ensemble-preset-dialog" aria-labelledby="ensemble-preset-dialog-title">
+  <dialog class="app-dialog ensemble-preset-dialog" id="ensemble-preset-dialog" aria-labelledby="ensemble-preset-dialog-title">
     <form method="dialog" id="ensemble-preset-form">
       <div class="dialog-heading">
         <h2 id="ensemble-preset-dialog-title">編成プリセットを編集</h2>
@@ -354,6 +358,98 @@
         <button type="submit" class="button primary">保存</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog class="app-dialog settings-dialog" id="settings-dialog" aria-labelledby="settings-dialog-title">
+    <div class="dialog-heading">
+      <h2 id="settings-dialog-title">表示設定</h2>
+      <p>変更は即座に反映され、次回起動時も引き継がれます。</p>
+    </div>
+    <section class="settings-section">
+      <h3 class="output-section-title">テーマ</h3>
+      <div class="field-group">
+        <label class="field-label" for="app-theme">全体の表示</label>
+        <select id="app-theme" class="program-select">
+          <option value="system">システム追従</option>
+          <option value="light">ライト</option>
+          <option value="dark">ダーク</option>
+        </select>
+      </div>
+    </section>
+    <section class="settings-section">
+      <h3 class="output-section-title">ピアノロール</h3>
+      <div class="settings-checkbox-row">
+        <div class="convert-field is-checkbox">
+          <input type="checkbox" id="pianoroll-rounded-notes" checked>
+          <label for="pianoroll-rounded-notes">ノートを角丸にする</label>
+        </div>
+        <div class="convert-field is-checkbox">
+          <input type="checkbox" id="pianoroll-outlined-notes" checked>
+          <label for="pianoroll-outlined-notes">ノートに縁取りを付ける</label>
+        </div>
+        <div class="convert-field is-checkbox">
+          <input type="checkbox" id="pianoroll-show-grid" checked>
+          <label for="pianoroll-show-grid">グリッド線を表示</label>
+        </div>
+      </div>
+      <div class="convert-field is-checkbox">
+        <input type="checkbox" id="pianoroll-show-keyboard" checked>
+        <label for="pianoroll-show-keyboard">鍵盤を表示</label>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="pianoroll-height">高さ</label>
+        <select id="pianoroll-height" class="program-select">
+          <option value="compact">小</option>
+          <option value="standard" selected>標準</option>
+          <option value="tall">大</option>
+        </select>
+      </div>
+      <div class="settings-field-row settings-color-fields">
+        <div class="field-group settings-color-field">
+          <label class="field-label" for="pianoroll-background-color">背景色</label>
+          <div class="settings-color-row">
+            <input type="color" id="pianoroll-background-color">
+            <button type="button" class="button ghost small" id="pianoroll-background-reset">テーマ既定に戻す</button>
+          </div>
+        </div>
+        <div class="field-group settings-color-field">
+          <label class="field-label" for="pianoroll-grid-color">グリッド線の色</label>
+          <div class="settings-color-row">
+            <input type="color" id="pianoroll-grid-color">
+            <button type="button" class="button ghost small" id="pianoroll-grid-reset">テーマ既定に戻す</button>
+          </div>
+        </div>
+      </div>
+      <div class="settings-field-row">
+        <div class="field-group">
+          <label class="field-label" for="track-color-palette">トラック配色</label>
+          <select id="track-color-palette" class="program-select">
+            <option value="rainbow">虹色</option>
+            <option value="vivid">彩度強め</option>
+            <option value="muted">彩度控えめ</option>
+            <option value="accessible">色覚配慮</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="pianoroll-grid-divisions">縦グリッドの分割数</label>
+          <select id="pianoroll-grid-divisions" class="program-select">
+            <option value="4">4</option>
+            <option value="8" selected>8</option>
+            <option value="16">16</option>
+          </select>
+        </div>
+      </div>
+    </section>
+    <section class="settings-section">
+      <h3 class="output-section-title">トラック一覧</h3>
+      <div class="convert-field is-checkbox">
+        <input type="checkbox" id="hide-empty-tracks" checked>
+        <label for="hide-empty-tracks">ノート数が0のトラックを非表示にする</label>
+      </div>
+    </section>
+    <div class="dialog-actions">
+      <button type="button" class="button primary" id="settings-close">閉じる</button>
+    </div>
   </dialog>
 
   <div id="global-status" class="status-toast" hidden></div>

@@ -1,5 +1,15 @@
 "use strict";
 
+// 他の初期化処理より前にdata-themeを確定させ、ライト→ダークの一瞬のちらつきを
+// 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
+// applyThemeSetting()がこの後で上書きする。index.htmlのCSPがインライン
+// scriptを許可しない（script-src 'self'）ため、head内のインラインscriptでは
+// なくここに置く — このファイル自体はdeferで読み込まれ、render-blockingな
+// <link rel="stylesheet">の解決とほぼ同じタイミングで実行されるため、外部
+// ファイルであっても実用上ちらつきは防げる。
+document.documentElement.dataset.theme =
+  matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
 const $ = (selector) => document.querySelector(selector);
 
 const query = new URLSearchParams(window.location.search);
@@ -22,6 +32,9 @@ const LOOP_DRAG_THRESHOLD_PX = 6;
 const MIN_LOOP_SECONDS = 0.1;
 const PREWARM_DELAY_MS = 500;
 const BLACK_PIANO_KEY_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
+const THEME_MODES = new Set(["system", "light", "dark"]);
+const PIANOROLL_HEIGHTS = new Set(["compact", "standard", "tall"]);
+const PIANOROLL_GRID_DIVISIONS = new Set([4, 8, 16]);
 const TRACK_ROLES = [
   { id: "melody", label: "主旋律" },
   { id: "counterMelody", label: "対旋律" },
@@ -76,6 +89,13 @@ const state = {
   hasRoundedPianorollNotes: true, // ピアノロールのノートを角丸で描くか。設定として永続化する。
   hasOutlinedPianorollNotes: true, // ピアノロールのノートに濃い縁取りを描くか。設定として永続化する。
   isPianorollKeyboardVisible: true, // ピアノロール左端の鍵盤を表示するか。設定として永続化する。
+  appTheme: "system", // 全体テーマ（system/light/dark）。設定として永続化する。
+  pianorollHeight: "standard", // ピアノロールカードの高さ（compact/standard/tall）。
+  isPianorollGridVisible: true, // ピアノロールのグリッド線を描くか。
+  pianorollGridDivisions: 8, // 縦グリッドの分割数（4/8/16）。
+  pianorollBackgroundColor: null, // 背景色のユーザー指定（#rrggbb）。nullならテーマ既定。
+  pianorollGridColor: null, // グリッド線色のユーザー指定（#rrggbb）。nullならテーマ既定。
+  trackColorPalette: "rainbow", // トラック配色パレット（rainbow/muted/accessible）。
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -96,7 +116,7 @@ const state = {
   soloTrackIndex: null,     // ソロ試聴中のトラック番号（無ければnull）
   soloVolumeSnapshot: null, // ソロ開始直前の全トラック音量 { トラック番号: パーセント }。解除時に戻す。
   trackSort: { key: "index", direction: "asc" },
-  hideEmptyTracks: true, // ノート数0のトラックを一覧から隠すか（#hide-empty-tracksチェックボックスの状態）
+  hideEmptyTracks: true, // ノート数0のトラックを一覧から隠すか（#hide-empty-tracksチェックボックスの状態）。設定として永続化する。
   trackRenderId: 0,
   pianoroll: null,
   pianorollLoadId: 0,
@@ -287,11 +307,30 @@ async function loadPreferences() {
     state.hasRoundedPianorollNotes = payload.roundedPianorollNotes !== false;
     state.hasOutlinedPianorollNotes = payload.outlinedPianorollNotes !== false;
     state.isPianorollKeyboardVisible = payload.showPianorollKeyboard !== false;
+    state.appTheme = THEME_MODES.has(payload.appTheme) ? payload.appTheme : "system";
+    state.pianorollHeight = PIANOROLL_HEIGHTS.has(payload.pianorollHeight)
+      ? payload.pianorollHeight
+      : "standard";
+    state.isPianorollGridVisible = payload.showPianorollGrid !== false;
+    state.pianorollGridDivisions = PIANOROLL_GRID_DIVISIONS.has(payload.pianorollGridDivisions)
+      ? payload.pianorollGridDivisions
+      : 8;
+    state.pianorollBackgroundColor = payload.pianorollBackgroundColor || null;
+    state.pianorollGridColor = payload.pianorollGridColor || null;
+    state.trackColorPalette = TRACK_COLOR_PALETTES[payload.trackColorPalette]
+      ? payload.trackColorPalette
+      : "rainbow";
+    state.hideEmptyTracks = payload.hideEmptyTracks !== false;
     $("#pianoroll-rounded-notes").checked = state.hasRoundedPianorollNotes;
     $("#pianoroll-outlined-notes").checked = state.hasOutlinedPianorollNotes;
     $("#pianoroll-show-keyboard").checked = state.isPianorollKeyboardVisible;
+    $("#hide-empty-tracks").checked = state.hideEmptyTracks;
     updatePianorollKeyboardVisibility();
     setFullscreenLayout(state.displayMode === "fullscreen");
+    applyThemeSetting();
+    applyPianorollHeight();
+    applyPianorollColors();
+    syncSettingsDialogControls();
     state.ensemblePresets = payload.ensemblePresets || [];
     renderEnsemblePresetOptions();
   } catch (_error) {
@@ -299,87 +338,112 @@ async function loadPreferences() {
   }
 }
 
-// 表示モードの変更をサーバー側設定へ保存する。起動ごとにポートが変わるため、
-// localStorageではなく/api/preferencesを使う。
-async function saveDisplayMode() {
+// "system"をmatchMediaで具体値（light/dark）へ解決する。
+function resolveTheme(setting) {
+  if (setting === "light" || setting === "dark") return setting;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+// 全体テーマ設定をDOMへ反映する。ピアノロールのCanvas色もCSS変数から読むため、
+// テーマが変わったら静的Canvasの再描画が要る。ユーザー指定色（null=テーマ
+// 既定）が無い色ピッカーの表示値もテーマ変更にあわせて追従させないと、
+// 「実際に描かれる色」と「ピッカーの表示」がテーマ切り替え後にずれるため
+// syncSettingsDialogControls()も呼ぶ。
+function applyThemeSetting() {
+  document.documentElement.dataset.theme = resolveTheme(state.appTheme);
+  redrawPianorollStatic();
+  syncSettingsDialogControls();
+}
+
+// ピアノロールカードの高さを表示設定へ反映する。
+function applyPianorollHeight() {
+  $(".pianoroll-card").dataset.height = state.pianorollHeight;
+  refreshPianorollLayout();
+}
+
+// ユーザー指定の背景色・グリッド線色を反映する。null（テーマ既定）なら
+// カスタムプロパティを削除するだけで、cssColor()がテーマ側の値へ自然に
+// フォールバックする。
+function applyPianorollColors() {
+  const root = document.documentElement;
+  // 背景色を指定した場合はPITCHレーンにも同じ色を当てる。片方だけテーマ既定の
+  // 階調が残ると、指定色との組み合わせ次第で不自然に浮くため。レーンの区別は
+  // 既存の境界線（グリッド線色）が担う。
+  const overrides = [
+    ["--pianoroll-background", state.pianorollBackgroundColor],
+    ["--pianoroll-automation-background", state.pianorollBackgroundColor],
+    ["--pianoroll-grid-line", state.pianorollGridColor],
+  ];
+  for (const [token, value] of overrides) {
+    if (value) root.style.setProperty(token, value);
+    else root.style.removeProperty(token);
+  }
+  redrawPianorollStatic();
+}
+
+// 設定ダイアログの各コントロールの表示値をstateへ同期する。読み込み直後、
+// および「テーマ既定に戻す」操作の直後に呼ぶ。色ピッカーは、ユーザー指定が
+// 無い間は現在の実効色（テーマ既定の解決結果）を表示する。
+function syncSettingsDialogControls() {
+  $("#app-theme").value = state.appTheme;
+  $("#pianoroll-height").value = state.pianorollHeight;
+  $("#pianoroll-show-grid").checked = state.isPianorollGridVisible;
+  $("#pianoroll-grid-divisions").value = String(state.pianorollGridDivisions);
+  $("#track-color-palette").value = state.trackColorPalette;
+  $("#pianoroll-background-color").value =
+    state.pianorollBackgroundColor || cssColor("--pianoroll-background", "#fafbfc");
+  $("#pianoroll-grid-color").value =
+    state.pianorollGridColor || cssColor("--pianoroll-grid-line", "#ebecf0");
+}
+
+// 表示設定の変更をサーバー側設定へ保存する。起動ごとにポートが変わるため
+// localStorageではなく/api/preferencesを使う。表示専用の設定なので、保存に
+// 失敗しても今回の表示は維持したまま静かに続行する（呼び出し元は既にstateと
+// 画面を同期的に更新済み）。
+async function savePreferenceFields(updates) {
   try {
     await apiFetch("/api/preferences", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ displayMode: state.displayMode }),
+      body: JSON.stringify(updates),
     });
   } catch (_error) {
-    // 保存に失敗しても、現在の表示モードはそのまま使い続ける。
+    // 保存に失敗しても今回の表示・状態は維持する。
   }
+}
+
+// 表示モードの変更をサーバー側設定へ保存する。
+function saveDisplayMode() {
+  return savePreferenceFields({ displayMode: state.displayMode });
 }
 
 // ピアノロールのノート形状をサーバー側設定へ保存する。設定変更は静的Canvasの
 // 再描画だけで完結するため、MIDIや試聴音声を再生成する必要はない。
-async function saveRoundedPianorollNotes() {
-  try {
-    await apiFetch("/api/preferences", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roundedPianorollNotes: state.hasRoundedPianorollNotes }),
-    });
-  } catch (_error) {
-    // 保存に失敗しても今回の表示は維持する。
-  }
+function saveRoundedPianorollNotes() {
+  return savePreferenceFields({ roundedPianorollNotes: state.hasRoundedPianorollNotes });
 }
 
 // ピアノロールのノート縁取りをサーバー側設定へ保存する。縁取りも表示専用なので、
 // 設定変更時は静的Canvasを再描画するだけで、MIDIや試聴音声を再生成しない。
-async function saveOutlinedPianorollNotes() {
-  try {
-    await apiFetch("/api/preferences", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ outlinedPianorollNotes: state.hasOutlinedPianorollNotes }),
-    });
-  } catch (_error) {
-    // 保存に失敗しても今回の表示は維持する。
-  }
+function saveOutlinedPianorollNotes() {
+  return savePreferenceFields({ outlinedPianorollNotes: state.hasOutlinedPianorollNotes });
 }
 
 // ピアノロール鍵盤の表示状態をサーバー側設定へ保存する。設定変更ではCanvasの
 // レイアウトと静的描画だけを更新し、MIDIや試聴音声を再生成しない。
-async function savePianorollKeyboardVisibility() {
-  try {
-    await apiFetch("/api/preferences", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ showPianorollKeyboard: state.isPianorollKeyboardVisible }),
-    });
-  } catch (_error) {
-    // 保存に失敗しても今回の表示は維持する。
-  }
+function savePianorollKeyboardVisibility() {
+  return savePreferenceFields({ showPianorollKeyboard: state.isPianorollKeyboardVisible });
 }
 
 // ピン留め・使用回数の変更をサーバー側の設定ファイルへ書き戻す。UIの見た目自体は
 // 呼び出し元が既にstateを更新して同期的に反映しているため、ここは書き込み失敗を
 // 静かに無視してよい（次回の変更で再送されれば整合する）。
-async function savePinnedPrograms() {
-  try {
-    await apiFetch("/api/preferences", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pinnedPrograms: [...state.pinnedPrograms] }),
-    });
-  } catch (_error) {
-    // 保存できなくてもピン留めのUI表示自体は継続する。
-  }
+function savePinnedPrograms() {
+  return savePreferenceFields({ pinnedPrograms: [...state.pinnedPrograms] });
 }
 
-async function saveUsageCounts() {
-  try {
-    await apiFetch("/api/preferences", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ usageCounts: state.usageCounts }),
-    });
-  } catch (_error) {
-    // 保存できなくても今回のセッション内での集計自体は継続する。
-  }
+function saveUsageCounts() {
+  return savePreferenceFields({ usageCounts: state.usageCounts });
 }
 
 // GMプログラムが選択されるたびに使用回数を加算し、「よく使う」欄へ反映する。
@@ -1725,16 +1789,74 @@ function cssColor(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
-function getTrackColor(trackIndex, trackCount, opacity = 1) {
-  const hue = (trackIndex / Math.max(1, trackCount)) * 360;
-  return `hsl(${hue} 68% 48% / ${opacity})`;
+// トラック配色パレット。fill/outlineはどちらも(trackIndex, trackCount, opacity)を
+// 受け取り、getTrackColor()/getTrackOutlineColor()経由でのみ使われる —
+// ピアノロールのノートとトラック行のカラーマーカーが同じ色を参照する
+// 唯一の真実の源（CLAUDE.md参照）はこの2関数のままで、パレットはその内部実装。
+const TRACK_COLOR_PALETTES = {
+  // 現行の見た目。色相をトラック数で等分する。
+  rainbow: {
+    fill: (trackIndex, trackCount, opacity) => {
+      const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+      return `hsl(${hue} 68% 48% / ${opacity})`;
+    },
+    // 塗りと同じ色相・彩度のまま明度だけを下げ、トラック色と一貫した
+    // 控えめな縁取り色を返す。
+    outline: (trackIndex, trackCount, opacity) => {
+      const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+      return `hsl(${hue} 68% 40% / ${opacity})`;
+    },
+  },
+  // 虹色より鮮やかにし、トラックごとの色分けを強調する。
+  vivid: {
+    fill: (trackIndex, trackCount, opacity) => {
+      const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+      return `hsl(${hue} 90% 48% / ${opacity})`;
+    },
+    outline: (trackIndex, trackCount, opacity) => {
+      const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+      return `hsl(${hue} 90% 38% / ${opacity})`;
+    },
+  },
+  // 彩度を落として長時間の閲覧でも目が疲れにくくする。
+  muted: {
+    fill: (trackIndex, trackCount, opacity) => {
+      const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+      return `hsl(${hue} 42% 52% / ${opacity})`;
+    },
+    outline: (trackIndex, trackCount, opacity) => {
+      const hue = (trackIndex / Math.max(1, trackCount)) * 360;
+      return `hsl(${hue} 42% 44% / ${opacity})`;
+    },
+  },
+  // 色覚多様性に配慮した固定8色（Okabe-Ito配色）を巡回して割り当てる。
+  accessible: {
+    colors: [
+      [230, 159, 0], [86, 180, 233], [0, 158, 115], [240, 228, 66],
+      [0, 114, 178], [213, 94, 0], [204, 121, 167], [0, 0, 0],
+    ],
+    fill(trackIndex, _trackCount, opacity) {
+      const [r, g, b] = this.colors[trackIndex % this.colors.length];
+      return `rgb(${r} ${g} ${b} / ${opacity})`;
+    },
+    outline(trackIndex, _trackCount, opacity) {
+      const [r, g, b] = this.colors[trackIndex % this.colors.length];
+      const darken = (channel) => Math.round(channel * 0.78);
+      return `rgb(${darken(r)} ${darken(g)} ${darken(b)} / ${opacity})`;
+    },
+  },
+};
+
+function activeTrackColorPalette() {
+  return TRACK_COLOR_PALETTES[state.trackColorPalette] || TRACK_COLOR_PALETTES.rainbow;
 }
 
-// ノート塗りと同じ色相・彩度のまま明度だけを下げ、トラック色と一貫した
-// 控えめな縁取り色を返す。
+function getTrackColor(trackIndex, trackCount, opacity = 1) {
+  return activeTrackColorPalette().fill(trackIndex, trackCount, opacity);
+}
+
 function getTrackOutlineColor(trackIndex, trackCount, opacity = 1) {
-  const hue = (trackIndex / Math.max(1, trackCount)) * 360;
-  return `hsl(${hue} 68% 40% / ${opacity})`;
+  return activeTrackColorPalette().outline(trackIndex, trackCount, opacity);
 }
 
 function formatPianorollTime(seconds) {
@@ -1877,17 +1999,22 @@ function pianorollFieldOffsets(payload) {
 }
 
 function drawPianorollGrid(context, width, noteHeight, timelineWidth, scrollLeft) {
-  context.fillStyle = cssColor("--neutral-10", "#fafbfc");
+  // 背景は表示設定に関わらず常に描く。グリッド線の表示ON/OFFは線だけを
+  // 丸ごとスキップし、背景色には影響しない。
+  context.fillStyle = cssColor("--pianoroll-background", "#fafbfc");
   context.fillRect(0, 0, width, noteHeight);
-  context.strokeStyle = cssColor("--neutral-30", "#ebecf0");
+  if (!state.isPianorollGridVisible) return;
+  context.strokeStyle = cssColor("--pianoroll-grid-line", "#ebecf0");
   context.lineWidth = 1;
   context.beginPath();
-  for (let index = 1; index < 8; index += 1) {
-    const x = Math.round(timelineWidth * index / 8 - scrollLeft) + 0.5;
+  const divisions = state.pianorollGridDivisions || 8;
+  for (let index = 1; index < divisions; index += 1) {
+    const x = Math.round(timelineWidth * index / divisions - scrollLeft) + 0.5;
     if (x < 0 || x > width) continue;
     context.moveTo(x, 0);
     context.lineTo(x, noteHeight);
   }
+  // 横線は縦グリッドの分割数設定とは独立に、常に6分割のまま音高の目安を示す。
   for (let index = 1; index < 6; index += 1) {
     const y = Math.round(noteHeight * index / 6) + 0.5;
     context.moveTo(0, y);
@@ -1963,6 +2090,14 @@ function drawPianorollKeyboard(layout) {
   const context = keyboard.getContext("2d");
   const keyboardNoteHeight = Math.min(layout.noteHeight, size.height);
   const blackKeyWidth = Math.round(size.width * 0.72);
+  // layout.minNote/maxNoteはピッチベンドで実際に鳴った音高（pianoroll.pyの
+  // note_numbers）の最小・最大なので小数を含みうる（例: 29.988）。鍵盤の
+  // 白鍵/黒鍵判定・Cラベルは半音単位の整数ピッチでしか意味を持たないため、
+  // 表示範囲を整数へ丸めてから1半音ずつ列挙する。位置計算自体は
+  // pianorollPitchBounds()等が元のlayout.minNote/noteSpanを使い続けるので、
+  // ここを整数化しても縦位置のスケールはずれない。
+  const firstPitch = Math.floor(layout.minNote);
+  const lastPitch = Math.ceil(layout.maxNote);
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.clearRect(0, 0, keyboard.width, keyboard.height);
   context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
@@ -1971,7 +2106,7 @@ function drawPianorollKeyboard(layout) {
   context.fillStyle = cssColor("--pianoroll-key-automation", "#f4f5f7");
   context.fillRect(0, keyboardNoteHeight, size.width, size.height - keyboardNoteHeight);
   context.fillStyle = cssColor("--pianoroll-key-white", "#ffffff");
-  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+  for (let pitch = firstPitch; pitch <= lastPitch; pitch += 1) {
     if (isPianorollBlackKey(pitch)) continue;
     const { top, bottom } = pianorollWhiteKeyBounds(pitch, layout);
     context.fillRect(0, top, size.width, bottom - top);
@@ -1979,7 +2114,7 @@ function drawPianorollKeyboard(layout) {
   context.strokeStyle = cssColor("--pianoroll-key-border", "#dfe1e6");
   context.lineWidth = 1;
   context.beginPath();
-  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+  for (let pitch = firstPitch; pitch <= lastPitch; pitch += 1) {
     if (isPianorollBlackKey(pitch)) continue;
     const { top } = pianorollWhiteKeyBounds(pitch, layout);
     context.moveTo(0, Math.round(top) + 0.5);
@@ -1987,7 +2122,7 @@ function drawPianorollKeyboard(layout) {
   }
   context.stroke();
   context.fillStyle = cssColor("--pianoroll-key-black", "#172b4d");
-  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+  for (let pitch = firstPitch; pitch <= lastPitch; pitch += 1) {
     if (!isPianorollBlackKey(pitch)) continue;
     const { top, height } = pianorollPitchBounds(pitch, layout);
     context.fillRect(0, top, blackKeyWidth, height);
@@ -1996,7 +2131,7 @@ function drawPianorollKeyboard(layout) {
   context.font = "700 11px system-ui, sans-serif";
   context.textAlign = "right";
   context.textBaseline = "middle";
-  for (let pitch = layout.minNote; pitch <= layout.maxNote; pitch += 1) {
+  for (let pitch = firstPitch; pitch <= lastPitch; pitch += 1) {
     const label = pianorollOctaveLabel(pitch);
     if (label) context.fillText(label, size.width - 4, pianorollPitchCenterY(pitch, layout));
   }
@@ -2005,9 +2140,9 @@ function drawPianorollKeyboard(layout) {
 function drawPitchAutomationGrid(context, layout) {
   const { width, noteHeight, automationHeight } = layout;
   const top = noteHeight;
-  context.fillStyle = cssColor("--neutral-20", "#f4f5f7");
+  context.fillStyle = cssColor("--pianoroll-automation-background", "#f4f5f7");
   context.fillRect(0, top, width, automationHeight);
-  context.strokeStyle = cssColor("--neutral-30", "#ebecf0");
+  context.strokeStyle = cssColor("--pianoroll-grid-line", "#ebecf0");
   context.lineWidth = 1;
   context.beginPath();
   const center = Math.round(top + automationHeight / 2) + 0.5;
@@ -2481,7 +2616,10 @@ function setupPianoroll() {
   for (const player of allPlayers()) {
     player.addEventListener("loadedmetadata", updatePianorollInteraction);
   }
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawPianorollStatic);
+  // appThemeが"system"のときだけOSの変更を反映する。resolveTheme()はappTheme
+  // が明示指定（light/dark）ならOSの値を無視してその指定を返すため、ここでは
+  // 分岐せず常にapplyThemeSetting()を呼べば両方のケースが正しく処理される。
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyThemeSetting);
   updatePianorollZoomControls();
   updatePianorollLoopRegion();
 }
@@ -2490,6 +2628,7 @@ function updateSectionsReadiness() {
   const ready = !!(state.session && state.session.tracks.length > 0);
   $("#tracks-card").classList.toggle("ready", ready);
   $("#audition-card").classList.toggle("ready", ready);
+  $("#output-card").classList.toggle("ready", ready);
   document.querySelectorAll('input[name="render-mode"]')
     .forEach((control) => { control.disabled = !ready; });
   $("#download-button").disabled = !(state.session && state.session.hasDownload);
@@ -3805,6 +3944,79 @@ function setupFullscreenLayout() {
   });
 }
 
+// 歯車ボタンから開く表示設定ダイアログの開閉と各コントロールを配線する。
+// ダイアログ内の設定はすべて即時反映・即時保存で、OK/キャンセルの下書き
+// 状態は持たない（元からあった3つのピアノロールのチェックボックスと同じ挙動）。
+function setupSettingsDialog() {
+  const dialog = $("#settings-dialog");
+  $("#settings-open").addEventListener("click", () => dialog.showModal());
+  $("#settings-close").addEventListener("click", () => dialog.close());
+
+  $("#app-theme").addEventListener("change", (event) => {
+    state.appTheme = event.target.value;
+    applyThemeSetting();
+    savePreferenceFields({ appTheme: state.appTheme });
+  });
+
+  $("#pianoroll-height").addEventListener("change", (event) => {
+    state.pianorollHeight = event.target.value;
+    applyPianorollHeight();
+    savePreferenceFields({ pianorollHeight: state.pianorollHeight });
+  });
+
+  $("#pianoroll-show-grid").addEventListener("change", (event) => {
+    state.isPianorollGridVisible = event.target.checked;
+    redrawPianorollStatic();
+    savePreferenceFields({ showPianorollGrid: state.isPianorollGridVisible });
+  });
+
+  $("#pianoroll-grid-divisions").addEventListener("change", (event) => {
+    state.pianorollGridDivisions = Number(event.target.value);
+    redrawPianorollStatic();
+    savePreferenceFields({ pianorollGridDivisions: state.pianorollGridDivisions });
+  });
+
+  $("#track-color-palette").addEventListener("change", (event) => {
+    state.trackColorPalette = event.target.value;
+    redrawPianorollStatic();
+    renderTrackList();
+    savePreferenceFields({ trackColorPalette: state.trackColorPalette });
+  });
+
+  // 色ピッカーはinputイベント（ドラッグ中）でプレビューだけを更新し、
+  // changeイベント（確定時）でPATCHを送る。ドラッグ中に毎回保存しないため。
+  setupPianorollColorField({
+    colorInputId: "#pianoroll-background-color",
+    resetButtonId: "#pianoroll-background-reset",
+    stateKey: "pianorollBackgroundColor",
+    preferenceField: "pianorollBackgroundColor",
+  });
+  setupPianorollColorField({
+    colorInputId: "#pianoroll-grid-color",
+    resetButtonId: "#pianoroll-grid-reset",
+    stateKey: "pianorollGridColor",
+    preferenceField: "pianorollGridColor",
+  });
+}
+
+function setupPianorollColorField({ colorInputId, resetButtonId, stateKey, preferenceField }) {
+  const colorInput = $(colorInputId);
+  colorInput.addEventListener("input", (event) => {
+    state[stateKey] = event.target.value;
+    applyPianorollColors();
+  });
+  colorInput.addEventListener("change", (event) => {
+    state[stateKey] = event.target.value;
+    savePreferenceFields({ [preferenceField]: state[stateKey] });
+  });
+  $(resetButtonId).addEventListener("click", () => {
+    state[stateKey] = null;
+    applyPianorollColors();
+    syncSettingsDialogControls();
+    savePreferenceFields({ [preferenceField]: null });
+  });
+}
+
 function setupDropZone() {
   const dropZone = $("#drop-zone");
   const input = $("#midi-input");
@@ -3832,9 +4044,11 @@ async function init() {
   setupFullscreenLayout();
   setupEnsemblePresets();
   setupTrackSorting();
+  setupSettingsDialog();
   $("#hide-empty-tracks").addEventListener("change", (event) => {
     state.hideEmptyTracks = event.target.checked;
     renderTrackList();
+    savePreferenceFields({ hideEmptyTracks: state.hideEmptyTracks });
   });
   setupPianoroll();
   setupPlaybackControls();

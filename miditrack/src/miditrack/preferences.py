@@ -15,7 +15,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .errors import WebValidationError
 from .gm import GM_PROGRAM_NAMES
@@ -62,6 +62,11 @@ DEFAULT_ENSEMBLE_PRESETS = (
     },
 )
 DISPLAY_MODES = frozenset({"normal", "fullscreen"})
+THEME_MODES = frozenset({"system", "light", "dark"})
+PIANOROLL_HEIGHTS = frozenset({"compact", "standard", "tall"})
+PIANOROLL_GRID_DIVISIONS = frozenset({4, 8, 16})
+TRACK_COLOR_PALETTES = frozenset({"rainbow", "vivid", "muted", "accessible"})
+HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def preferences_path() -> Path:
@@ -85,6 +90,14 @@ def _empty_preferences() -> dict[str, Any]:
         "roundedPianorollNotes": True,
         "outlinedPianorollNotes": True,
         "showPianorollKeyboard": True,
+        "appTheme": "system",
+        "pianorollHeight": "standard",
+        "showPianorollGrid": True,
+        "pianorollGridDivisions": 8,
+        "pianorollBackgroundColor": None,
+        "pianorollGridColor": None,
+        "trackColorPalette": "rainbow",
+        "hideEmptyTracks": True,
         "ensemblePresets": build_default_ensemble_presets(),
     }
 
@@ -106,6 +119,8 @@ def load_preferences() -> dict[str, Any]:
 
     このファイルは「無くても機能が空の状態で動く」性質の設定なので、
     読み込み失敗をエラーにはせず、常に有効な既定値へフォールバックする。
+    フィールドごとの検証は_FIELD_VALIDATORSに委ね、検証を通らない値は
+    黙ってその項目だけ既定値に差し戻す（ファイル全体を捨てない）。
     """
     path = preferences_path()
     try:
@@ -118,33 +133,13 @@ def load_preferences() -> dict[str, Any]:
         return _empty_preferences()
     if not isinstance(data, dict):
         return _empty_preferences()
-    pinned = data.get("pinnedPrograms")
-    usage = data.get("usageCounts")
-    selected_soundfont = data.get("selectedSoundfont")
-    display_mode = data.get("displayMode")
-    rounded_pianoroll_notes = data.get("roundedPianorollNotes")
-    outlined_pianoroll_notes = data.get("outlinedPianorollNotes")
-    show_pianoroll_keyboard = data.get("showPianorollKeyboard")
-    try:
-        ensemble_presets = validate_ensemble_presets(data.get("ensemblePresets"))
-    except WebValidationError:
-        ensemble_presets = build_default_ensemble_presets()
-    return {
-        "pinnedPrograms": pinned if isinstance(pinned, list) else [],
-        "usageCounts": usage if isinstance(usage, dict) else {},
-        "selectedSoundfont": selected_soundfont if isinstance(selected_soundfont, str) else None,
-        "displayMode": display_mode if display_mode in DISPLAY_MODES else "normal",
-        "roundedPianorollNotes": (
-            rounded_pianoroll_notes if isinstance(rounded_pianoroll_notes, bool) else True
-        ),
-        "outlinedPianorollNotes": (
-            outlined_pianoroll_notes if isinstance(outlined_pianoroll_notes, bool) else True
-        ),
-        "showPianorollKeyboard": (
-            show_pianoroll_keyboard if isinstance(show_pianoroll_keyboard, bool) else True
-        ),
-        "ensemblePresets": ensemble_presets,
-    }
+    result: dict[str, Any] = {}
+    for field, default in _empty_preferences().items():
+        try:
+            result[field] = _FIELD_VALIDATORS[field](data.get(field))
+        except WebValidationError:
+            result[field] = default
+    return result
 
 
 def _validate_pinned_programs(value: Any) -> list[int]:
@@ -196,23 +191,35 @@ def _validate_display_mode(value: Any) -> str:
     return value
 
 
-def _validate_rounded_pianoroll_notes(value: Any) -> bool:
+def _validate_bool(value: Any, field: str) -> bool:
+    """真偽値専用の汎用バリデータ。表示設定のON/OFFフィールドはすべてこれを使う。"""
     if not isinstance(value, bool):
-        raise WebValidationError("roundedPianorollNotesはtrueまたはfalseで指定してください")
+        raise WebValidationError(f"{field}はtrueまたはfalseで指定してください")
     return value
 
 
-def _validate_outlined_pianoroll_notes(value: Any) -> bool:
-    if not isinstance(value, bool):
-        raise WebValidationError("outlinedPianorollNotesはtrueまたはfalseで指定してください")
+def _validate_choice(value: Any, allowed: frozenset, field: str) -> Any:
+    """許容集合のいずれかに一致するかだけを見る汎用バリデータ。
+
+    bool は int のサブクラスで allowed に数値集合を渡すと意図せず一致して
+    しまうため、明示的に弾く。
+    """
+    if isinstance(value, bool) or value not in allowed:
+        raise WebValidationError(f"{field}の値が不正です")
     return value
 
 
-def _validate_show_pianoroll_keyboard(value: Any) -> bool:
-    """ピアノロール鍵盤の表示設定を検証する。"""
-    if not isinstance(value, bool):
-        raise WebValidationError("showPianorollKeyboardは真偽値で指定してください")
-    return value
+def _validate_hex_color(value: Any, field: str) -> str | None:
+    """"#rrggbb"またはnull（=テーマ既定に追従）のみを許可する。
+
+    任意のCSS色文字列を許すとブラウザ側でCanvasのfillStyleへそのまま渡る
+    ことになるため、形式をハッシュ+16進6桁に絞る。保存時は小文字へ正規化する。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not HEX_COLOR_RE.fullmatch(value):
+        raise WebValidationError(f"{field}は#rrggbb形式の文字列またはnullで指定してください: {value!r}")
+    return value.lower()
 
 
 def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
@@ -250,34 +257,45 @@ def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
     return validated
 
 
+# フィールド名 → バリデータのテーブル。load_preferences()/save_preferences()の
+# 両方がここを参照するので、新しい設定フィールドを追加するときの変更箇所は
+# このテーブルへの1行追加（と_empty_preferences()の既定値追加）だけで済む。
+_FIELD_VALIDATORS: dict[str, Callable[[Any], Any]] = {
+    "pinnedPrograms": _validate_pinned_programs,
+    "usageCounts": _validate_usage_counts,
+    "selectedSoundfont": _validate_selected_soundfont,
+    "displayMode": _validate_display_mode,
+    "roundedPianorollNotes": lambda value: _validate_bool(value, "roundedPianorollNotes"),
+    "outlinedPianorollNotes": lambda value: _validate_bool(value, "outlinedPianorollNotes"),
+    "showPianorollKeyboard": lambda value: _validate_bool(value, "showPianorollKeyboard"),
+    "appTheme": lambda value: _validate_choice(value, THEME_MODES, "appTheme"),
+    "pianorollHeight": lambda value: _validate_choice(value, PIANOROLL_HEIGHTS, "pianorollHeight"),
+    "showPianorollGrid": lambda value: _validate_bool(value, "showPianorollGrid"),
+    "pianorollGridDivisions": lambda value: _validate_choice(
+        value, PIANOROLL_GRID_DIVISIONS, "pianorollGridDivisions"
+    ),
+    "pianorollBackgroundColor": lambda value: _validate_hex_color(value, "pianorollBackgroundColor"),
+    "pianorollGridColor": lambda value: _validate_hex_color(value, "pianorollGridColor"),
+    "trackColorPalette": lambda value: _validate_choice(value, TRACK_COLOR_PALETTES, "trackColorPalette"),
+    "hideEmptyTracks": lambda value: _validate_bool(value, "hideEmptyTracks"),
+    "ensemblePresets": validate_ensemble_presets,
+}
+
+# PATCH /api/preferences で更新を許可するフィールド名の集合。selectedSoundfont
+# はPOST /api/soundfont経由でのみ更新する運用のため、PATCHの対象からは意図的
+# に除外する（従来のweb.py側allowed_fieldsが持っていた挙動をそのまま踏襲）。
+PATCHABLE_PREFERENCE_FIELDS = frozenset(_FIELD_VALIDATORS) - {"selectedSoundfont"}
+
+
 def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
     """既存の設定へ updates を部分適用し、検証してファイルへ保存した結果を返す。
 
     PATCH /api/session/transform と同じ「指定されたフィールドだけ更新する」規約。
     """
     current = load_preferences()
-    if "pinnedPrograms" in updates:
-        current["pinnedPrograms"] = _validate_pinned_programs(updates["pinnedPrograms"])
-    if "usageCounts" in updates:
-        current["usageCounts"] = _validate_usage_counts(updates["usageCounts"])
-    if "selectedSoundfont" in updates:
-        current["selectedSoundfont"] = _validate_selected_soundfont(updates["selectedSoundfont"])
-    if "displayMode" in updates:
-        current["displayMode"] = _validate_display_mode(updates["displayMode"])
-    if "roundedPianorollNotes" in updates:
-        current["roundedPianorollNotes"] = _validate_rounded_pianoroll_notes(
-            updates["roundedPianorollNotes"]
-        )
-    if "outlinedPianorollNotes" in updates:
-        current["outlinedPianorollNotes"] = _validate_outlined_pianoroll_notes(
-            updates["outlinedPianorollNotes"]
-        )
-    if "showPianorollKeyboard" in updates:
-        current["showPianorollKeyboard"] = _validate_show_pianoroll_keyboard(
-            updates["showPianorollKeyboard"]
-        )
-    if "ensemblePresets" in updates:
-        current["ensemblePresets"] = validate_ensemble_presets(updates["ensemblePresets"])
+    for field, validator in _FIELD_VALIDATORS.items():
+        if field in updates:
+            current[field] = validator(updates[field])
 
     path = preferences_path()
     path.parent.mkdir(parents=True, exist_ok=True)

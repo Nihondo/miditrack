@@ -2204,23 +2204,31 @@ fullscreen toggle itself; the later zoom-performance fix added stable
 `#pianoroll-timeline`/`#pianoroll-viewport` wrappers inside the existing scroll
 area, without making fullscreen entry/exit perform DOM surgery.
 
-**Why `#audition-card` (the whole "3. 試聴" card, containing the SoundFont
-row, transport, piano roll, and download/variation controls) becomes
-`display: contents` instead of being restyled as a box**: the target layout
-needs the SoundFont/transport row and the piano roll in the *right* column,
-but the download toolbar and the variations `<details>` — DOM children of
-the exact same `#audition-card` — in the *left* column, interleaved with
-`#tracks-card`. `display: contents` removes `#audition-card`'s own box
-without moving any of its children in the DOM, so each child becomes a
-direct grid item of `.app-shell` and can be placed independently via
-`grid-column`/`grid-row` (`app.css`'s `body.is-fullscreen .app-shell > ...`
-rules) — achieving the reorder purely through grid placement, with no JS
-DOM surgery. The one cost: `display: contents` drops the element's own box,
-so `.disabled-section`'s opacity rule (which this card also carries, via
-`updateSectionsReadiness()`'s `classList.toggle("ready", ...)`) stops
-painting on `#audition-card` itself once it has no box — `body.is-fullscreen
-#audition-card:not(.ready) > *` re-applies the same opacity to each child
-directly so the "dim until a track list exists" behavior survives.
+The header groups `#fullscreen-toggle` followed immediately by `#settings-open`
+inside `.header-actions`, aligned to the right edge. Both use
+`.header-action-button`, whose white text/icon and high-contrast border are
+intentional: the normal gray ghost-button treatment is not sufficiently legible
+against the blue header gradient. In the settings dialog,
+`.settings-checkbox-row` keeps rounded notes, outlined notes, and grid
+visibility together; the two `.settings-field-row` grids pair background/grid
+colors and track palette/vertical-grid divisions. These rows become one column
+at `max-width: 640px`, while every input ID and its JavaScript event binding
+remain unchanged.
+
+**Why `#audition-card` and `#output-card` become `display: contents` instead
+of being restyled as boxes**: normal layout deliberately splits the download
+buttons, shared filename, and batch-output disclosure into the separate
+`#output-card` headed **出力**, directly below the piano roll. Fullscreen must
+retain the pre-split compact right-column sequence, so both cards lose only
+their outer box and their children become independently placeable grid items
+of `.app-shell`. The transport/piano roll remain children of `#audition-card`;
+the download toolbar and output `<details>` are children of `#output-card`.
+The `body.is-fullscreen .app-shell > ...` grid rules place them in rows 1–6
+without any DOM surgery, while the output heading is hidden only in fullscreen.
+Because `display: contents` drops each card's own box, `.disabled-section`'s
+opacity would otherwise stop painting. `body.is-fullscreen #audition-card:not
+(.ready) > *` and the corresponding `#output-card` rule reapply it to every
+visible child; `updateSectionsReadiness()` toggles `ready` on both cards.
 
 **Why the piano-roll canvas still follows fullscreen resizing correctly**:
 `setupPianoroll()` observes the scroll viewport and the visible canvas. The
@@ -2693,19 +2701,23 @@ legible and clickable at the smaller size, with no clipping or overlap.
 
 ## Added: dark mode (`prefers-color-scheme`, no manual toggle)
 
+**Superseded in one respect — see "Added: 表示設定 (Display settings) dialog"
+below.** This section's token architecture (the `--neutral-*` re-pointing,
+`--toast-bg` separation) is still exactly how theming works; only the
+*mechanism that selects light vs. dark* changed, from a bare
+`@media (prefers-color-scheme: dark)` block to a `[data-theme]` attribute
+JS resolves and writes, so a user can now pin Light or Dark independent of
+the OS setting. The reasoning below for why each token is shaped the way it
+is remains accurate and is not repeated in the newer section.
+
 `index.html`'s `<meta name="color-scheme">` was `light` only and `app.css`
 had a single, light-only palette — every color was a `--neutral-*`/`--brand*`
 custom property in `:root`, which made this a CSS-only change with no
-`app.js`/`web.py` involvement. There is no manual light/dark switch: no
-sibling web tool in this repository (`tools/pixelart_web_assets`,
-`tools/make_videos_web_assets`) has one either, and adding a toggle would
-need new session-scoped state (`localStorage`, or a server-side preference)
-for a single-user local tool where the OS-level preference is already the
-right signal. `index.html`'s `<meta name="color-scheme" content="light dark">`
-plus `color-scheme: light dark;` on `:root` (`app.css`) is what lets native
-form controls (`<select>`, `<input>`, `<audio>`) pick up dark rendering
-automatically, on top of the `@media (prefers-color-scheme: dark)` override
-block.
+`app.js`/`web.py` involvement. `index.html`'s `<meta name="color-scheme"
+content="light dark">` plus `color-scheme: light dark;` on `:root` (`app.css`)
+is what lets native form controls (`<select>`, `<input>`, `<audio>`) pick up
+dark rendering automatically, on top of the `@media (prefers-color-scheme:
+dark)` override block.
 
 **Why the dark override just re-points the existing `--neutral-*` scale
 instead of a parallel dark palette**: every rule in `app.css` already
@@ -2751,6 +2763,208 @@ flips; every other literal `#fff`/`rgba(255,255,255,…)` in the stylesheet
 theme-independent `--toast-bg`, both of which keep a dark surface in either
 theme, so white text there is correct regardless of the OS setting and was
 deliberately left as-is.
+
+## Added: 表示設定 (Display settings) dialog — theme selection, piano-roll appearance, and per-color customization
+
+Three independent display preferences (`roundedPianorollNotes`,
+`outlinedPianorollNotes`, `showPianorollKeyboard`) had each been added as
+its own raw checkbox directly in `.pianoroll-footer`, and `#hide-empty-tracks`
+lived as a bare checkbox above the track table. That pattern does not scale:
+this feature adds a manual light/dark/system theme choice, a piano-roll
+height picker, grid visibility/division controls, per-color background/grid
+customization, and a track color palette picker — eight more preferences —
+and stacking all of them as loose checkboxes in the main flow would crowd
+out the actual editing UI. `#settings-dialog`, opened from a new gear-icon
+`#settings-open` button in the header, collects every display-only setting
+(including the pre-existing three checkboxes and `#hide-empty-tracks`, both
+relocated here) in one place. Every control in the dialog is still
+immediate-apply/immediate-save with no OK/Cancel draft state, exactly the
+behavior the three original checkboxes already had — this dialog is
+strictly a UI reorganization, not a new interaction model.
+
+### Theme selection: `[data-theme]` replaces the bare `@media` block
+
+`appTheme` (`"system"`/`"light"`/`"dark"`, default `"system"`) is resolved
+client-side by `resolveTheme()` and written to `document.documentElement
+.dataset.theme`; `app.css`'s dark-mode override block, previously a bare
+`@media (prefers-color-scheme: dark)` selector (see "Added: dark mode"
+above), is now `[data-theme="dark"]` with identical contents — an explicit
+`light`/`dark` choice simply writes a fixed attribute value, while `"system"`
+resolves through `matchMedia("(prefers-color-scheme: dark)").matches` every
+time `applyThemeSetting()` runs. The `matchMedia` `"change"` listener that
+used to call `redrawPianorollStatic()` directly now calls `applyThemeSetting()`
+instead — `resolveTheme()` ignores the OS value whenever `appTheme` is an
+explicit `"light"`/`"dark"`, so routing every OS-level change through this
+one function correctly no-ops for a pinned theme without a separate branch
+for "is the user on system mode."
+
+**Why the initial theme-detection line lives at the top of `app.js`, not in
+an inline `<head>` `<script>`**: the natural fix for a light→dark flash on
+load is a synchronous inline script that sets `data-theme` before the
+render-blocking stylesheet resolves. That was the first implementation here,
+and it silently never ran — `web.py`'s `add_security_headers()` sends
+`Content-Security-Policy: ... script-src 'self' ...` with no
+`'unsafe-inline'`, and the browser blocks inline `<script>` execution outright
+(confirmed live: the browser console showed a CSP violation, not a runtime
+error, so nothing about the page's visible behavior hinted at the failure).
+The fix moves the same one-line assignment to the very top of `app.js`
+itself, which is a same-origin external script the CSP already allows. Since
+`<script src="/assets/app.js" defer>` still only executes after the document
+has finished parsing, and the `<link rel="stylesheet">` in `<head>` is
+render-blocking regardless, this loses no meaningful protection against the
+flash in practice — the browser cannot paint until the stylesheet resolves,
+and the deferred script runs at essentially the same point. Any future
+"run something before first paint" idea in this codebase must go through an
+external `/assets/*.js` file for the same reason; a `<script>` tag typed
+directly into `index.html` will not execute.
+
+### Piano-roll colors: token indirection lets a null mean "follow the theme"
+
+`--pianoroll-background`, `--pianoroll-automation-background` (the PITCH
+lane), and `--pianoroll-grid-line` are new `:root`-level custom properties
+that default to `var(--neutral-10)`/`var(--neutral-20)`/`var(--neutral-30)`
+respectively — `.pianoroll-card`'s `background`, `drawPianorollGrid()`, and
+`drawPitchAutomationGrid()` all read through these tokens now instead of the
+raw neutrals directly. This indirection exists solely so a user-picked color
+can override just these three roles without touching the neutral scale
+everything else still depends on. `applyPianorollColors()` sets or removes
+an inline `style.setProperty()` on `document.documentElement` for each
+token: a non-null `pianorollBackgroundColor`/`pianorollGridColor` overrides,
+`null` (the default, meaning "follow the theme") removes the property
+entirely and lets the cascade fall back to the `:root` default — which is
+why `cssColor()` needed no changes at all; it already reads whatever the
+cascade resolves to. Setting a background color also writes the same value
+onto `--pianoroll-automation-background`, so the PITCH lane never keeps a
+theme-default gray while the note area above it has been recolored; the
+lane's separation from the note area is carried entirely by the (possibly
+also user-set) grid-line color instead of a background difference.
+
+`<input type="color">` cannot represent "no value," so each color field
+pairs with a "テーマ既定に戻す" (Reset to theme default) button that sets the
+state field back to `null`. The picker's own displayed value is kept in
+sync with the *effective* resolved color (not just the raw override) by
+`syncSettingsDialogControls()`, which reads `cssColor()` after applying both
+the theme and any override — this is also why `applyThemeSetting()` calls
+`syncSettingsDialogControls()` at its end: switching themes changes what an
+unset (`null`) color field's effective value actually is, and the picker
+swatch would otherwise show a stale color left over from the previous theme
+until the dialog happened to be reopened. Each `<input type="color">` fires
+`input` continuously while dragging and `change` once on release;
+`setupPianorollColorField()` uses `input` only to call `applyPianorollColors()`
+(a live preview, no network call) and `change` to actually call
+`savePreferenceFields()`, so scrubbing the picker does not flood
+`/api/preferences` with one PATCH per intermediate color.
+
+Server-side, `_validate_hex_color()` (`preferences.py`) accepts only `None`
+or a string matching `^#[0-9a-fA-F]{6}$`, normalized to lowercase before
+writing — deliberately narrower than "any valid CSS color," because the
+stored value is later assigned straight to `context.fillStyle` inside
+`drawPianorollGrid()`; accepting an arbitrary string here would mean
+trusting unvalidated preferences-file content as a Canvas fill value with no
+practical reason to allow anything beyond a hex triple for this UI.
+
+### Track color palette: still one source of truth, now with four implementations
+
+`getTrackColor()`/`getTrackOutlineColor()` remain the single place both the
+piano-roll note fill and each track row's color marker read from (see
+"Track colors have one browser-side source of truth" above) — this feature
+does not change that invariant, it changes what's *behind* those two
+functions. `TRACK_COLOR_PALETTES` holds four entries: `rainbow` (the
+original hue-by-index HSL formula, byte-for-byte the previous behavior),
+`vivid` (the same hue formula at 90% saturation, for stronger track
+separation),
+`muted` (the same hue formula at lower saturation, for long viewing
+sessions), and `accessible` (a fixed Okabe-Ito eight-color set, cycled by
+`trackIndex % 8` rather than spread across `trackCount`, so track N always
+gets the same color regardless of how many tracks are currently visible —
+unlike the two hue-based palettes, where a track's color depends on the
+total count and therefore can shift when `hideEmptyTracks` changes which
+rows are counted). `activeTrackColorPalette()` looks up `state
+.trackColorPalette` on every call rather than being cached, so a palette
+change takes effect on the very next redraw with no extra invalidation
+logic. Selecting a new palette calls both `redrawPianorollStatic()` and
+`renderTrackList()` (the latter for the track-row color markers), unlike
+every other display-only preference here, which only needs the piano-roll
+redraw.
+
+### Piano-roll height and grid controls
+
+`pianorollHeight` (`"compact"`/`"standard"`/`"tall"`, default `"standard"`)
+drives a `--pianoroll-card-height` custom property via `.pianoroll-card
+[data-height="compact"|"tall"]` attribute selectors (`"standard"` sets no
+attribute and falls through to the existing `380px` default via the
+property's fallback argument, `var(--pianoroll-card-height, 380px)`), so the
+long-standing "380px is exactly double the original 190px" comment and math
+in `app.css` needed no change — only a variable indirection layered on top.
+The full-screen layout's own `height: auto`/`320px` overrides
+(`body.is-fullscreen .pianoroll-card`) are unaffected and still win by
+cascade order, exactly as intended: the height picker is a normal-layout-only
+setting, matching how the piano roll already behaves differently in each
+layout. `showPianorollGrid` gates only `drawPianorollGrid()`'s line-drawing
+half; the background fill always runs regardless, so turning grid lines off
+never also blanks the roll. `pianorollGridDivisions` (`4`/`8`/`16`, default
+`8`) replaces the hardcoded vertical-line loop bound; the horizontal
+6-division split is deliberately left untouched by this setting, since it
+exists to mark pitch reference lines, not a time grid the user is choosing a
+density for.
+
+### `preferences.py`: a validator table instead of one `if` per field
+
+Growing from 3 boolean display preferences to 11 total fields (8 new: theme,
+height, grid visibility, grid divisions, two colors, palette, and moving
+`hideEmptyTracks` from frontend-only `state` into persisted preferences)
+would have meant roughly tripling the size of `load_preferences()`'s
+per-field `isinstance` fallback chain and `save_preferences()`'s per-field
+`if "x" in updates` chain, both already showing that shape for the original
+three booleans. `_FIELD_VALIDATORS: dict[str, Callable[[Any], Any]]` maps
+every preferences field name to its validator function; `load_preferences()`
+now loops over `_empty_preferences()`'s keys and falls back to that field's
+own default on `WebValidationError`, and `save_preferences()` loops over
+`_FIELD_VALIDATORS` and applies only the fields present in `updates` — both
+functions are now field-count-independent, and adding a field is a
+two-line change (one default in `_empty_preferences()`, one table entry).
+`_validate_bool(value, field)` and `_validate_choice(value, allowed, field)`
+are new generic helpers; the three original per-field boolean validators
+(`_validate_rounded_pianoroll_notes` etc.) were removed in favor of lambdas
+delegating to `_validate_bool` — the only externally-visible difference is
+`showPianorollKeyboard`'s error message wording changing from "は真偽値で"
+to "はtrueまたはfalseで" to match the other two, which no test asserted on.
+`PATCHABLE_PREFERENCE_FIELDS = frozenset(_FIELD_VALIDATORS) - {"selectedSoundfont"}`
+replaces `web.py`'s own hardcoded `allowed_fields` set inside
+`update_preferences()` — `selectedSoundfont` stays excluded from PATCH
+because it is written only via `POST /api/soundfont` (see "Added:
+in-browser SoundFont selection" above), and keeping that exclusion as a set
+subtraction from the single validator table means `web.py` no longer needs
+its own separate list of field names to keep in sync by hand.
+
+Verified against a live, non-mocked `create_app()` server driven through
+Chrome DevTools (real browser, no fakes): the settings dialog opens from the
+gear icon and every control reflects the previous screenshot's dark-theme
+palette on load; switching **全体の表示** to **ライト** flips both the page
+chrome and the dialog itself, and reloading the page confirms the choice
+(and every other changed field) persisted via `preferences.json`, not just
+in-memory `state`; setting a custom background color updates
+`--pianoroll-background` immediately and is reflected back through
+`GET /api/preferences`, while clicking "テーマ既定に戻す" clears it back to
+`null` and the resolved color reverts to the theme's own token; switching
+**高さ** to **大** measured `.pianoroll-card`'s computed `height` at `560px`.
+One real bug was caught only by this live check, not by any mocked test:
+firing several `#settings-dialog` control `change` events back-to-back with
+no delay between them (simulating unrealistically fast scripted input,
+not real pointer interaction) lost some of the earlier PATCHes — each
+`PATCH /api/preferences` does its own `load_preferences()` → mutate → write
+round trip with no locking, so two in-flight requests can each read the
+same pre-update file and the later write silently clobbers the earlier
+field's change. Spacing the same changes a few hundred milliseconds apart
+(matching how a person actually interacts with several distinct dropdowns)
+persisted every field correctly. This race already existed for any two
+of the original `savePinnedPrograms()`/`saveUsageCounts()`/`saveDisplayMode()`
+-style calls landing close together — see their own "保存できなくても...
+次回の変更で再送されれば整合する" eventual-consistency comments — and was
+judged acceptable to leave as-is here for the same reason: this is a local,
+single-user tool where two genuinely simultaneous preference writes require
+either scripted automation or sub-hundred-millisecond double-clicks across
+different controls, neither realistic for how this dialog is actually used.
 
 ## Added: favorite instrument shortlist and SoundFont selection, persisted server-side
 
@@ -2918,7 +3132,15 @@ it covers the missing-file/corrupt-JSON/non-dict-JSON fallbacks, the
 partial-update contract, every validation rule (program range, `bool`
 rejection, non-integer keys, negative counts), and the same round-trip/
 clear-to-`None`/rejects-non-string/rejects-empty-string coverage for
-`selectedSoundfont`. `test_web.py`'s `TestWebAppPreferences` does the same
+`selectedSoundfont`. `test_web.py`'s `TestWebAppPreferences` covers the
+same round-trip-plus-reject shape for every 表示設定-dialog field added by
+the theme/piano-roll-appearance/track-color-palette feature above —
+`appTheme`, `pianorollHeight`, `showPianorollGrid`/`pianorollGridDivisions`,
+`pianorollBackgroundColor`/`pianorollGridColor` (including the lowercase-
+normalization and clear-to-`None` cases), `trackColorPalette`, and
+`hideEmptyTracks` — plus the `test_get_preferences_includes_default_
+ensemble_presets` assertion block, which checks all eight defaults at once.
+It does the same
 env-var isolation for the `GET`/`PATCH /api/preferences` endpoints (the
 whole module's `setUpModule()`/`tearDownModule()` additionally redirect
 `MIDITRACK_PREFERENCES_PATH` for every test in the file, since

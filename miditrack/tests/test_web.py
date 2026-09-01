@@ -236,7 +236,7 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("position: absolute !important", hidden_rule)
         self.assertIn("clip-path: inset(50%) !important", hidden_rule)
 
-    def test_render_mode_toggle_is_compact_and_precedes_silent_spinner(self) -> None:
+    def test_render_mode_toggle_is_compact_and_spinner_reserves_playback_space(self) -> None:
         html = self.client.get("/").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)
         soundfont_row = html.split('<div class="soundfont-row">', 1)[1].split(
@@ -247,10 +247,6 @@ class TestWebApp(unittest.TestCase):
             soundfont_row.index("soundfont-select"),
             soundfont_row.index("render-mode-field"),
         )
-        self.assertLess(
-            soundfont_row.index("render-mode-field"),
-            soundfont_row.index("render-spinner"),
-        )
         self.assertIn('<label for="render-mode-fast">高速</label>', soundfont_row)
         self.assertIn('<label for="render-mode-quality">品質</label>', soundfont_row)
         self.assertNotIn("22.05kHzで素早く確認", html)
@@ -258,12 +254,25 @@ class TestWebApp(unittest.TestCase):
         row_rule = css.split(".soundfont-row {", 1)[1].split("}", 1)[0]
         field_rule = css.split(".render-mode-field {", 1)[1].split("}", 1)[0]
         options_rule = css.split(".render-mode-options {", 1)[1].split("}", 1)[0]
-        self.assertIn("grid-template-columns: minmax(0, 1fr) auto 16px", row_rule)
-        self.assertIn("reserve its lane explicitly", row_rule)
+        spinner_slot_rule = css.split(".render-spinner-slot {", 1)[1].split("}", 1)[0]
+        audition_toolbar = html.split('<div class="toolbar audition-toolbar">', 1)[1].split(
+            '<!-- 試聴用<audio>を2枚', 1
+        )[0]
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto", row_rule)
         self.assertIn("align-self: stretch", field_rule)
         self.assertIn("height: 100%", options_rule)
-        self.assertIn('id="render-spinner"', soundfont_row)
-        self.assertIn('aria-hidden="true"', soundfont_row)
+        self.assertNotIn('id="render-spinner"', soundfont_row)
+        self.assertLess(
+            audition_toolbar.index('class="playback-controls"'),
+            audition_toolbar.index('class="render-spinner-slot"'),
+        )
+        self.assertLess(
+            audition_toolbar.index('class="render-spinner-slot"'),
+            audition_toolbar.index('id="playback-time"'),
+        )
+        self.assertIn('id="render-spinner" hidden', audition_toolbar)
+        self.assertIn('flex: 0 0 16px', spinner_slot_rule)
+        self.assertIn('place-items: center', spinner_slot_rule)
         self.assertNotIn("render-button", html)
         self.assertIn("@keyframes render-spinner-rotate", css)
         self.assertNotIn("prefers-reduced-motion: reduce", css)
@@ -341,6 +350,7 @@ class TestWebApp(unittest.TestCase):
         )[0]
         self.assertIn("max-height: none", upload_rule)
         self.assertIn("overflow: visible", upload_rule)
+        self.assertIn("box-shadow: 0 1px 2px rgba(23, 43, 77, 0.035)", upload_rule)
 
         drop_zone_rule = css.split("body.is-fullscreen #upload-card .drop-zone {", 1)[1].split(
             "}", 1
@@ -3665,6 +3675,14 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertTrue(payload["roundedPianorollNotes"])
         self.assertTrue(payload["outlinedPianorollNotes"])
         self.assertTrue(payload["showPianorollKeyboard"])
+        self.assertEqual(payload["appTheme"], "system")
+        self.assertEqual(payload["pianorollHeight"], "standard")
+        self.assertTrue(payload["showPianorollGrid"])
+        self.assertEqual(payload["pianorollGridDivisions"], 8)
+        self.assertIsNone(payload["pianorollBackgroundColor"])
+        self.assertIsNone(payload["pianorollGridColor"])
+        self.assertEqual(payload["trackColorPalette"], "rainbow")
+        self.assertTrue(payload["hideEmptyTracks"])
         self.assertEqual(
             [preset["name"] for preset in payload["ensemblePresets"]],
             ["ゲームリード", "アコースティック", "ジャズカルテット"],
@@ -3765,6 +3783,156 @@ class TestWebAppPreferences(unittest.TestCase):
             "/api/preferences",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
             data=json.dumps({"showPianorollKeyboard": "yes"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_app_theme_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"appTheme": "dark"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["appTheme"], "dark")
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertEqual(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["appTheme"],
+            "dark",
+        )
+
+    def test_patch_rejects_invalid_app_theme_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"appTheme": "solarized"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_pianoroll_height_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pianorollHeight": "tall"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["pianorollHeight"], "tall")
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertEqual(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["pianorollHeight"],
+            "tall",
+        )
+
+    def test_patch_rejects_invalid_pianoroll_height_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pianorollHeight": "huge"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_pianoroll_grid_preferences_persist(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"showPianorollGrid": False, "pianorollGridDivisions": 16}),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload["showPianorollGrid"])
+        self.assertEqual(payload["pianorollGridDivisions"], 16)
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        other_payload = other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()
+        self.assertFalse(other_payload["showPianorollGrid"])
+        self.assertEqual(other_payload["pianorollGridDivisions"], 16)
+
+    def test_patch_rejects_invalid_pianoroll_grid_divisions_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pianorollGridDivisions": 10}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_pianoroll_color_preferences_persist_and_clear_to_none(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({
+                "pianorollBackgroundColor": "#1A2B3C",
+                "pianorollGridColor": "#ABCDEF",
+            }),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        # 保存時に小文字へ正規化される。
+        self.assertEqual(payload["pianorollBackgroundColor"], "#1a2b3c")
+        self.assertEqual(payload["pianorollGridColor"], "#abcdef")
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        other_payload = other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(other_payload["pianorollBackgroundColor"], "#1a2b3c")
+        self.assertEqual(other_payload["pianorollGridColor"], "#abcdef")
+
+        clear_response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pianorollBackgroundColor": None}),
+        )
+        self.assertIsNone(clear_response.get_json()["pianorollBackgroundColor"])
+
+    def test_patch_rejects_invalid_pianoroll_color_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"pianorollBackgroundColor": "red"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_vivid_track_color_palette_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"trackColorPalette": "vivid"}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["trackColorPalette"], "vivid")
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertEqual(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["trackColorPalette"],
+            "vivid",
+        )
+
+    def test_patch_rejects_invalid_track_color_palette_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"trackColorPalette": "neon"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_hide_empty_tracks_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"hideEmptyTracks": False}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["hideEmptyTracks"])
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertFalse(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["hideEmptyTracks"]
+        )
+
+    def test_patch_rejects_invalid_hide_empty_tracks_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"hideEmptyTracks": "yes"}),
         )
         self.assertEqual(response.status_code, 400)
 
@@ -4109,9 +4277,70 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("--pianoroll-frame-border: #aeb9c9", css)
         self.assertIn("--pianoroll-keyboard-divider: #7b899e", css)
         self.assertIn("--pianoroll-key-label: #334155", css)
+        # 表示設定ダイアログ: 歯車ボタンとダイアログ本体がメインUIから
+        # 分離され、旧チェックボックス群が.pianoroll-footer/トラック一覧
+        # から消えている（ダイアログ内へ移設された）ことを確認する。
+        self.assertIn('id="settings-open"', html)
+        self.assertIn('class="header-actions" aria-label="表示操作"', html)
+        header_actions = html.split('class="header-actions"', 1)[1].split("</div>", 1)[0]
+        self.assertLess(
+            header_actions.index('id="fullscreen-toggle"'),
+            header_actions.index('id="settings-open"'),
+        )
+        self.assertIn('header-action-button', header_actions)
+        self.assertIn('id="settings-dialog"', html)
+        self.assertIn('id="app-theme"', html)
+        self.assertIn('id="pianoroll-height"', html)
+        self.assertIn('id="pianoroll-background-color"', html)
+        self.assertIn('id="pianoroll-background-reset"', html)
+        self.assertIn('id="pianoroll-show-grid"', html)
+        self.assertIn('id="pianoroll-grid-color"', html)
+        self.assertIn('id="pianoroll-grid-reset"', html)
+        self.assertIn('id="pianoroll-grid-divisions"', html)
+        self.assertIn('id="track-color-palette"', html)
+        self.assertIn('<option value="vivid">彩度強め</option>', html)
+        self.assertIn('id="output-card"', html)
+        output_heading = html.split('class="card-heading output-card-heading"', 1)[1].split("</div>", 2)[0]
+        self.assertIn('<span class="step-number">4</span>', output_heading)
+        self.assertIn('id="output-card-title">出力</h2>', output_heading)
+        self.assertLess(html.index('id="audition-card"'), html.index('id="output-card"'))
+        self.assertNotIn("MIDIはこのMacの中だけで処理されます。", html)
+        self.assertIn('body.is-fullscreen #output-card { display: contents; }', css)
+        self.assertIn(
+            'body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 2; grid-row: 5;',
+            css,
+        )
+        self.assertIn('$("#output-card").classList.toggle("ready", ready);', javascript)
+        self.assertIn('id="hide-empty-tracks"', html)
+        self.assertIn('class="settings-checkbox-row"', html)
+        checkbox_row_start = html.index('class="settings-checkbox-row"')
+        keyboard_checkbox_start = html.index('id="pianoroll-show-keyboard"')
+        self.assertLess(checkbox_row_start, html.index('id="pianoroll-rounded-notes"'))
+        self.assertLess(html.index('id="pianoroll-outlined-notes"'), keyboard_checkbox_start)
+        self.assertLess(html.index('id="pianoroll-show-grid"'), keyboard_checkbox_start)
+        self.assertIn('class="settings-field-row settings-color-fields"', html)
+        self.assertEqual(html.count('class="settings-field-row"'), 1)
+        self.assertIn('.settings-field-row {', css)
+        self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr))', css)
+        self.assertIn('.settings-field-row .field-group {\n  min-width: 0;\n  margin-top: 0;', css)
+        self.assertIn('.app-header .header-action-button {', css)
+        self.assertIn('color: #fff', css)
+        footer_block = html.split('class="pianoroll-footer"', 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("checkbox", footer_block)
+        self.assertIn("function setupSettingsDialog", javascript)
+        self.assertIn("function resolveTheme", javascript)
+        self.assertIn("function applyThemeSetting", javascript)
+        self.assertIn("function applyPianorollColors", javascript)
+        self.assertIn("function savePreferenceFields", javascript)
+        self.assertIn("TRACK_COLOR_PALETTES", javascript)
+        self.assertIn("vivid:", javascript)
+        self.assertIn("hsl(${hue} 90% 48% / ${opacity})", javascript)
+        self.assertIn("#upload-card { box-shadow: 0 1px 2px", css)
+        self.assertIn('data-theme="dark"', css)
+        self.assertNotIn("@media (prefers-color-scheme: dark)", css)
         self.assertIn('displayMode: state.displayMode', javascript)
         fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(
-            "\n}\n\nfunction setupDropZone", 1
+            "\n}\n\nfunction setupSettingsDialog", 1
         )[0]
         self.assertIn('if (event.key !== "Escape") return;', fullscreen_setup_block)
         self.assertIn(
