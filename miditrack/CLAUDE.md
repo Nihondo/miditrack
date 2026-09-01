@@ -196,8 +196,9 @@ The native `<audio>` element remains the playback engine but is hidden. The
 custom media group sits immediately after the segmented playback buttons in
 the audition toolbar and owns elapsed/total time, a native range-based volume
 control, and a mute toggle; its state must follow media events. The timer uses
-the locally bundled DSEG7 Classic WOFF2 (with its OFL license), displays tenths
-as `mm:ss.t`, and runs its animation-frame refresh only while media is playing.
+the locally bundled DSEG7 Classic WOFF2 (with its OFL license), displays
+milliseconds as `mm:ss.mmm`, and runs its animation-frame refresh only while
+media is playing.
 Keep a tabular monospace fallback and fixed timer width so font swapping cannot
 shift adjacent controls. MIDI/WAV download buttons remain below the piano roll.
 

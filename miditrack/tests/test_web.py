@@ -277,6 +277,21 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("@keyframes render-spinner-rotate", css)
         self.assertNotIn("prefers-reduced-motion: reduce", css)
 
+    def test_playback_counter_shows_milliseconds(self) -> None:
+        """再生カウンタは秒以下を常に3桁で表示する。"""
+        html = self.client.get("/").get_data(as_text=True)
+        css = self.client.get("/assets/app.css").get_data(as_text=True)
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        self.assertEqual(html.count('class="playback-time-decimal">000</span>'), 2)
+        clock_block = javascript.split("function formatPlaybackClock", 1)[1].split(
+            "function normalizePianorollLoopRange", 1
+        )[0]
+        self.assertIn("totalMilliseconds", clock_block)
+        self.assertIn('String(milliseconds).padStart(3, "0")', clock_block)
+        playback_time_rule = css.split(".playback-time {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-width: 164px", playback_time_rule)
+
     def test_track_source_uses_same_segmented_radio_design_as_render_mode(self) -> None:
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)

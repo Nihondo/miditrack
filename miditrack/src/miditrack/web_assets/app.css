@@ -933,7 +933,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .playback-time {
-  min-width: 138px;
+  min-width: 164px;
   /* 再生コントロール側はボタンのmin-height 32px + このボーダー幅の分だけ
      実際の高さが32pxを超える（box-sizing:border-boxでもボタンの中身が
      min-heightを押し広げるため）。ここでも同じ実測高さに合わせておく。 */

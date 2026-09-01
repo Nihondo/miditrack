@@ -1867,14 +1867,14 @@ function formatPianorollTime(seconds) {
 }
 
 function formatPlaybackClock(seconds) {
-  const totalTenths = Math.max(0, Math.floor((Number(seconds) || 0) * 10));
-  const minutes = Math.floor(totalTenths / 600);
-  const remainder = totalTenths % 600;
-  const wholeSeconds = Math.floor(remainder / 10);
-  const tenths = remainder % 10;
+  const totalMilliseconds = Math.max(0, Math.floor((Number(seconds) || 0) * 1000));
+  const minutes = Math.floor(totalMilliseconds / 60000);
+  const remainder = totalMilliseconds % 60000;
+  const wholeSeconds = Math.floor(remainder / 1000);
+  const milliseconds = remainder % 1000;
   return {
     whole: `${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}`,
-    decimal: String(tenths),
+    decimal: String(milliseconds).padStart(3, "0"),
   };
 }
 
@@ -3444,7 +3444,7 @@ function updatePlaybackTime() {
 
 // <audio>のtimeupdateはブラウザ依存の粗い間隔（数Hz程度）でしか発火せず、
 // これだけを頼りにピアノロールの再生位置バーを描画するとカクついて見える。
-// カウンタの0.1秒表示と同じ滑らかさにするため、再生中はrAFで毎フレーム
+// カウンタの0.001秒表示と同じ滑らかさにするため、再生中はrAFで毎フレーム
 // updatePlaybackProgress()（描画＋カウンタ＋追従スクロール）を呼ぶ。
 // timeupdateリスナー自体は一時停止中のシーク等の同期用に残す。
 function startPlaybackTimeAnimation() {
