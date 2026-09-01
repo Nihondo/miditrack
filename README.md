@@ -175,13 +175,14 @@ Open the display settings panel from any screen. Changes take effect immediately
 ### Command-line options
 
 ```text
-miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
+miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-browser]
 ```
 
 | Option | Description |
 |---|---|
 | `MIDI_FILE` | Optional `.mid`/`.midi` file to preload. Upload source files in the browser. |
 | `-s, --soundfont FILE` | Default SoundFont at startup. The browser can replace it at any time. |
+| `-p, --port PORT` | Fixed port for the Web UI. Omit it (or pass `0`) to pick a free port automatically on every launch. |
 | `--no-browser` | Do not open a browser tab automatically. |
 | `--version` | Show the version and exit. |
 

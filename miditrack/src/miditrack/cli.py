@@ -35,6 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="レンダリングに使うSoundFont(.sf2/.sf3)。省略時はmidi2wav.sh自身の解決に任せる",
     )
     parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
+        default=0,
+        help="Web UIを起動する固定ポート番号（省略時は空きポートを自動選択）",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="起動時にブラウザを自動で開かない",
@@ -55,6 +62,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"MIDIファイルが見つかりません: {args.midi_file}")
     if args.soundfont is not None and not args.soundfont.is_file():
         raise SystemExit(f"SoundFontファイルが見つかりません: {args.soundfont}")
+    if not 0 <= args.port <= 65535:
+        raise SystemExit(f"ポート番号は0〜65535で指定してください: {args.port}")
 
     try:
         from .web import run_server
@@ -68,6 +77,7 @@ def main(argv: list[str] | None = None) -> None:
         midi_path=args.midi_file,
         soundfont=args.soundfont,
         open_browser=not args.no_browser,
+        port=args.port,
     )
 
 

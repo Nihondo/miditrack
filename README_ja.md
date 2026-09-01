@@ -175,13 +175,14 @@ SoundFont、トラック設定、出力ファイル名を変更すると、生�
 ### コマンドラインオプション
 
 ```text
-miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
+miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-browser]
 ```
 
 | オプション | 説明 |
 |---|---|
 | `MIDI_FILE` | 起動時に読み込む任意の`.mid`/`.midi`ファイル。音源ファイルはブラウザからアップロードします。 |
 | `-s, --soundfont FILE` | 起動時の既定SoundFont。ブラウザからいつでも変更できます。 |
+| `-p, --port PORT` | Web UIを起動する固定ポート番号。省略時（または`0`）は毎回空きポートを自動選択します。 |
 | `--no-browser` | ブラウザタブを自動で開きません。 |
 | `--version` | バージョンを表示して終了します。 |
 

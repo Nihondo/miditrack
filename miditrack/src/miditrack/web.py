@@ -2636,8 +2636,13 @@ def run_server(
     midi_path: Path | None = None,
     soundfont: Path | None = None,
     open_browser: bool = True,
+    port: int = 0,
 ) -> None:
-    """127.0.0.1の空きポートでWeb UIを起動し、終了時に一時データを消す。"""
+    """127.0.0.1でWeb UIを起動し、終了時に一時データを消す。
+
+    portが0（既定）の場合はOSが空きポートを自動選択する。0以外を渡すと
+    そのポートに固定してバインドする。
+    """
     token = secrets.token_urlsafe(32)
     session = WebSession()
     session.soundfont_override = resolve_startup_soundfont_override(soundfont)
@@ -2660,7 +2665,7 @@ def run_server(
             shutil.rmtree(temp_root, ignore_errors=True)
             raise
 
-    server = make_server("127.0.0.1", 0, app, threaded=True)
+    server = make_server("127.0.0.1", port, app, threaded=True)
     port = server.server_port
     url = f"http://127.0.0.1:{port}/?token={token}"
     print(f"miditrack Web UI: {url}")
