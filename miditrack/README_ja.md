@@ -35,7 +35,7 @@ python3 -m venv .venv
 | SoundFontレンダリング | `brew install fluid-synth`と`.sf2`/`.sf3`のSoundFont |
 | 実音声ステムのミックスとトラック別出力 | `brew install ffmpeg` |
 | 実音声ステムの速度・ピッチ変更 | `brew install rubberband` |
-| VGMの原曲の音源 | `cd ../vgm2midi && ./scripts/build-native.sh` |
+| VGMの原曲の音源 | 同梱のarm64ヘルパー。変更後の再ビルドだけ`cd ../vgm2midi && ./scripts/build-native.sh` |
 
 SoundFont探索を上書きするには`MIDI2WAV_SOUNDFONT`を設定します。任意の`VGM2MIDI_STEMS_HELPER`上書きは、既定以外のVGMネイティブヘルパーを指定します。探索仕様を変更する場合は、ユーザーマニュアルにある通常のSoundFont配置先の一覧を維持してください。
 

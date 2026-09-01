@@ -3,4 +3,3 @@ node_modules/
 *.vgm
 *.vgz
 *.mid
-native/bin/

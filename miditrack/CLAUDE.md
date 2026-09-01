@@ -25,6 +25,17 @@ runtime contracts, and verification. Keep detailed implementation history
 and invariants in this file, and keep converter-specific option references
 in each converter's own documentation.
 
+End users run the repository-root `install.sh` from an Apple Silicon checkout.
+It installs the Homebrew runtime tools, creates `miditrack/.venv`, installs
+the package and VGM Node.js runtime dependencies, and relies on FluidSynth's
+standard SoundFont. Keep the script self-contained, idempotent, and free of a
+system-Python fallback; it must not download, link, or bundle a SoundFont.
+It creates `/opt/homebrew/bin/miditrack` for the package launcher, but must
+fail without overwriting an existing non-matching command or link.
+Install Homebrew formulae individually so a conflicting same-named formula
+from another tap does not prevent later setup steps; verify every required
+runtime command on `PATH` before continuing to the Python and Node.js setup.
+
 ## Architecture
 
 ```
@@ -46,7 +57,7 @@ src/miditrack/
                             itself lives in midi.py)
   mix.py                   ffmpeg resolution + safe subprocess invocation, resamples and mixes
                             SoundFont parts and NSF/VGM hardware stems at the selected rate
-  libvgm.py                validates VGM track/channel sidecars and invokes the pinned native
+  libvgm.py                validates VGM track/channel sidecars and invokes the bundled native
                             helper for a selected physical-channel mix
   preferences.py           favorite-instrument shortlist (pinned/usage) and the last-selected
                             SoundFont, persisted to ~/Library/Application Support/miditrack/

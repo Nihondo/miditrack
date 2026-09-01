@@ -6,34 +6,33 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 ## クイックスタート
 
-1. FluidSynthをインストールします。
+1. Apple Silicon Macでこのリポジトリをcloneまたはダウンロードし、ディレクトリへ移動します。
 
    ```bash
-   brew install fluid-synth
-   ```
-
-2. アプリを一度だけセットアップします。
-
-   ```bash
+   git clone https://github.com/Nihondo/miditrack.git
    cd miditrack
-   python3 -m venv .venv
-   .venv/bin/python -m pip install --upgrade pip
-   .venv/bin/python -m pip install -e .
    ```
 
-3. アプリを起動します。
+2. インストーラを実行します。Python、FluidSynth、Node.js、ffmpeg、Rubber Band、Python仮想環境、VGM実行時依存を導入します。
 
    ```bash
-   ./miditrack.sh
+   ./install.sh
    ```
 
-4. 対応する音源ファイルまたは`.mid`ファイルをアップロード枠へ置き、編集・試聴してからMIDIまたはWAVをダウンロードします。
+3. 試聴とWAV出力は、初期状態でFluidSynth標準のSoundFontを使えます。カスタムのGeneral MIDI SoundFont（`.sf2`/`.sf3`）を使う場合は、`soundfonts/`へ配置します。
 
-任意の場所から`miditrack`として実行する場合は、一度だけPATHへ追加します。
+   ```bash
+   mkdir -p soundfonts
+   cp /path/to/GeneralMIDI.sf2 soundfonts/
+   ```
 
-```bash
-ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
-```
+4. インストーラが`/opt/homebrew/bin/miditrack`を作成します。任意のディレクトリからアプリを起動できます。
+
+   ```bash
+   miditrack
+   ```
+
+5. 対応する音源ファイルまたは`.mid`ファイルをアップロード枠へ置き、編集・試聴してからMIDIまたはWAVをダウンロードします。
 
 ## できること
 
@@ -57,27 +56,18 @@ ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
 
 ## 必要環境
 
-- macOSとPython 3.10以上
-- [FluidSynth](https://www.fluidsynth.org/): `brew install fluid-synth`
-- General MIDI SoundFont（`.sf2`/`.sf3`）。パスを`MIDI2WAV_SOUNDFONT`に設定するか、次のいずれかへ配置します。
+- Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回パッケージ取得用のインターネット接続
+- `./install.sh`でPython 3.10以上、[FluidSynth](https://www.fluidsynth.org/)、Node.js、ffmpeg、Rubber Bandを導入し、必要なPython／Node.js環境を作成
+- 初期状態ではFluidSynth標準のGeneral MIDI SoundFontを使います。カスタムの`.sf2`/`.sf3`を追加する場合は、`<リポジトリ>/soundfonts`（存在しなければ作成）または次の探索先へ配置します。
   - `<リポジトリ>/soundfonts`
   - `~/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
-コンバーターのバイナリは同梱されているため、通常の音源変換にビルドは不要です。VGMの原曲の音源にはネイティブヘルパーを一度だけビルドします。
+インストーラはHomebrewの式を1件ずつ処理します。同名の式が別tapに存在して競合した場合も、Homebrewのエラーは表示したままセットアップを続行します。最後に必要なコマンドが`PATH`上で見つからない場合だけ停止します。
 
-```bash
-cd vgm2midi
-./scripts/build-native.sh
-```
-
-実音声ステムのミックスやトラック別出力には[ffmpeg](https://ffmpeg.org/)が必要です。実音声ステムに既定値以外の速度・ピッチを適用する場合は[rubberband-cli](https://breakfastquay.com/rubberband/)も必要です。
-
-```bash
-brew install ffmpeg rubberband
-```
+コンバーターのバイナリと、Apple Silicon向けVGM原曲音源のネイティブヘルパーは同梱されているため、通常の音源変換とVGM原曲音源にビルドは不要です。実音声ステムのミックス、トラック別出力、速度／ピッチ変更に必要なffmpegとRubber Bandも標準インストーラに含まれます。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
 
 ## miditrackの使い方
 

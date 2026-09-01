@@ -11,8 +11,16 @@ from typing import Any, Iterable
 
 from .errors import RenderError, WebValidationError
 
-DEFAULT_HELPER = Path("/tmp/vgm2midi-native-build/vgm2midi_stems")
 RENDER_TIMEOUT_SECONDS = 300
+
+
+def _repo_root() -> Path:
+    """このパッケージを含むリポジトリのルートを返す。"""
+    # src/miditrack/libvgm.py -> src/miditrack -> src -> miditrack -> <repo root>
+    return Path(__file__).resolve().parents[3]
+
+
+DEFAULT_HELPER = _repo_root() / "vgm2midi" / "native" / "bin" / "vgm2midi_stems"
 
 
 @dataclass(frozen=True)
@@ -111,12 +119,13 @@ def validate_sources(
 
 
 def resolve_helper() -> Path:
-    """環境変数または既定ビルド先からlibvgm helperを解決する。"""
+    """環境変数またはリポジトリ同梱のlibvgm helperを解決する。"""
     configured = os.environ.get("VGM2MIDI_STEMS_HELPER")
     helper = Path(configured) if configured else DEFAULT_HELPER
     if not helper.is_file() or not os.access(helper, os.X_OK):
         raise RenderError(
-            "libvgm helperが見つかりません。vgm2midi/scripts/build-native.shを実行するか、"
+            "libvgm helperが見つかりません。リポジトリ同梱の"
+            "vgm2midi/native/bin/vgm2midi_stemsを復元するか、"
             f"VGM2MIDI_STEMS_HELPERを設定してください: {helper}"
         )
     return helper

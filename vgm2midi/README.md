@@ -192,16 +192,16 @@ sidecars such as `song.YM2151.mid` and `song.YM2203-2.mid`.
 Dual instances are parsed for SN76489, YM2413, YM2612, YM2151, YM2203, YM2608,
 YM3526, YM3812, Y8950, AY8910, Game Boy DMG, SegaPCM, C140, and HuC6280. PCM stream device 0x17
 (MSM6258/OKIM6258) is a stable GM editing trigger keyed by bank/start/length,
-not a timbre classification. `--stems DIR` invokes the optional pinned libvgm
-helper for 44.1 kHz, 16-bit stereo mix/per-chip WAVs and `*.stems.json`; build
-it outside the checkout with `vgm2midi/scripts/build-native.sh` (commit
-`57585ea`). Its source/cache/build defaults are all under `/tmp`; override
+not a timbre classification. `--stems DIR` invokes the bundled, pinned arm64
+libvgm helper for 44.1 kHz, 16-bit stereo mix/per-chip WAVs and `*.stems.json`.
+Rebuild it only after changing its source, using `vgm2midi/scripts/build-native.sh`
+(commit `57585ea`). Its source/cache/build defaults are all under `/tmp`; override
 them with `VGM2MIDI_NATIVE_CACHE`, `VGM2MIDI_LIBVGM_SOURCE`, and
 `VGM2MIDI_NATIVE_BUILD`, all outside the checkout. The helper reuses the pinned
 local git object without network access and fetches only when that object is
 absent; `VGM2MIDI_NATIVE_OFFLINE=1` rejects a missing source cache before any
 clone/fetch attempt and also rejects a cached checkout missing the pin.
-Run `npm run verify:native-stems` to build it and verify mix/stem sample counts
+Run `npm run verify:native-stems` to rebuild it and verify mix/stem sample counts
 and additive RMS. The same helper also accepts the channel-mask selection mode
 used by `miditrack`; `--track-metadata FILE` supplies that UI with the stable
 track-index/device/instance/channel-mask mapping and conservative hardware-mix

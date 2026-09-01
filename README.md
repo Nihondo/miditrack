@@ -6,34 +6,33 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
 
 ## Quick Start
 
-1. Install FluidSynth:
+1. On an Apple Silicon Mac, clone or download this repository and enter its directory.
 
    ```bash
-   brew install fluid-synth
-   ```
-
-2. Set up the app once:
-
-   ```bash
+   git clone https://github.com/Nihondo/miditrack.git
    cd miditrack
-   python3 -m venv .venv
-   .venv/bin/python -m pip install --upgrade pip
-   .venv/bin/python -m pip install -e .
    ```
 
-3. Start the app:
+2. Run the installer. It installs Python, FluidSynth, Node.js, ffmpeg, Rubber Band, the Python virtual environment, and the VGM runtime dependencies.
 
    ```bash
-   ./miditrack.sh
+   ./install.sh
    ```
 
-4. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
+3. FluidSynth's standard SoundFont is used immediately for auditioning and WAV export. To use a custom General MIDI SoundFont (`.sf2`/`.sf3`), place it in `soundfonts/`.
 
-Optionally add `miditrack` to your PATH once:
+   ```bash
+   mkdir -p soundfonts
+   cp /path/to/GeneralMIDI.sf2 soundfonts/
+   ```
 
-```bash
-ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
-```
+4. The installer creates `/opt/homebrew/bin/miditrack`. Start the app from any directory:
+
+   ```bash
+   miditrack
+   ```
+
+5. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
 
 ## What You Can Do
 
@@ -57,27 +56,18 @@ ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
 
 ## Requirements
 
-- macOS and Python 3.10+
-- [FluidSynth](https://www.fluidsynth.org/): `brew install fluid-synth`
-- A General MIDI SoundFont (`.sf2`/`.sf3`). Set `MIDI2WAV_SOUNDFONT` to its path, or place one in one of these directories:
+- Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial package download
+- Run `./install.sh` to install Python 3.10+, [FluidSynth](https://www.fluidsynth.org/), Node.js, ffmpeg, and Rubber Band, then create the required Python and Node.js environments
+- FluidSynth's standard General MIDI SoundFont is used initially. To add a custom `.sf2`/`.sf3`, place it in `<repository>/soundfonts` (create that directory if it does not exist), or use another supported search directory:
   - `<repository>/soundfonts`
   - `~/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
-The converter binaries are bundled, so ordinary source conversion needs no build step. Original VGM sound needs the native helper built once:
+The installer processes Homebrew formulae one at a time. If a formula conflicts with an existing same-named formula from another tap, Homebrew's error remains visible and setup continues. It stops only if the required command is unavailable on `PATH` afterward.
 
-```bash
-cd vgm2midi
-./scripts/build-native.sh
-```
-
-For real-audio stem mixing or per-track export, install [ffmpeg](https://ffmpeg.org/). A non-default speed or pitch applied to a real-audio stem also needs [rubberband-cli](https://breakfastquay.com/rubberband/):
-
-```bash
-brew install ffmpeg rubberband
-```
+The converter binaries and the Apple Silicon native helper for Original VGM sound are bundled, so ordinary source conversion and Original VGM sound need no build step. ffmpeg and Rubber Band are included in the standard installer for real-audio stem mixing, per-track export, and speed/pitch changes. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
 
 ## Using miditrack
 

@@ -1016,9 +1016,9 @@ backslashes, and controls while passing UTF-8 bytes through unchanged;
 `verify:native-stems` checks this with quote/backslash paths.
 
 After a successful build, the script copies only the finished
-`vgm2midi_stems` binary into `native/bin/` inside this checkout (gitignored —
-it's architecture-specific and reproducible from the pin, so it isn't
-committed). `renderLibvgmStems()` (`src/stems.ts`) resolves the helper from
+`vgm2midi_stems` binary into `native/bin/` inside this checkout. The arm64
+binary is committed so Apple Silicon users can render stems from a fresh clone
+without fetching or building libvgm. `renderLibvgmStems()` (`src/stems.ts`) resolves the helper from
 the `VGM2MIDI_STEMS_HELPER` env var, or else `native/bin/vgm2midi_stems`
 next to the installed package. This means a `/tmp`-clearing reboot no longer
 requires re-running `build-native.sh` before the next `--stems` run, as long

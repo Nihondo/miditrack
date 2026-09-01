@@ -35,7 +35,7 @@ The wrapper resolves its own location, always uses this package's `.venv`, prese
 | SoundFont rendering | `brew install fluid-synth` and an `.sf2`/`.sf3` SoundFont |
 | Real-audio stem mixing and per-track export | `brew install ffmpeg` |
 | Speed/pitch changes for real-audio stems | `brew install rubberband` |
-| Original VGM sound | `cd ../vgm2midi && ./scripts/build-native.sh` |
+| Original VGM sound | Bundled arm64 helper; rebuild only after changing it with `cd ../vgm2midi && ./scripts/build-native.sh` |
 
 Set `MIDI2WAV_SOUNDFONT` to override SoundFont discovery. The optional `VGM2MIDI_STEMS_HELPER` override points to a non-default VGM native helper. The user manual documents normal SoundFont locations; preserve that list when changing discovery behaviour.
 

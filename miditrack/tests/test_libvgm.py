@@ -68,6 +68,13 @@ class TestLibvgmRender(unittest.TestCase):
         self.addCleanup(os.environ.pop, "VGM2MIDI_STEMS_HELPER", None)
         os.environ["VGM2MIDI_STEMS_HELPER"] = str(self.helper)
 
+    def test_resolves_bundled_helper_when_override_is_absent(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(libvgm, "DEFAULT_HELPER", self.helper),
+        ):
+            self.assertEqual(libvgm.resolve_helper(), self.helper)
+
     def test_combines_masks_for_the_same_device(self) -> None:
         output = Path(self.temp.name) / "selected.wav"
         targets = [
