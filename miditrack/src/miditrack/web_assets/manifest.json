@@ -1,5 +1,5 @@
 {
-  "name": "miditrack GM Instrument Assigner",
+  "name": "miditrack",
   "short_name": "miditrack",
   "description": "MIDIトラックごとにGeneral MIDI音色を割り当てて試聴するローカルツール",
   "start_url": "/",
