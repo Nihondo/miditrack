@@ -875,5 +875,34 @@ class TestWriteTrackSubsetSharedChannel(unittest.TestCase):
         self.assertEqual(pcs_track1, [])
 
 
+class TestWriteTimeWindow(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.source_path = Path(self.tmp.name) / "source.mid"
+        self.output_path = Path(self.tmp.name) / "window.mid"
+        mf = mido.MidiFile(ticks_per_beat=480)
+        track = mido.MidiTrack()
+        track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+        track.append(mido.Message("program_change", program=42, channel=0, time=0))
+        track.append(mido.Message("control_change", control=7, value=80, channel=0, time=0))
+        track.append(mido.Message("note_on", note=60, velocity=96, channel=0, time=0))
+        track.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=1920))
+        mf.tracks.append(track)
+        mf.save(self.source_path)
+
+    def test_restores_channel_state_and_active_note_at_window_start(self) -> None:
+        window = midi.write_time_window(self.source_path, self.output_path, 1.0, 1.8)
+        result = mido.MidiFile(self.output_path)
+        messages = result.tracks[0]
+        self.assertEqual(window.start_seconds, 1.0)
+        self.assertEqual(window.end_seconds, 1.8)
+        self.assertTrue(any(m.type == "set_tempo" and m.time == 0 for m in messages))
+        self.assertTrue(any(m.type == "program_change" and m.program == 42 and m.time == 0 for m in messages))
+        self.assertTrue(any(m.type == "control_change" and m.control == 7 and m.value == 80 for m in messages))
+        self.assertTrue(any(m.type == "note_on" and m.note == 60 and m.velocity == 96 for m in messages))
+        self.assertTrue(any(m.type == "end_of_track" for m in messages))
+
+
 if __name__ == "__main__":
     unittest.main()

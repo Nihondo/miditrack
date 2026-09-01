@@ -465,19 +465,16 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("function scheduleAutoRender(delay = PREWARM_DELAY_MS)", javascript)
         self.assertNotIn("resetPlayer({ preservePosition: true })", javascript)
 
-        # crossfadeToRender()は絶対秒ではなく進捗率で位置を換算する
-        # （速度変更で曲長が変わっても音楽上の同じ位置を継続するため）。
+        # crossfadeToRender()は短区間WAVのローカル秒ではなく曲全体の時刻で
+        # 位置を換算する（速度変更と短区間プレビューの両方を跨いで継続するため）。
         self.assertIn("function crossfadeToRender(renderId, canCommit)", javascript)
-        self.assertIn("async function runSwap(renderId, canCommit = () => true)", javascript)
-        self.assertIn(
-            "if (!Number.isFinite(fromDuration) || fromDuration <= 0) return 0;",
-            javascript,
-        )
+        self.assertIn("async function runSwap(renderId, canCommit = () => true, nextSource = null)", javascript)
+        self.assertIn("const currentGlobalSeconds = () => sourceGlobalSeconds(active, state.activeSource);", javascript)
         # ロード待ち・play()の起動待ちで進み続けたactiveの位置に合わせて、フェード
         # 開始前（next.volumeがまだ0の間）にもう一度シークし直す。これが無いと
         # 乗り換えの瞬間にピアノロールの再生位置バーが一瞬ずれて見える回帰を防ぐ。
-        self.assertIn("seekNextTo(currentRatio())", javascript)
-        self.assertEqual(javascript.count("seekNextTo(currentRatio())"), 2)
+        self.assertIn("seekNextTo(currentGlobalSeconds())", javascript)
+        self.assertEqual(javascript.count("seekNextTo(currentGlobalSeconds())"), 2)
 
     def test_speed_change_defers_pianoroll_duration_update_until_audio_catches_up(
         self,
@@ -1073,6 +1070,31 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(payload["renderId"], 1)
         self.assertIn("v=1", payload["audioUrl"])
         self.assertEqual(len(self.render_calls), 1)
+
+    def test_preview_renders_a_timeline_window_and_activates_it(self) -> None:
+        self._upload()
+        session = self.app.config["MIDITRACK_SESSION"]
+        response = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "fast", "stateRevision": session.state_revision, "anchorRatio": 0.5}),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["renderKind"], "segment")
+        self.assertGreater(payload["timelineEndSeconds"], payload["timelineStartSeconds"])
+        self.assertEqual(len(self.render_calls), 1)
+        self.assertTrue(session.audio_path.exists())
+
+    def test_preview_rejects_an_obsolete_revision(self) -> None:
+        self._upload()
+        response = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"stateRevision": -1, "anchorRatio": 0}),
+        )
+        self.assertEqual(response.status_code, 409)
 
     def test_audio_requires_render_first(self) -> None:
         self._upload()

@@ -355,6 +355,19 @@ Apply & Audition and paused-prewarm descriptions.
 
 ## Current automatic audition behavior
 
+For SoundFont-only sessions (including SPC's game SoundFont), the browser first
+posts `/api/render/preview` with its current `stateRevision` and normalized
+timeline position. The server writes an independent MIDI window with a two-second
+preroll and up to twelve seconds after the anchor, restoring channel state and
+notes active at the window start. The response describes the window's absolute
+timeline range; `app.js` maps the segment `<audio>` element's local `currentTime`
+back to that range before updating the clock, piano-roll playhead, seeking, or
+looping. It then starts the ordinary full render in the background and swaps to
+that full source at the same absolute musical time. Hardware VGM/NSF selections
+and converted noise/DAC stems deliberately return `available:false` for now:
+mixing their full-length assets into a short window is a separate follow-up, and
+starting a full hardware emulation here would defeat the latency benefit.
+
 `index.html` has no Apply & Audition button. MIDI preparation calls
 `scheduleAutoRender(0)` after the track list and piano roll are ready; edits
 use the same function with the existing 500ms debounce. Both paths activate

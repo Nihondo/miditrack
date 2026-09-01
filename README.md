@@ -123,7 +123,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Pitch bend lane** — Shows pitch bend data for each track below the note area.
 
-Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview.
+Rendering starts automatically after edits. For SoundFont-based tracks, miditrack first prepares a short section around the current play position, then replaces it with the exact full-song render when it is ready. Completed audio is cached for the session. Original VGM/NSF chip-audio tracks currently wait for their full render.
 
 ### Screen 4 · Output
 

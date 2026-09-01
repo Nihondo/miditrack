@@ -76,6 +76,19 @@ class TrackInfo:
     source_volume_percent: int  # 変換元CC7由来の音量(%)。既定はDEFAULT_TRACK_VOLUME_PERCENT
 
 
+@dataclass(frozen=True)
+class MidiWindow:
+    """レンダー用に切り出したMIDI区間のタイムライン情報。"""
+
+    start_seconds: float
+    end_seconds: float
+
+    @property
+    def duration_seconds(self) -> float:
+        """切り出し後の演奏時間を秒で返す。"""
+        return self.end_seconds - self.start_seconds
+
+
 def _track_name(track: Any) -> str | None:
     for message in track:
         if message.is_meta and message.type == "track_name":
@@ -597,6 +610,127 @@ def _filter_track(track: Any, keep: Any) -> None:
     if carried and kept:
         kept[-1].time += carried
     track[:] = kept
+
+
+def _tempo_events(midi_file: Any) -> list[tuple[int, int]]:
+    """全トラックのテンポイベントを絶対tick順で返す。"""
+    events: list[tuple[int, int]] = []
+    for track in midi_file.tracks:
+        tick = 0
+        for message in track:
+            tick += message.time
+            if message.is_meta and message.type == "set_tempo":
+                events.append((tick, message.tempo))
+    return sorted(events)
+
+
+def _seconds_to_tick(midi_file: Any, seconds: float) -> int:
+    """テンポマップに従って秒を絶対tickへ変換する。"""
+    if seconds <= 0:
+        return 0
+    elapsed = 0.0
+    tick = 0
+    tempo = DEFAULT_TEMPO_MICROSECONDS
+    for event_tick, event_tempo in _tempo_events(midi_file):
+        segment_seconds = (event_tick - tick) * tempo / 1_000_000 / midi_file.ticks_per_beat
+        if elapsed + segment_seconds >= seconds:
+            return tick + round((seconds - elapsed) * 1_000_000 * midi_file.ticks_per_beat / tempo)
+        elapsed += segment_seconds
+        tick = event_tick
+        tempo = event_tempo
+    return tick + round((seconds - elapsed) * 1_000_000 * midi_file.ticks_per_beat / tempo)
+
+
+def midi_duration_seconds(path: Path) -> float:
+    """MIDIの終端までの演奏時間をテンポマップ込みで返す。"""
+    mido = import_mido()
+    try:
+        midi_file = mido.MidiFile(path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(f"MIDIを読み込めません: {path}: {error}") from error
+    end_tick = max((sum(message.time for message in track) for track in midi_file.tracks), default=0)
+    tempo = DEFAULT_TEMPO_MICROSECONDS
+    seconds = 0.0
+    tick = 0
+    for event_tick, event_tempo in _tempo_events(midi_file):
+        if event_tick > end_tick:
+            break
+        seconds += (event_tick - tick) * tempo / 1_000_000 / midi_file.ticks_per_beat
+        tick = event_tick
+        tempo = event_tempo
+    return seconds + (end_tick - tick) * tempo / 1_000_000 / midi_file.ticks_per_beat
+
+
+def write_time_window(
+    source_path: Path, output_path: Path, start_seconds: float, end_seconds: float,
+) -> MidiWindow:
+    """指定秒区間を発音可能な独立MIDIとして書き出す。
+
+    区間開始前のチャンネル状態と発音中ノートをtick 0へ復元する。長い音の
+    エンベロープは開始時点から再発音されるため、呼び出し側はプリロールを含める。
+    """
+    if start_seconds < 0 or end_seconds <= start_seconds:
+        raise WebValidationError("MIDI区間の開始・終了秒が不正です")
+    mido = import_mido()
+    try:
+        source = mido.MidiFile(source_path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(f"MIDIを読み込めません: {source_path}: {error}") from error
+    start_tick = _seconds_to_tick(source, start_seconds)
+    end_tick = _seconds_to_tick(source, end_seconds)
+    if end_tick <= start_tick:
+        end_tick = start_tick + 1
+
+    result = mido.MidiFile(type=source.type, ticks_per_beat=source.ticks_per_beat)
+    initial_tempo = DEFAULT_TEMPO_MICROSECONDS
+    for tick, tempo in _tempo_events(source):
+        if tick > start_tick:
+            break
+        initial_tempo = tempo
+
+    for track_index, source_track in enumerate(source.tracks):
+        absolute_tick = 0
+        latest_state: dict[tuple[int, str, int | None], Any] = {}
+        active_notes: dict[tuple[int, int], list[Any]] = {}
+        events: list[tuple[int, int, Any]] = []
+        for order, message in enumerate(source_track):
+            absolute_tick += message.time
+            if message.type == "end_of_track":
+                continue
+            if absolute_tick < start_tick:
+                if not message.is_meta and message.type not in ("note_on", "note_off") and hasattr(message, "channel"):
+                    control = message.control if message.type == "control_change" else None
+                    latest_state[(message.channel, message.type, control)] = message.copy(time=0)
+                if message.type == "note_on" and message.velocity > 0:
+                    active_notes.setdefault((message.channel, message.note), []).append(message.copy(time=0))
+                elif message.type == "note_off" or (message.type == "note_on" and message.velocity == 0):
+                    notes = active_notes.get((message.channel, message.note), [])
+                    if notes:
+                        notes.pop(0)
+                continue
+            if absolute_tick > end_tick:
+                continue
+            events.append((absolute_tick - start_tick, order, message.copy(time=0)))
+
+        prefix: list[Any] = []
+        if track_index == 0:
+            prefix.append(mido.MetaMessage("set_tempo", tempo=initial_tempo, time=0))
+        prefix.extend(latest_state.values())
+        for notes in active_notes.values():
+            prefix.extend(notes)
+        ordered = [(0, index, message) for index, message in enumerate(prefix)]
+        ordered.extend((tick, len(prefix) + order, message) for tick, order, message in events)
+        ordered.sort(key=lambda item: (item[0], item[1]))
+        target = mido.MidiTrack()
+        previous_tick = 0
+        for event_tick, _order, message in ordered:
+            message.time = max(0, event_tick - previous_tick)
+            target.append(message)
+            previous_tick = event_tick
+        target.append(mido.MetaMessage("end_of_track", time=max(0, end_tick - start_tick - previous_tick)))
+        result.tracks.append(target)
+    save_midi_atomic(result, output_path)
+    return MidiWindow(start_seconds=start_seconds, end_seconds=end_seconds)
 
 
 def save_midi_atomic(midi_file: Any, path: Path) -> None:

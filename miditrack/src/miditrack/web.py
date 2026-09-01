@@ -67,6 +67,8 @@ RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
 RENDER_CACHE_MAX_ENTRIES = 16
 RENDER_CACHE_VERSION = 1
 RENDER_WORKERS = 2
+PREVIEW_PREROLL_SECONDS = 2.0
+PREVIEW_FORWARD_SECONDS = 12.0
 # /api/audio?v=Nがrender_idごとに解決できるWAVの保持件数。クロスフェード中は旧render_idの
 # 要素が引き続きこの音源へRangeリクエストを送り続けるため、invalidate_render()後も
 # ここに載っている間は消さない（LRU（render_cache）からの追い出し対象からも保護する）。
@@ -586,6 +588,7 @@ def session_payload(session: WebSession) -> dict[str, Any]:
         "hasRender": session.audio_path is not None and session.audio_path.exists(),
         "renderId": session.render_id,
         "renderMode": session.current_render_mode,
+        "stateRevision": session.state_revision,
         "hasDownload": session.original_path is not None,
         "hasChipStem": session.chip_stem_path is not None,
         "hasDacStem": session.dac_stem_path is not None,
@@ -1448,6 +1451,17 @@ def create_app(
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    def _validate_preview_ratio(value: Any) -> float:
+        """短区間プレビューの曲全体に対する位置を検証する。"""
+        if value is None:
+            return 0.0
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise WebValidationError("anchorRatioは0から1の数値で指定してください")
+        ratio = float(value)
+        if not 0.0 <= ratio <= 1.0:
+            raise WebValidationError("anchorRatioは0から1の範囲で指定してください")
+        return ratio
+
     def _cache_lookup(cache_key: str) -> Path | None:
         """LRUキャッシュから有効なWAVを返し、参照順を更新する。"""
         entry = web_session.render_cache.get(cache_key)
@@ -1997,6 +2011,71 @@ def create_app(
                 render_ms=render_ms,
             )
 
+    def ensure_preview(mode: str, anchor_ratio: float) -> tuple[RenderOutcome, midi.MidiWindow]:
+        """現在位置付近だけをレンダリングし、全尺完成前の試聴に使う。"""
+        with web_session.render_lock:
+            applied_path = ensure_applied()
+            duration = midi.midi_duration_seconds(applied_path)
+            anchor = duration * anchor_ratio
+            start = max(0.0, anchor - PREVIEW_PREROLL_SECONDS)
+            end = min(duration, anchor + PREVIEW_FORWARD_SECONDS)
+            if end <= start:
+                end = min(duration, start + PREVIEW_FORWARD_SECONDS)
+            if end <= start:
+                raise WebValidationError("短区間プレビューを作成できる演奏時間がありません")
+            state_key = _render_state_key(mode)
+            window_key = f"{start:.3f}:{end:.3f}"
+            cache_key = f"preview:{state_key}:{window_key}"
+            wav_path = _cache_lookup(cache_key)
+            cache_hit = wav_path is not None
+            if wav_path is None:
+                web_session.render_id += 1
+                work_id = web_session.render_id
+                preview_midi = web_session.root / f"preview-{work_id:04d}.mid"
+                wav_path = _cache_output_path("preview", cache_key)
+                try:
+                    window = midi.write_time_window(applied_path, preview_midi, start, end)
+                    # 実機チップ音声は全尺キャッシュを区間化する後続フェーズで扱う。
+                    # ここで全尺エミュレーションを始めると短区間化の効果が失われる。
+                    if (
+                        web_session.chip_stem_path is not None
+                        or web_session.dac_stem_path is not None
+                        or (
+                        web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
+                        and any(source == "game" for source in web_session.track_sources.values())
+                        )
+                    ):
+                        raise WebValidationError("この原曲音源の短区間プレビューは準備中です")
+                    _render_applied_midi(
+                        preview_midi,
+                        wav_path,
+                        render_id=work_id,
+                        speed=web_session.speed_ratio,
+                        transpose=web_session.transpose_semitones,
+                        sample_rate=RENDER_SAMPLE_RATES[mode],
+                    )
+                    _cache_store(cache_key, wav_path)
+                except Exception:
+                    wav_path.unlink(missing_ok=True)
+                    raise
+                finally:
+                    preview_midi.unlink(missing_ok=True)
+            else:
+                window = midi.MidiWindow(start_seconds=start, end_seconds=end)
+
+            web_session.render_id += 1
+            web_session.audio_path = wav_path
+            web_session.current_render_key = cache_key
+            web_session.current_render_mode = mode
+            web_session.audio_sources[web_session.render_id] = wav_path
+            web_session.audio_sources.move_to_end(web_session.render_id)
+            while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
+                web_session.audio_sources.popitem(last=False)
+            return (
+                RenderOutcome(wav_path, mode, cache_key, cache_hit, 0),
+                window,
+            )
+
     @app.post("/api/render")
     def render_endpoint() -> Response:
         web_session.require_tracks()
@@ -2016,6 +2095,36 @@ def create_app(
             cacheHit=outcome.cache_hit,
             renderMs=outcome.render_ms,
             **(web_session.apply_summary or {}),
+        )
+
+    @app.post("/api/render/preview")
+    def render_preview_endpoint() -> Response:
+        """現在の再生位置を中心とする短区間の試聴WAVを返す。"""
+        web_session.require_tracks()
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+        body = request.get_json(silent=True) or {}
+        requested_revision = body.get("stateRevision")
+        if requested_revision is not None and requested_revision != web_session.state_revision:
+            return jsonify(error="設定が更新されたため短区間プレビューを破棄しました"), 409
+        mode = _validate_render_mode(body.get("renderMode"))
+        anchor_ratio = _validate_preview_ratio(body.get("anchorRatio"))
+        try:
+            outcome, window = ensure_preview(mode, anchor_ratio)
+        except WebValidationError as error:
+            if "原曲音源の短区間プレビュー" not in str(error):
+                raise
+            return jsonify(available=False, reason="chip-hardware"), 200
+        return jsonify(
+            available=True,
+            audioUrl=f"/api/audio?v={web_session.render_id}",
+            renderId=web_session.render_id,
+            renderKind="segment",
+            renderMode=outcome.mode,
+            sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
+            timelineStartSeconds=window.start_seconds,
+            timelineEndSeconds=window.end_seconds,
+            cacheHit=outcome.cache_hit,
         )
 
     @app.post("/api/render/prewarm")
