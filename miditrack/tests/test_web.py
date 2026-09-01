@@ -3187,6 +3187,7 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         self.mix_calls: list[list[tuple[Path, float]]] = []
         self.gain_calls: list[tuple[Path, float]] = []
         self.render_delay = 0.0
+        self.suggested_chip_indices = {1}
         self.active_render_jobs = 0
         self.max_active_render_jobs = 0
         self.render_job_lock = threading.Lock()
@@ -3211,12 +3212,12 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
                     {"trackIndex": 0, "libvgm": {
                         "deviceType": 0, "instance": 0, "mainMask": 1,
                         "linkedMask": 0, "groupId": "tone-0",
-                        "suggestedForHardwareMix": False,
+                        "suggestedForHardwareMix": 0 in self.suggested_chip_indices,
                     }},
                     {"trackIndex": 1, "libvgm": {
                         "deviceType": 0, "instance": 0, "mainMask": 8,
                         "linkedMask": 0, "groupId": "noise-3",
-                        "suggestedForHardwareMix": True,
+                        "suggestedForHardwareMix": 1 in self.suggested_chip_indices,
                     }},
                 ],
             }), encoding="utf-8")
@@ -3313,6 +3314,29 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
 
         self.client.post("/api/render", headers=AUTH_HEADERS)
         self.assertEqual(len(self.libvgm_calls), 1)
+
+    def test_chip_prewarm_survives_volume_edit(self) -> None:
+        """ソロ相当の音量編集中も、生チップWAVの温めを中断しない。"""
+        self.suggested_chip_indices = {0, 1}
+        self.render_delay = 0.05
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = True
+
+        response = self._convert(True)
+        self.assertEqual(response.status_code, 200)
+        patch = self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"0": 50}}),
+        )
+        self.assertEqual(patch.status_code, 200)
+
+        session = self.app.config["MIDITRACK_SESSION"]
+        deadline = time.monotonic() + 1.0
+        while len([key for key in session.render_cache if key.startswith("chip:")]) < 3:
+            if time.monotonic() >= deadline:
+                self.fail("音量変更後もチャンネル別チップ音源の温めが完了しません")
+            time.sleep(0.01)
+        self.assertEqual(len(self.libvgm_calls), 3)
 
     def test_preview_waits_for_chip_channel_prewarm(self) -> None:
         self._convert(True)

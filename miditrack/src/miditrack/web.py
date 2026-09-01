@@ -22,7 +22,7 @@ import time
 import webbrowser
 import zipfile
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -67,6 +67,11 @@ RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
 RENDER_CACHE_MAX_ENTRIES = 16
 RENDER_CACHE_VERSION = 1
 RENDER_WORKERS = 2
+# VGMには数十の実機チャンネルを持つ曲がある。全チャンネルの生WAVを温めると
+# render_cache（16件／256MB）から先に完成したWAVを追い出してしまうため、既定集合に
+# 加えて先頭の少数だけを温める。未温めチャンネルは正確な全尺レンダーへフォールバック
+# し、その結果は通常キャッシュに残る。
+CHIP_PREWARM_MAX_CHANNELS = 4
 PREVIEW_CACHE_MAX_ENTRIES = 3
 PREVIEW_PREROLL_SECONDS = 2.0
 PREVIEW_FORWARD_SECONDS = 12.0
@@ -1903,55 +1908,68 @@ def create_app(
             raise
         return plan.inputs
 
-    def prewarm_chip_hardware(state_revision: int) -> None:
+    def prewarm_chip_hardware(midi_revision: int) -> None:
         """変換直後の実機音源キャッシュをバックグラウンドで温める。
 
-        長いエミュレーションはrender_lockの外で実行し、完成したWAVだけを短時間の
-        ロックでLRUへ登録する。通常レンダーと同時になった場合は、先に登録された
-        ものを優先して温め側の一時WAVを捨てるため、同じキャッシュキーを壊さない。
+        まず既定選択の全チャンネルWAVを温める。これが全尺レンダーのクリティカル
+        パスなので、個別チャンネルの温め完了を待たず即座にLRUへ登録する。その後に
+        個別チャンネルWAVを完成順に登録し、短区間プレビューで使えるようにする。
+
+        長いエミュレーションはrender_lockの外で実行する。通常レンダーと同時に
+        なった場合は、先に登録されたものを優先して温め側の一時WAVを捨てるため、
+        同じキャッシュキーを壊さない。
         """
-        with web_session.render_lock:
-            if state_revision != web_session.state_revision or web_session.root is None:
-                return
-            plans = [_plan_chip_hardware(), _plan_chip_hardware(per_track=True)]
-            unique_misses: dict[str, ChipCacheMiss] = {}
-            for plan in plans:
-                for miss in plan.misses:
-                    unique_misses.setdefault(
+        def prepare_plan(*, per_track: bool) -> list[ChipCacheMiss] | None:
+            with web_session.render_lock:
+                if midi_revision != web_session.midi_revision or web_session.root is None:
+                    return None
+                plan = _plan_chip_hardware(per_track=per_track)
+                return [
+                    ChipCacheMiss(
                         miss.cache_key,
-                        ChipCacheMiss(
-                            miss.cache_key,
-                            miss.indices,
-                            _cache_output_path("chip-warm", miss.cache_key),
-                        ),
+                        miss.indices,
+                        _cache_output_path("chip-warm", miss.cache_key),
                     )
-
-        if not unique_misses:
-            return
-        misses = list(unique_misses.values())
-        try:
-            with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
-                futures = [
-                    executor.submit(_render_chip_targets, miss.indices, miss.path)
-                    for miss in misses
+                    for miss in plan.misses
                 ]
-                for future in futures:
-                    future.result()
-        except Exception:
-            for miss in misses:
-                miss.path.unlink(missing_ok=True)
+
+        def render_and_store(misses: list[ChipCacheMiss]) -> bool:
+            """温めたWAVを完了順に登録し、状態更新時は安全に破棄する。"""
+            if not misses:
+                return True
+            stored_paths: set[Path] = set()
+            try:
+                with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                    futures = {
+                        executor.submit(_render_chip_targets, miss.indices, miss.path): miss
+                        for miss in misses
+                    }
+                    for future in as_completed(futures):
+                        miss = futures[future]
+                        future.result()
+                        with web_session.render_lock:
+                            if midi_revision != web_session.midi_revision:
+                                miss.path.unlink(missing_ok=True)
+                                continue
+                            if _cache_lookup(miss.cache_key) is None:
+                                _cache_store(miss.cache_key, miss.path)
+                                stored_paths.add(miss.path)
+                            else:
+                                miss.path.unlink(missing_ok=True)
+                return midi_revision == web_session.midi_revision
+            except Exception:
+                for miss in misses:
+                    if miss.path not in stored_paths:
+                        miss.path.unlink(missing_ok=True)
+                return False
+
+        default_misses = prepare_plan(per_track=False)
+        if default_misses is None or not render_and_store(default_misses):
             return
 
-        with web_session.render_lock:
-            if state_revision != web_session.state_revision:
-                for miss in misses:
-                    miss.path.unlink(missing_ok=True)
-                return
-            for miss in misses:
-                if _cache_lookup(miss.cache_key) is None:
-                    _cache_store(miss.cache_key, miss.path)
-                else:
-                    miss.path.unlink(missing_ok=True)
+        individual_misses = prepare_plan(per_track=True)
+        if individual_misses is not None:
+            render_and_store(individual_misses[:CHIP_PREWARM_MAX_CHANNELS])
 
     def start_chip_prewarm() -> None:
         """現状態の実機音源キャッシュ温めを開始する。"""
@@ -1960,10 +1978,13 @@ def create_app(
             or web_session.source_format not in CHIP_HARDWARE_SOURCE_FORMATS
         ):
             return
-        state_revision = web_session.state_revision
+        # 生チップWAVのキーは元MIDI／変換元だけで決まり、音量・音色・音源選択は
+        # 含まれない。これらの編集でstate_revisionが変わっても温めを中止せず、
+        # ソロ直後の短区間プレビューで再利用できるようにする。
+        midi_revision = web_session.midi_revision
         threading.Thread(
             target=prewarm_chip_hardware,
-            args=(state_revision,),
+            args=(midi_revision,),
             name="miditrack-chip-prewarm",
             daemon=True,
         ).start()
@@ -2205,9 +2226,10 @@ def create_app(
     ) -> tuple[list[tuple[Path, float]], list[Path]]:
         """短区間プレビュー用に原曲ステムを切り出し、ミックス入力を返す。
 
-        実機エミュレーションの選択チャンネルは変換直後に温めたチャンネル単位WAVを
-        使う。温めがまだ終わっていなければ、重い全曲エミュレーションを同期で始めず
-        全尺レンダーへフォールバックさせる。
+        既定音量の選択集合は変換直後に温めた集合WAVをそのまま切り出す。音量を
+        変更した少数チャンネルは個別WAVを差分として重ね、ソロ／ミュートでは無音の
+        チャンネルを要求しない。必要な生WAVがまだ無ければ、重い全曲エミュレー
+        ションを同期で始めず全尺レンダーへフォールバックさせる。
         """
         assert web_session.root is not None
         source_start = window.start_seconds * web_session.speed_ratio
@@ -2240,14 +2262,42 @@ def create_app(
             selected_indices = sorted(
                 index for index, source in web_session.track_sources.items() if source == "game"
             )
+            baseline_for = lambda index: (
+                tracks_by_index[index].source_volume_percent
+                or midi.DEFAULT_TRACK_VOLUME_PERCENT
+            )
+            volume_for = lambda index: web_session.volumes.get(index, baseline_for(index))
+            default_group_path = _cache_lookup(_chip_cache_key(selected_indices))
+            has_muted_channel = any(volume_for(index) == 0 for index in selected_indices)
+            if default_group_path is not None and not has_muted_channel:
+                add_trimmed_stem(default_group_path, "chip-default", mix.STEM_GAIN)
+                for index in selected_indices:
+                    baseline = baseline_for(index)
+                    volume = volume_for(index)
+                    if volume == baseline:
+                        continue
+                    raw_path = _cache_lookup(_chip_cache_key([index]))
+                    if raw_path is None:
+                        for path in temporary_paths:
+                            path.unlink(missing_ok=True)
+                        raise WebValidationError("原曲音源の短区間プレビューを温めています")
+                    # 集合WAVには基準音量のこのチャンネルが既に含まれるため、差分だけ
+                    # を加える。ミュートを含む場合は集合WAVを使わず、下の個別経路で
+                    # 可聴チャンネルだけを使う。
+                    delta_gain = mix.STEM_GAIN * (volume / baseline - 1)
+                    add_trimmed_stem(raw_path, f"chip{index}-delta", delta_gain)
+                return inputs, temporary_paths
+
             for index in selected_indices:
+                baseline = baseline_for(index)
+                volume = volume_for(index)
+                if volume == 0:
+                    continue
                 raw_path = _cache_lookup(_chip_cache_key([index]))
                 if raw_path is None:
                     for path in temporary_paths:
                         path.unlink(missing_ok=True)
                     raise WebValidationError("原曲音源の短区間プレビューを温めています")
-                baseline = tracks_by_index[index].source_volume_percent or midi.DEFAULT_TRACK_VOLUME_PERCENT
-                volume = web_session.volumes.get(index, baseline)
                 add_trimmed_stem(
                     raw_path,
                     f"chip{index}",

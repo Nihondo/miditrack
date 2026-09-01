@@ -663,15 +663,23 @@ always on the post-speed output timeline.
 Preview WAVs live in `WebSession.preview_cache`, not the full-render LRU.
 Preview activation adds only an `audio_sources[render_id]` entry: it must never
 write `audio_path`, `current_render_key`, or `current_render_mode`. After a
-VGM/NSF conversion, `start_chip_prewarm()` renders the default selection and
-each selected channel in a daemon thread, then registers completed WAVs in the
-LRU under `render_lock`. Its long emulation work stays outside that lock and
-uses a separate `chip-warm-*` path, so a foreground render can win the same
-cache key without corrupting its output. VGM/NSF previews trim those warmed
-per-channel WAVs; noise/DAC stems are trimmed with `mix.trim_wav()`. A missing
-channel cache returns `available:false, reason:"chip-warmup"` and lets the
-browser take the exact full-render path rather than starting another expensive
-emulation synchronously.
+VGM/NSF conversion, `start_chip_prewarm()` renders the default selection first,
+registers it immediately, then renders at most four priority selected channels
+in a daemon thread and registers each completed WAV in the LRU under
+`render_lock`. Warming every channel in a large VGM would exceed the shared
+16-entry/256MB LRU and evict the useful first results. Its long
+emulation work stays outside that lock and uses a separate `chip-warm-*` path,
+so a foreground render can win the same cache key without corrupting its output.
+The cancellation generation is `midi_revision`, not `state_revision`: raw chip
+WAVs are independent of volumes, programs, and source selections, so an edit
+such as solo must not discard useful in-flight channel warmups. VGM/NSF previews
+trim the warmed default-group WAV when all selected game tracks use their
+baseline volumes. Non-muted volume edits add a warmed individual channel only
+as a gain delta; a solo or mute instead uses only the audible individual
+channels, never requesting a 0% channel. Noise/DAC stems are trimmed with
+`mix.trim_wav()`. A missing needed channel cache returns
+`available:false, reason:"chip-warmup"` and lets the browser take the exact
+full-render path rather than starting another expensive emulation synchronously.
 
 A cut window can legitimately contain no note events for a track that is
 editable in the complete song. `validate_volumes()` remains the authoritative
