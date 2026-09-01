@@ -4,6 +4,8 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
 
 `miditrack` runs only on your Mac. Your source files, MIDI, and rendered audio stay local.
 
+![miditrack](images/miditrack_lead.png)
+
 ## Quick Start
 
 1. On an Apple Silicon Mac, clone or download this repository and enter its directory.

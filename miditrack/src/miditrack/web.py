@@ -1115,6 +1115,10 @@ def create_app(
     def index() -> Response:
         return send_file(ASSET_DIR / "index.html")
 
+    @app.get("/favicon.ico")
+    def favicon() -> Response:
+        return send_file(ASSET_DIR / "favicon.ico")
+
     @app.get("/api/instruments")
     def get_instruments() -> Response:
         return jsonify(families=instrument_catalog())
