@@ -97,11 +97,11 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Track list** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
 
-**SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically.
+**SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically. **Cmd-click** (Ctrl-click on Windows/Linux) applies the same choice to every other track that offers the same option.
 
-**Instrument selector** — Choose any GM instrument. The star icon saves it as a favourite for quick access.
+**Instrument selector** — Choose any GM instrument. The star icon saves it as a favourite for quick access. **Cmd-click** (Ctrl-click) applies that selector's current value to every other editable track (a track left on "Keep unchanged" is unaffected).
 
-**Mute / Solo** — Both affect the rendered preview.
+**Mute / Solo** — Both affect the rendered preview. **Cmd-click** (Ctrl-click) the mute button to bring every other track to the same mute state (muted or unmuted) at once. Unmuting restores each track's own previously remembered volume rather than a single shared value.
 
 **Ensemble presets** — Save the current combination of instruments and source settings as a named preset. While a preset is active the instrument column switches to a role selector. Presets are stored locally in the browser.
 
