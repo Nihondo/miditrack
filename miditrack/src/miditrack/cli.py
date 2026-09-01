@@ -1,8 +1,8 @@
 """miditrack CLIエントリポイント。
 
-`miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]` でローカルWeb UIを
-起動する。このツール自体がWeb UIであり、pixelart.pyの `--web` のような
-「他のモードと排他的なフラグ」は存在しない。
+`miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token]
+[--no-browser]` でローカルWeb UIを起動する。このツール自体がWeb UIであり、
+pixelart.pyの `--web` のような「他のモードと排他的なフラグ」は存在しない。
 """
 
 from __future__ import annotations
@@ -42,6 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Web UIを起動する固定ポート番号（省略時は空きポートを自動選択）",
     )
     parser.add_argument(
+        "--no-token",
+        action="store_true",
+        help=(
+            "起動トークン認証を無効化する（--portと併用してブックマークから毎回"
+            "開けるようにするためのオプション。このMac上の他プロセスからも"
+            "127.0.0.1経由でアクセス可能になるため、信頼できる環境でのみ使うこと）"
+        ),
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="起動時にブラウザを自動で開かない",
@@ -78,6 +87,7 @@ def main(argv: list[str] | None = None) -> None:
         soundfont=args.soundfont,
         open_browser=not args.no_browser,
         port=args.port,
+        require_token=not args.no_token,
     )
 
 

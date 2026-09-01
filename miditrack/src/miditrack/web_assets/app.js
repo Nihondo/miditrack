@@ -21,6 +21,10 @@ const token = queryToken || window.sessionStorage.getItem("miditrackToken") || "
 if (queryToken) {
   history.replaceState(null, "", window.location.pathname);
 }
+// --no-token起動時はindex.html側でこのmetaがfalseに置換される
+// （web.pyのindex()参照）。トークン必須のときだけ未取得を早期エラーにする。
+const isTokenRequired =
+  document.querySelector('meta[name="miditrack-token-required"]')?.content !== "false";
 
 const KEEP_ORIGINAL = "__keep__";
 const DEFAULT_GM_PROGRAM = "80";
@@ -4105,7 +4109,7 @@ function setupDropZone() {
 }
 
 async function init() {
-  if (!token) {
+  if (isTokenRequired && !token) {
     showStatus("起動トークンがありません。ターミナルに表示されたURLから開いてください。", "error");
     return;
   }

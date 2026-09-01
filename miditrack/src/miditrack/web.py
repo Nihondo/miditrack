@@ -674,8 +674,15 @@ def create_app(
     gain_applier: GainApplierFunc | None = None,
     libvgm_renderer: LibvgmRendererFunc | None = None,
     nsf_chip_renderer: NsfChipRendererFunc | None = None,
+    require_token: bool = True,
 ) -> Flask:
-    """テスト可能なmiditrackローカルWebアプリを生成する。"""
+    """テスト可能なmiditrackローカルWebアプリを生成する。
+
+    require_token=Falseは`--no-token`起動用で、/api/以下の起動トークン検証
+    そのものを無効化する（127.0.0.1限定バインドとOrigin検証のみに頼る）。
+    固定ポート起動時にブックマークからトークン無しで開けるようにするための、
+    ユーザーが明示的に選ぶセキュリティ低下トレードオフ。
+    """
     launch_token = token or secrets.token_urlsafe(32)
     web_session = session or WebSession()
     list_source_songs: ListSongsFunc = list_songs or convert.list_songs
@@ -726,6 +733,7 @@ def create_app(
         MAX_CONTENT_LENGTH=MAX_UPLOAD_BYTES,
         MIDITRACK_TOKEN=launch_token,
         MIDITRACK_SESSION=web_session,
+        MIDITRACK_REQUIRE_TOKEN=require_token,
     )
 
     @app.before_request
@@ -737,7 +745,7 @@ def create_app(
             origin_host = urlparse(request.origin).hostname
             if origin_host not in {"127.0.0.1", "localhost", "::1"}:
                 return jsonify(error="外部Originからの操作は拒否されました"), 403
-        if request.path.startswith("/api/"):
+        if request.path.startswith("/api/") and require_token:
             # <audio>要素はカスタムヘッダーを送れないため、GETの /api/audio に
             # 限りクエリ文字列トークンも許可する（Rangeシーク対応をfetch+blob
             # 変換なしで維持するため）。/api/download は通常のfetchで届くので
@@ -1113,7 +1121,14 @@ def create_app(
 
     @app.get("/")
     def index() -> Response:
-        return send_file(ASSET_DIR / "index.html")
+        # フロントエンド（app.js）が起動トークン必須かどうかを最初の描画時点
+        # で知るための静的置換。--no-token起動時はブックマークからトークン
+        # 無しで開けるようにするため、この1箇所だけindex.htmlを動的に返す。
+        html = (ASSET_DIR / "index.html").read_text(encoding="utf-8")
+        html = html.replace(
+            "__MIDITRACK_TOKEN_REQUIRED__", "true" if require_token else "false"
+        )
+        return Response(html, mimetype="text/html")
 
     @app.get("/favicon.ico")
     def favicon() -> Response:
@@ -2637,16 +2652,23 @@ def run_server(
     soundfont: Path | None = None,
     open_browser: bool = True,
     port: int = 0,
+    require_token: bool = True,
 ) -> None:
     """127.0.0.1でWeb UIを起動し、終了時に一時データを消す。
 
     portが0（既定）の場合はOSが空きポートを自動選択する。0以外を渡すと
-    そのポートに固定してバインドする。
+    そのポートに固定してバインドする。require_token=Falseは`--no-token`
+    起動用で、起動トークン検証そのものを無効化する
+    （固定ポートと組み合わせると、URL全体をブックマークして毎回開けるように
+    なるトレードオフ。127.0.0.1限定バインドとOrigin検証はrequire_tokenに
+    関わらず常に有効）。
     """
     token = secrets.token_urlsafe(32)
     session = WebSession()
     session.soundfont_override = resolve_startup_soundfont_override(soundfont)
-    app = create_app(token=token, session=session, soundfont=soundfont)
+    app = create_app(
+        token=token, session=session, soundfont=soundfont, require_token=require_token
+    )
 
     if midi_path is not None:
         temp_root = Path(tempfile.mkdtemp(prefix="miditrack-"))
@@ -2667,7 +2689,15 @@ def run_server(
 
     server = make_server("127.0.0.1", port, app, threaded=True)
     port = server.server_port
-    url = f"http://127.0.0.1:{port}/?token={token}"
+    if require_token:
+        url = f"http://127.0.0.1:{port}/?token={token}"
+    else:
+        url = f"http://127.0.0.1:{port}/"
+        print(
+            "警告: --no-token指定により起動トークン認証を無効化しています。"
+            "このMacの他のユーザー・プロセスからも127.0.0.1経由でアクセスできる"
+            "状態です。"
+        )
     print(f"miditrack Web UI: {url}")
     print("終了するにはこのターミナルで Ctrl-C を押してください。")
     sys.stdout.flush()

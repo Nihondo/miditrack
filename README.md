@@ -175,7 +175,7 @@ Open the display settings panel from any screen. Changes take effect immediately
 ### Command-line options
 
 ```text
-miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-browser]
+miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browser]
 ```
 
 | Option | Description |
@@ -183,8 +183,23 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-browser]
 | `MIDI_FILE` | Optional `.mid`/`.midi` file to preload. Upload source files in the browser. |
 | `-s, --soundfont FILE` | Default SoundFont at startup. The browser can replace it at any time. |
 | `-p, --port PORT` | Fixed port for the Web UI. Omit it (or pass `0`) to pick a free port automatically on every launch. |
+| `--no-token` | Disable launch-token authentication. By default a fresh token is issued on every launch and the browser strips it from the URL, so a bookmarked link stops working the next time you start `miditrack`. Combined with a fixed `--port`, this lets you bookmark the plain URL and reopen it every time — but it also means any other process on this Mac can reach the Web UI over `127.0.0.1`, so only use it in a trusted environment. |
 | `--no-browser` | Do not open a browser tab automatically. |
 | `--version` | Show the version and exit. |
+
+### Saving miditrack as a browser "app"
+
+miditrack can be saved as a PWA (Chrome's "Install app," Safari's "Add to Dock," and similar). A saved app icon always opens `http://127.0.0.1:<port>/` with no token, so combine these three options for that workflow:
+
+- **`--port`** — pins the port so the app icon opens the same URL every time.
+- **`--no-token`** — a saved app icon has no way to carry a token in its URL, so this disables token authentication entirely (only use this in a trusted environment).
+- **`--no-browser`** — skips the automatic browser tab, since opening from the app icon makes it redundant.
+
+```bash
+miditrack --port 51888 --no-token --no-browser
+```
+
+Start the server with this command, then open it from the saved app icon.
 
 ## Using the Command-line Tools
 

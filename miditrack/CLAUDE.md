@@ -3566,3 +3566,131 @@ duplicate members, malformed manifests, and archive/member size-limit
 violations. Never auto-convert when loading; the stored canonical MIDI is the
 authoritative base. A missing external SoundFont path must be a non-fatal
 warning and fall back to the ordinary SoundFont resolution path.
+
+## Added: `--port` (fixed port) and `--no-token` (bookmarkable URL)
+
+`run_server()` originally always bound `make_server("127.0.0.1", 0, app, ...)`
+— port `0` lets the OS pick a free port on every launch (see "Added: favorite
+instrument shortlist..." above for why that already forced favorites/
+SoundFont selection to be server-persisted rather than `localStorage`).
+`--port PORT` (`cli.py`, threaded through `run_server(port=...)` into
+`make_server()`) lets a user pin that port across launches instead — useful
+for anyone who wants one stable local URL, e.g. to script against it or embed
+it in another tool. `0` remains the default and still means "auto-select."
+Binding failures (a port already in use, or a privileged port without
+permission) are not caught here: Werkzeug's own `BaseWSGIServer.__init__`
+already catches `OSError` from `server_bind()`/`server_activate()`, prints a
+friendly message (including the "Port N is in use by another program..."
+text for `EADDRINUSE`) to stderr, and calls `sys.exit(1)` itself — adding a
+second `except OSError` in `cli.py` would be dead code, confirmed by
+triggering a real `EADDRINUSE` against a second instance on the same fixed
+port during implementation.
+
+**Why fixing the port alone did not make a bookmark work — the actual
+follow-up bug this section exists to document**: `create_app()` protects
+every `/api/*` route behind a per-launch `launch_token`
+(`secrets.token_urlsafe(32)`, regenerated on every `run_server()` call
+regardless of port), checked via `secrets.compare_digest()` against
+`X-Miditrack-Token` (or a `?token=` query param, `/api/audio` only, for the
+`<audio>` element which cannot set headers). `app.js` reads that token from
+the initial `?token=...` query string, stores it in `sessionStorage`, and
+then calls `history.replaceState(null, "", window.location.pathname)` to
+strip it back out of the visible URL — deliberately, so the token never sits
+in browser history, a screenshot, or a shared window title. The practical
+consequence: whatever URL a user bookmarks via the browser's own star/★
+button is *already* token-less by the time they bookmark it, so reopening
+that bookmark always hits `init()`'s "起動トークンがありません" guard —
+independent of whether the port is fixed, since the token itself is still
+freshly random on every launch either way. A user who instead bookmarks the
+literal URL printed to the terminal (before the browser strips it) would
+still lose that bookmark on the next launch, because the token changes even
+when `--port` doesn't.
+
+**Why the fix is an opt-in `--no-token` flag, not a persisted-per-port
+token**: `preferences.py` already has a working "survive across launches"
+mechanism (see "Added: favorite instrument shortlist..." above) and could in
+principle persist a token per port the same way it persists
+`selectedSoundfont` — this was considered and rejected as strictly worse
+than the flag actually shipped: a persisted token sitting in
+`~/Library/Application Support/miditrack/preferences.json` in plaintext is
+functionally a fixed shared secret anyway (anyone who can read that file can
+reconstruct a valid bookmark), so it buys no real security over just
+disabling the check outright, while adding a second file-based secret to
+reason about and keep in sync with the in-memory `launch_token`. The user
+explicitly chose the "disable token auth" trade-off (offered alongside "keep
+copying the terminal URL each launch" and "persist a token per port") when
+this feature was scoped, given `miditrack` never leaves `127.0.0.1` and this
+whole class of protection exists as defense-in-depth on top of the network
+boundary anyway (see `POST /api/soundfont`'s own design note on this
+project's "uploading a file is equivalent to running a local CLI command as
+yourself" trust posture) — not for a residential Mac shared with untrusted
+local users.
+
+`create_app(..., require_token: bool = True)` is the single new switch:
+`validate_local_request()`'s `/api/*` branch is gated by `and require_token`,
+so with `--no-token` every route becomes reachable by any local process that
+can reach `127.0.0.1:<port>` — the `127.0.0.1`-only host check and the
+same-origin `Origin` check in that same function are **not** conditional on
+`require_token` and remain fully in effect either way; only the
+token-comparison step is skipped. `run_server(require_token=...)` threads
+the CLI flag through to `create_app()`, and prints an explicit warning to
+the terminal on every `--no-token` launch (`"警告: --no-token指定により..."`)
+so the trade-off is visible every time, not just in `--help`.
+
+**Why the frontend needs to learn `require_token` from the server, not just
+default to "assume no token needed"**: `app.js`'s existing `init()` guard
+(`if (!token) { showStatus(...); return; }`) exists specifically to fail
+fast with one clear message instead of letting every subsequent `apiFetch()`
+call (`loadPreferences()`, `loadSoundfonts()`, `GET /api/session`) each
+independently 403 with their own toast, overwriting each other. Simply
+deleting that guard would restore exactly that noisy multi-toast failure
+mode for the still-default `require_token=True` case. Since `index.html` is
+served as a static asset with no existing templating (`send_file()`,
+predating this feature) and the CSP's `script-src 'self'` already rules out
+an inline `<script>` deciding this (see "Added: 表示設定 dialog" above, same
+constraint that moved the initial dark-mode detection into `app.js` itself),
+the server instead does one targeted string replacement:
+`index()` now reads `index.html` as text and substitutes the literal
+placeholder `__MIDITRACK_TOKEN_REQUIRED__` (sitting in a
+`<meta name="miditrack-token-required" content="...">` tag already in the
+file) with `"true"`/`"false"` before returning it via `Response(...,
+mimetype="text/html")` — a plain `<meta>` tag needs no script/style
+privileges, so this costs nothing under the existing CSP. `app.js` reads
+that tag once at module load (`isTokenRequired`, alongside the pre-existing
+`token`/`queryToken` constants) and the `init()` guard becomes
+`if (isTokenRequired && !token)`, leaving the default `require_token=True`
+path completely unchanged while letting a `--no-token` launch skip the
+early-return entirely — `apiFetch()` itself needed no change, since it
+already just sends whatever `token` string it has (possibly `""`) and the
+server no longer checks it in that mode.
+
+Verified against a live, non-mocked `create_app()`/`run_server()` (through
+`.venv/bin/miditrack`): `--port 58123` alone binds that exact port and
+`/`'s response reflects `content="true"`; a plain `GET /api/session` with no
+token header against that instance returns `403`, unchanged from before this
+feature; `--port ... --no-token` prints the warning line, serves `/` with
+`content="false"`, and the same token-less `GET /api/session` returns `200`;
+`--port 99999` (out of the 0–65535 range) is rejected by `cli.py` before any
+server starts; and starting a second instance on an already-bound
+`--port` reproduces Werkzeug's own `EADDRINUSE` message and `exit=1`,
+confirming `cli.py` needs no duplicate `except OSError` handling.
+
+**Why this feature is also the answer to "save miditrack as a browser app"**:
+`web_assets/manifest.json`'s `start_url` is the static string `"/"` — a PWA
+manifest has no mechanism to interpolate a per-launch value into it, so an
+installed app icon (Chrome's "Install app," Safari's "Add to Dock") always
+reopens the bare `/` with no `?token=` query string, regardless of which URL
+was open in the tab at install time. Before `--no-token` existed, that made
+a saved app icon permanently unusable — `init()`'s token guard would fire on
+every single launch from that icon, with no query string to ever satisfy it.
+`--port` and `--no-token` together are the fix: a fixed port makes `/`'s
+full origin predictable up front, and `--no-token` is what actually lets
+that bare, tokenless `/` succeed. `--no-browser` is a third, independent
+convenience for the same workflow — without it, every server launch also
+pops open an ordinary browser tab in addition to whatever the user opens
+from the app icon, which is redundant once the icon itself is the intended
+entry point. `README.md`/`README_ja.md`'s "Saving miditrack as a browser
+'app'" section documents the three flags together for this reason; none of
+the three is new code beyond what's already described above — this is a
+usage pattern this project's own PWA `manifest.json` (predating this
+feature) already implied it would eventually need.
