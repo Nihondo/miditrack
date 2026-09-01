@@ -2,7 +2,7 @@
 
 Turn chiptune music — NES (`.nsf`), SNES (`.spc`/`.rsn`), or VGM (`.vgm`/`.vgz`) — into a MIDI file you can re-instrument, remix, and export, entirely from your browser. No terminal required for everyday use.
 
-`miditrack` is a local web app that converts a chiptune source file to MIDI, lets you reassign a General MIDI instrument and volume to every track, and plays back the result immediately — including an option to keep the original chip/game sound instead of a generic synth. Under the hood it's backed by three bundled command-line converters (`nsf2midi`, `spc2midi`, `vgm2midi`) and two shared scripts (`midi2wav.sh`, `pitch_shift.sh`), which are also usable on their own from the terminal if you prefer scripting to a browser.
+`miditrack` is a local web app that converts a chiptune source file to MIDI, lets you reassign a General MIDI instrument and volume to every track, and plays back the result immediately — including an option to keep the original chip/game sound instead of a generic synth. Under the hood it's backed by three bundled command-line converters (`nsf2midi`, `spc2midi`, `vgm2midi`) and `midi2wav.sh`. The separate `pitch_shift.sh` remains available as a standalone terminal utility.
 
 ## Quick Start
 
@@ -51,9 +51,9 @@ Everything runs locally on your machine; no file is ever uploaded anywhere else.
 | **spc2midi** | Converts SNES `.spc`/`.spc2`/`.rsn` files to MIDI (plus a matching SoundFont) | Bundled inside miditrack, or the terminal directly |
 | **vgm2midi** | Converts VGM/VGZ command-log files (Genesis, arcade, PC-88, and more) to MIDI | Bundled inside miditrack, or the terminal directly |
 | **midi2wav.sh** | Renders any `.mid` file to a listenable `.wav` using fluidsynth | Called automatically by all four tools above, or run directly |
-| **pitch_shift.sh** | Generates speed/pitch variations of an audio file as WAVs | Called by miditrack to keep a `chipNoise` stem in sync with a MIDI-layer speed/pitch transform, or run directly |
+| **pitch_shift.sh** | Generates speed/pitch variations of an audio file as WAVs | Standalone terminal utility; miditrack invokes `rubberband` directly for real-audio stem sync |
 
-Most people only ever need `miditrack` — the three converters and two scripts exist as its building blocks, but each also works standalone if you'd rather script a conversion pipeline than click through a browser.
+Most people only ever need `miditrack`. The three converters and `midi2wav.sh` are its building blocks, while `pitch_shift.sh` is also available when you prefer a standalone audio-variation utility.
 
 ## Requirements
 
@@ -68,7 +68,7 @@ Most people only ever need `miditrack` — the three converters and two scripts 
   - `/opt/homebrew/share/fluid-synth/sf2`
 - The three converters (`nsf2midi`, `spc2midi`, `vgm2midi`) ship prebuilt inside this repository — no separate build step needed for ordinary use.
 - To hear a VGM track's original game sound: build the bundled native helper once with `cd vgm2midi && ./scripts/build-native.sh`. NSF's original game sound needs no separate build step.
-- For real chip-noise mixing, exporting speed/pitch variation ZIPs, or syncing a chip-noise stem to a non-default speed/pitch: [ffmpeg](https://ffmpeg.org/) and [rubberband-cli](https://breakfastquay.com/rubberband/) — `brew install ffmpeg rubberband`.
+- For real chip-noise mixing or per-track export: [ffmpeg](https://ffmpeg.org/). To sync a real-audio stem to a non-default speed/pitch, miditrack directly invokes [rubberband-cli](https://breakfastquay.com/rubberband/) — `brew install ffmpeg rubberband`. `pitch_shift.sh` is not used by miditrack.
 
 ## Using miditrack
 
@@ -172,7 +172,7 @@ Accepts a local audio file or a URL (including YouTube, via `yt-dlp`).
 - **"対応する音源ファイルが見つかりません" (no convertible source file found)** — none of the uploaded files matched a supported extension.
 - **"有効なZIPファイルではありません" (not a valid ZIP file)** — the uploaded `.zip` is corrupted or not actually a ZIP.
 - **"miditrack requires Flask"** — recreate the `.venv` following the [Quick Start](#quick-start) steps above.
-- **"pitch_shift.sh が見つかりません" (pitch_shift.sh not found)** — confirm `ffmpeg` and `rubberband-cli` are installed (`brew install ffmpeg rubberband`).
+- **"rubberband が見つかりません" (rubberband not found)** — install `rubberband-cli` (`brew install rubberband`) before using a non-default speed/pitch with a real-audio stem in miditrack.
 - **"速度×ピッチの組み合わせ数が多すぎます" (too many speed×pitch combinations)** — reduce how many speeds/pitches you specify in the ZIP-export feature (the cap is 40 combinations).
 
 ## Acknowledgments
@@ -184,7 +184,7 @@ This toolkit stands on several excellent open-source projects:
 - **[VGMTrans](https://github.com/vgmtrans/vgmtrans)** — `spc2midi` is built directly on top of VGMTrans's per-driver SNES sequence parsers, rather than reimplementing note detection from scratch.
 - **[jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi)** — `vgm2midi` began as a fork of this project, extended here with several additional sound chips and fixes.
 - **[FluidSynth](https://www.fluidsynth.org/)** — the SoundFont synthesizer `midi2wav.sh` renders every WAV preview and download through.
-- **[Rubber Band Library](https://breakfastquay.com/rubberband/)** (via `rubberband-cli`) — the time-stretching/pitch-shifting engine `pitch_shift.sh` uses to generate speed/pitch variations.
+- **[Rubber Band Library](https://breakfastquay.com/rubberband/)** (via `rubberband-cli`) — the time-stretching/pitch-shifting engine used directly by miditrack to synchronize real-audio stems and by the standalone `pitch_shift.sh` utility.
 - **[DSEG](https://github.com/keshikan/DSEG)** by keshikan — the locally bundled DSEG7 Classic web font used by the playback timer, distributed under the SIL Open Font License 1.1.
 
 See each subproject's own `README.md`/`NOTICE.md` for full attribution and license details.

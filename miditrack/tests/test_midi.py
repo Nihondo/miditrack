@@ -697,7 +697,7 @@ class TestValidateVariationOptions(unittest.TestCase):
             midi.validate_variation_options([0.0], None)
 
     def test_non_integer_transpose_is_rejected(self) -> None:
-        # 旧pitch_shift.sh方式のpitchesはfloatを許していたが、MIDIレイヤーは
+        # 旧WAV後処理方式のpitchesはfloatを許していたが、MIDIレイヤーは
         # 半音（整数）しか表現できないため、ここでは明示的に拒否する。
         with self.assertRaises(WebValidationError):
             midi.validate_variation_options(None, [1.5])

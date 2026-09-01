@@ -19,8 +19,8 @@ class ConvertError(MidiTrackError):
     """nsf2midi/spc2midi/vgm2midi を使った音源→MIDI変換に失敗したときに送出する（Flask側で502に変換）。"""
 
 
-class PitchShiftError(MidiTrackError):
-    """pitch_shift.sh を使った速度・ピッチバリエーション生成に失敗したときに送出する（Flask側で502に変換）。"""
+class RubberBandError(MidiTrackError):
+    """rubberbandによる実音声ステムの同期に失敗したときに送出する（Flask側で502に変換）。"""
 
 
 class MixError(MidiTrackError):

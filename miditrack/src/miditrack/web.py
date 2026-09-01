@@ -35,14 +35,14 @@ try:
 except ImportError as import_error:  # pragma: no cover - exercised via cli.py's own guard
     raise ImportError("miditrack requires Flask") from import_error
 
-from . import convert, libvgm, midi, mix, nsf_chip, pianoroll, pitch_shift, preferences, project, render
+from . import convert, libvgm, midi, mix, nsf_chip, pianoroll, preferences, project, render, rubberband
 from .convert import SourceFormat
 from .errors import (
     ConvertError,
     MidiTrackError,
     MixError,
-    PitchShiftError,
     RenderError,
+    RubberBandError,
     WebValidationError,
 )
 from .gm import DEFAULT_GM_PROGRAM, instrument_catalog
@@ -76,7 +76,7 @@ AUDIO_SOURCE_HISTORY_LIMIT = 4
 RendererFunc = Callable[[Path, Path, "Path | None"], None]
 ListSongsFunc = Callable[[SourceFormat, Path], "tuple[dict[str, Any], list[dict[str, Any]]]"]
 ConvertFunc = Callable[[SourceFormat, Path, Path, "dict[str, Any]"], "tuple[Path | None, Path | None]"]
-PitchShiftFunc = Callable[[Path, Path, "list[float]", "list[float]"], "list[Path]"]
+StemTransformerFunc = Callable[[Path, Path, float, int], None]
 MixerFunc = Callable[["list[tuple[Path, float]]", Path], None]
 GainApplierFunc = Callable[[Path, Path, float], None]
 LibvgmRendererFunc = Callable[
@@ -655,11 +655,8 @@ def _project_metadata_payload(
 def _variation_label(speed: float, transpose: int) -> str:
     """バリエーション1件分のファイル名ラベルを作る（例: "p-2_x1.2", "p+0_x1.0"）。
 
-    pitch_shift.py._format_number()は再利用しない — あちらはpitch_shift.sh
-    CLIの-s/-pへ渡す文字列を作る別の契約であり、ここは「ファイルシステム安全で
-    人間可読なラベルを作る」という別の目的のため、向きを揃えると将来の
-    ドリフトリスクになる。速度は常に小数第1位まで表示し、ピッチは正値と0にも
-    符号を付けることで、CLIの出力形式と揃える。
+    速度は常に小数第1位まで表示し、ピッチは正値と0にも符号を付けることで、
+    ファイルシステム安全かつ人間が比較しやすい名前にする。
     """
     speed_text = f"{speed:.1f}"
     return f"p{transpose:+d}_x{speed_text}"
@@ -672,7 +669,7 @@ def create_app(
     renderer: RendererFunc | None = None,
     list_songs: ListSongsFunc | None = None,
     converter: ConvertFunc | None = None,
-    pitch_shifter: PitchShiftFunc | None = None,
+    stem_transformer: StemTransformerFunc | None = None,
     mixer: MixerFunc | None = None,
     gain_applier: GainApplierFunc | None = None,
     libvgm_renderer: LibvgmRendererFunc | None = None,
@@ -683,7 +680,7 @@ def create_app(
     web_session = session or WebSession()
     list_source_songs: ListSongsFunc = list_songs or convert.list_songs
     convert_to_midi: ConvertFunc = converter or convert.convert_to_midi
-    run_pitch_shift: PitchShiftFunc = pitch_shifter or pitch_shift.run_pitch_shift
+    transform_stem: StemTransformerFunc = stem_transformer or rubberband.transform_stem
     render_libvgm: LibvgmRendererFunc = libvgm_renderer or libvgm.render_selection
     render_nsf_chip: NsfChipRendererFunc = nsf_chip_renderer or nsf_chip.render_selection
 
@@ -771,7 +768,7 @@ def create_app(
 
     @app.errorhandler(RenderError)
     @app.errorhandler(ConvertError)
-    @app.errorhandler(PitchShiftError)
+    @app.errorhandler(RubberBandError)
     @app.errorhandler(MixError)
     def handle_render_error(error: Exception) -> tuple[Response, int]:
         return jsonify(error=str(error)), 502
@@ -1614,20 +1611,18 @@ def create_app(
     def _synced_stem(
         stem_path: Path, label: str, work_dir: Path, speed: float, transpose: int
     ) -> Path:
-        """実機ステムを指定の速度・移調へpitch_shift.shで揃える。
+        """実機ステムを指定の速度・移調へrubberbandで揃える。
 
         MIDI側のテンポ・ノート番号は既にapply_assignments()で変換済みだが、
         chip_stem_path/dac_stem_pathは実音声なのでMIDI側だけ変換すると
-        再生時間・ピッチがずれる。組み合わせを常に1つ（[speed]×[transpose]）に
-        限定して呼ぶため、run_pitch_shift()の戻り値は必ず1件で、
-        pitch_shift.sh自身のファイル名生成規則を再実装する必要がない。
+        再生時間・ピッチがずれる。出力先を明示して1ステムずつ変換するため、
+        スクリプト側のファイル名規則や出力ファイル探索には依存しない。
         speed/transposeを引数で受ける理由は_apply_to()と同じ
         （バリエーション一括生成がセッションの値を書き換えずに済むようにするため）。
         """
-        stem_copy = work_dir / f"{label}.wav"
-        shutil.copyfile(stem_path, stem_copy)
-        outputs = run_pitch_shift(stem_copy, work_dir, [speed], [float(transpose)])
-        return outputs[0]
+        output_path = work_dir / f"{label}.synced.wav"
+        transform_stem(stem_path, output_path, speed, transpose)
+        return output_path
 
     def _render_chip_targets(indices: list[int], output_path: Path) -> None:
         """指定したチャンネル(トラック)集合を1本のWAVへ実機/エミュレーションで
@@ -1807,7 +1802,7 @@ def create_app(
         GM SoundFont側への分割）になった場合やステムがある場合は、各ジョブを
         一時的なrender-NNNN.partN.wavへレンダリングしてからmix_wav()で合成する。
         speed/transposeが既定値でなければ、ミックス前にステムだけを
-        pitch_shift.shで同じ量だけ変換して同期を保つ（既定値のままなら通常
+        rubberbandで同じ量だけ変換して同期を保つ（既定値のままなら通常
         ケースにrubberbandの依存を増やさないため一切呼ばない）。
 
         chip_render_stemsを渡さなければ、この関数自身が実機音声キャッシュを計画し、

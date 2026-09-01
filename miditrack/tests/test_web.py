@@ -135,7 +135,7 @@ class TestWebApp(unittest.TestCase):
         self.render_calls: list[tuple[Path, Path, Path | None]] = []
         self.list_songs_calls: list[tuple[SourceFormat, Path]] = []
         self.convert_calls: list[tuple[SourceFormat, Path, Path, dict]] = []
-        self.pitch_shift_calls: list[tuple[Path, Path, list[float], list[float]]] = []
+        self.stem_transform_calls: list[tuple[Path, Path, float, int]] = []
         self.fake_songs = [
             {"index": 0, "label": "Song A", "durationSeconds": 30.0, "detail": None},
             {"index": 1, "label": "Song B", "durationSeconds": None, "detail": None},
@@ -156,21 +156,15 @@ class TestWebApp(unittest.TestCase):
             output_path.write_bytes(build_fixture_bytes())
             return None, None
 
-        def fake_pitch_shifter(
-            wav_path: Path, work_dir: Path, speeds: list[float], pitches: list[float]
-        ) -> list[Path]:
-            self.pitch_shift_calls.append((wav_path, work_dir, speeds, pitches))
-            outputs = []
-            for s in speeds:
-                for p in pitches:
-                    out = work_dir / f"variant_x{s}_p{p}.wav"
-                    out.write_bytes(b"0" * 100)
-                    outputs.append(out)
-            return outputs
+        def fake_stem_transformer(
+            input_path: Path, output_path: Path, speed: float, transpose: int
+        ) -> None:
+            self.stem_transform_calls.append((input_path, output_path, speed, transpose))
+            output_path.write_bytes(b"0" * 100)
 
         self.fake_list_songs = fake_list_songs
         self.fake_converter = fake_converter
-        self.fake_pitch_shifter = fake_pitch_shifter
+        self.fake_stem_transformer = fake_stem_transformer
 
         self.app = create_app(
             token=TOKEN,
@@ -178,7 +172,7 @@ class TestWebApp(unittest.TestCase):
             renderer=fake_renderer,
             list_songs=fake_list_songs,
             converter=fake_converter,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
         )
         self.client = self.app.test_client()
         self.addCleanup(self._clear_session)
@@ -781,12 +775,12 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(payload["speed"], 1.0)
         self.assertEqual(payload["transpose"], 0)
 
-    def test_default_transform_never_invokes_pitch_shifter(self) -> None:
+    def test_default_transform_never_invokes_stem_transformer(self) -> None:
         # このクラスにはchip_stem_pathが存在しないため、速度・移調を既定値のまま
-        # renderしてもpitch_shifter（ステム同期）が呼ばれることはない。
+        # renderしてもstem_transformer（ステム同期）が呼ばれることはない。
         self._upload()
         self.client.post("/api/render", headers=AUTH_HEADERS)
-        self.assertEqual(self.pitch_shift_calls, [])
+        self.assertEqual(self.stem_transform_calls, [])
 
     # --- ダウンロードファイル名 ---
 
@@ -1297,11 +1291,11 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(len(payload["items"]), 15)
         self.assertEqual(payload["downloadUrl"], "/api/download/variations")
         self.assertEqual(len(self.render_calls), 15)
-        # バッチ経路はMIDIレイヤーで完結し、rubberband(pitch_shift.sh)は
+        # バッチ経路はMIDIレイヤーで完結し、rubberbandは
         # 一切呼ばれない（このfixtureにはchip_stem_pathが無いため同期も不要）。
         # これが本改修の看板となる回帰ガード: 旧実装のようにWAV後処理へは
         # 一切フォールバックしない。
-        self.assertEqual(self.pitch_shift_calls, [])
+        self.assertEqual(self.stem_transform_calls, [])
 
     def test_variations_default_includes_midi_in_zip(self) -> None:
         self._upload()
@@ -1357,7 +1351,7 @@ class TestWebApp(unittest.TestCase):
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
             data=json.dumps({"speeds": speeds, "transposes": transposes}),
         )
-        # バリデーション失敗はそもそも400が正しい（旧実装はPitchShiftError経由で502だった）。
+        # バリデーション失敗はそもそも400が正しい（旧実装は音声変換の失敗として502だった）。
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.render_calls, [])
 
@@ -2411,13 +2405,11 @@ class TestWebAppChipStem(unittest.TestCase):
         # バッチの各組み合わせは自分自身のspeed/transposeでのみステム同期を判定する
         # （セッション値でも「バッチだから常に同期」でもない）。speed=1.0/transpose=0の
         # 組み合わせでは同期が走らないことが、この判定が正しく個別に行われている証拠。
-        pitch_shift_calls: list[tuple[float, float]] = []
+        stem_transform_calls: list[tuple[float, int]] = []
 
-        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
-            pitch_shift_calls.append((speeds[0], pitches[0]))
-            out = work_dir / "synced.wav"
-            out.write_bytes(b"S" * 120)
-            return [out]
+        def fake_stem_transformer(_input_path, output_path, speed, transpose):
+            stem_transform_calls.append((speed, transpose))
+            output_path.write_bytes(b"S" * 120)
 
         app = create_app(
             token=TOKEN,
@@ -2426,7 +2418,7 @@ class TestWebAppChipStem(unittest.TestCase):
             list_songs=self.fake_list_songs,
             converter=self.fake_converter_with_stem,
             mixer=self.fake_mixer,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
         )
         client = app.test_client()
         data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
@@ -2446,16 +2438,14 @@ class TestWebAppChipStem(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         # speed=1.0/transpose=0の組み合わせは既定値なので同期しない。
         # speed=1.2/transpose=0の組み合わせだけが同期される。
-        self.assertEqual(pitch_shift_calls, [(1.2, 0.0)])
+        self.assertEqual(stem_transform_calls, [(1.2, 0)])
         app.config["MIDITRACK_SESSION"].clear()
 
     def test_variations_mix_each_combination(self) -> None:
         # 一部の組み合わせは非既定のspeed/transposeとなりステム同期が必要になるため、
-        # setUp()の既定app（pitch_shifter未注入）ではなくfakeを注入したappを使う。
-        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
-            out = work_dir / "synced.wav"
-            out.write_bytes(b"S" * 120)
-            return [out]
+        # setUp()の既定app（stem_transformer未注入）ではなくfakeを注入したappを使う。
+        def fake_stem_transformer(_input_path, output_path, _speed, _transpose):
+            output_path.write_bytes(b"S" * 120)
 
         app = create_app(
             token=TOKEN,
@@ -2464,7 +2454,7 @@ class TestWebAppChipStem(unittest.TestCase):
             list_songs=self.fake_list_songs,
             converter=self.fake_converter_with_stem,
             mixer=self.fake_mixer,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
         )
         client = app.test_client()
         data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
@@ -2486,13 +2476,11 @@ class TestWebAppChipStem(unittest.TestCase):
         app.config["MIDITRACK_SESSION"].clear()
 
     def test_transform_syncs_stem_before_mixing(self) -> None:
-        pitch_shift_calls: list[tuple[Path, Path, list[float], list[float]]] = []
+        stem_transform_calls: list[tuple[Path, Path, float, int]] = []
 
-        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
-            pitch_shift_calls.append((wav_path, work_dir, speeds, pitches))
-            out = work_dir / "synced.wav"
-            out.write_bytes(b"S" * 120)
-            return [out]
+        def fake_stem_transformer(input_path, output_path, speed, transpose):
+            stem_transform_calls.append((input_path, output_path, speed, transpose))
+            output_path.write_bytes(b"S" * 120)
 
         app = create_app(
             token=TOKEN,
@@ -2501,7 +2489,7 @@ class TestWebAppChipStem(unittest.TestCase):
             list_songs=self.fake_list_songs,
             converter=self.fake_converter_with_stem,
             mixer=self.fake_mixer,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
         )
         client = app.test_client()
         data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
@@ -2521,24 +2509,22 @@ class TestWebAppChipStem(unittest.TestCase):
         response = client.post("/api/render", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
 
-        self.assertEqual(len(pitch_shift_calls), 1)
-        _wav_path, _work_dir, speeds, pitches = pitch_shift_calls[0]
-        self.assertEqual(speeds, [1.2])
-        self.assertEqual(pitches, [-2.0])
+        self.assertEqual(len(stem_transform_calls), 1)
+        _wav_path, _output_path, speed, transpose = stem_transform_calls[0]
+        self.assertEqual(speed, 1.2)
+        self.assertEqual(transpose, -2)
 
         inputs, _out_wav = self.mix_calls[0]
         # 2つ目の入力（ステム）は生のchip_stem_pathではなく、同期後のWAVであること。
-        self.assertTrue(inputs[1][0].name.endswith("synced.wav"))
+        self.assertTrue(inputs[1][0].name.endswith(".synced.wav"))
         app.config["MIDITRACK_SESSION"].clear()
 
-    def test_default_transform_never_invokes_pitch_shifter_even_with_stem(self) -> None:
-        pitch_shift_calls: list[Path] = []
+    def test_default_transform_never_invokes_stem_transformer_even_with_stem(self) -> None:
+        stem_transform_calls: list[Path] = []
 
-        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
-            pitch_shift_calls.append(wav_path)
-            out = work_dir / "synced.wav"
-            out.write_bytes(b"S" * 120)
-            return [out]
+        def fake_stem_transformer(input_path, output_path, _speed, _transpose):
+            stem_transform_calls.append(input_path)
+            output_path.write_bytes(b"S" * 120)
 
         app = create_app(
             token=TOKEN,
@@ -2547,7 +2533,7 @@ class TestWebAppChipStem(unittest.TestCase):
             list_songs=self.fake_list_songs,
             converter=self.fake_converter_with_stem,
             mixer=self.fake_mixer,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
         )
         client = app.test_client()
         data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
@@ -2561,7 +2547,7 @@ class TestWebAppChipStem(unittest.TestCase):
         )
         response = client.post("/api/render", headers=AUTH_HEADERS)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(pitch_shift_calls, [])
+        self.assertEqual(stem_transform_calls, [])
         self.assertEqual(len(self.mix_calls), 1)
         inputs, _out_wav = self.mix_calls[0]
         self.assertTrue(inputs[1][0].name.endswith(".chip.wav"))  # 生のステムのまま
@@ -2598,15 +2584,13 @@ class TestWebAppChipStem(unittest.TestCase):
     def test_track_export_noise_stem_gets_stem_gain_and_transform_sync(self) -> None:
         # 分離不可能な実機ノイズ/DPCMステムは1本のWAVとして_noise_origサフィックス
         # で出力され、mix.STEM_GAINが焼き込まれる。transformが有効なときは
-        # ensure_render()と同じくpitch_shift.shで先に同期される。
-        pitch_shift_calls: list[tuple[Path, list[float], list[float]]] = []
+        # ensure_render()と同じくrubberbandで先に同期される。
+        stem_transform_calls: list[tuple[Path, float, int]] = []
         gain_calls: list[tuple[Path, float]] = []
 
-        def fake_pitch_shifter(wav_path, work_dir, speeds, pitches):
-            pitch_shift_calls.append((wav_path, speeds, pitches))
-            out = work_dir / "synced.wav"
-            out.write_bytes(wav_path.read_bytes())
-            return [out]
+        def fake_stem_transformer(input_path, output_path, speed, transpose):
+            stem_transform_calls.append((input_path, speed, transpose))
+            output_path.write_bytes(input_path.read_bytes())
 
         def fake_gain_applier(input_path, output_path, gain):
             gain_calls.append((input_path, gain))
@@ -2619,7 +2603,7 @@ class TestWebAppChipStem(unittest.TestCase):
             list_songs=self.fake_list_songs,
             converter=self.fake_converter_with_stem,
             mixer=self.fake_mixer,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
             gain_applier=fake_gain_applier,
         )
         client = app.test_client()
@@ -2642,10 +2626,10 @@ class TestWebAppChipStem(unittest.TestCase):
         payload = response.get_json()
         self.assertIn(("ノイズ/DPCM", "orig"), {(i["track"], i["kind"]) for i in payload["items"]})
 
-        self.assertEqual(len(pitch_shift_calls), 1)
-        _wav_path, speeds, pitches = pitch_shift_calls[0]
-        self.assertEqual(speeds, [1.2])
-        self.assertEqual(pitches, [-2.0])
+        self.assertEqual(len(stem_transform_calls), 1)
+        _wav_path, speed, transpose = stem_transform_calls[0]
+        self.assertEqual(speed, 1.2)
+        self.assertEqual(transpose, -2)
         # ステム自身にはmix.STEM_GAIN(0.55)、fluidsynthでレンダリングした各トラック
         # （Lead・Noise=ch9パーカッション、計2本）にはhas_stem=Trueによる
         # mix.DRY_GAIN(0.80)が焼き込まれる。
@@ -3174,13 +3158,10 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             self.mix_calls.append(inputs)
             output.write_bytes(b"M" * 200)
 
-        # バリエーション一括生成で既定値以外のspeed/transposeを含む組み合わせを
-        # 使うテストが、実物のpitch_shift.sh(rubberband)を起動してこのダミー
-        # WAVを読ませてしまわないよう注入する。
-        def fake_pitch_shifter(wav_path, work_dir, _speeds, _pitches):
-            out = work_dir / "synced.wav"
-            out.write_bytes(wav_path.read_bytes())
-            return [out]
+        # バリエーション一括生成で実物のrubberbandを起動せず、ダミーWAVを
+        # ステム同期できるよう注入する。
+        def fake_stem_transformer(input_path, output_path, _speed, _transpose):
+            output_path.write_bytes(input_path.read_bytes())
 
         # 「トラックごとに出力」（POST /api/tracks/export）のゲイン焼き込み
         # （mix.apply_gain）を注入で差し替える。実ffmpegを起動しないため。
@@ -3198,7 +3179,7 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             mixer=fake_mixer,
             gain_applier=fake_gain_applier,
             libvgm_renderer=fake_libvgm,
-            pitch_shifter=fake_pitch_shifter,
+            stem_transformer=fake_stem_transformer,
         )
         self.client = self.app.test_client()
         self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)

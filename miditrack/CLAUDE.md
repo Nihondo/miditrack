@@ -23,7 +23,7 @@ pyproject.toml             src-layout + console_script (mirrors note_ext/pyproje
 src/miditrack/
   cli.py                   argparse entry point, launches the web server
   errors.py                MidiTrackError / WebValidationError / RenderError / ConvertError /
-                            PitchShiftError / MixError
+                            RubberBandError / MixError
   gm.py                    the 128-name GM table + 16 families (single source of truth)
   midi.py                  track analysis, apply/save program changes and velocity-based volume
   pianoroll.py             read-only note/tempo extraction for the browser piano roll
@@ -31,9 +31,9 @@ src/miditrack/
                             per-render sample rate
   convert.py               nsf2midi/spc2midi/vgm2midi resolution, -l parsing, safe invocation,
                             ZIP extraction (zip-slip guarded), gme-format m3u playlist parsing
-  pitch_shift.py           pitch_shift.sh resolution + safe subprocess invocation, used only
-                            to keep a chipNoise stem in sync with a MIDI-layer transform
-                            (speed/pitch option validation itself lives in midi.py)
+  rubberband.py            direct rubberband CLI invocation for keeping real-audio stems in
+                            sync with a MIDI-layer transform (speed/pitch option validation
+                            itself lives in midi.py)
   mix.py                   ffmpeg resolution + safe subprocess invocation, resamples and mixes
                             SoundFont parts and NSF/VGM hardware stems at the selected rate
   libvgm.py                validates VGM track/channel sidecars and invokes the pinned native
@@ -612,43 +612,21 @@ directories up from `src/miditrack/render.py` to the repo root) → a bare
 `"midi2wav"` on `PATH` (letting `subprocess.run()`'s own PATH search
 resolve it, still without invoking a shell).
 
-## Why `pitch_shift.py` still exists — only for chip-stem sync, not for batch variations
+## Why `rubberband.py` exists — direct chip-stem sync, not batch variations
 
-`src/miditrack/pitch_shift.py` originally implemented the entire "batch
-variations" feature: generate every combination of speed × pitch as
-separate WAVs via `rubberband`, by running `pitch_shift.sh` against the
-rendered WAV. That feature has since been replaced by the MIDI-layer batch
-described below — the module now survives purely to let
-`web._synced_stem()` keep a `chipNoise` stem (real recorded audio, not
-MIDI) in sync with a non-default speed/transpose. Do not delete this
-module: `_synced_stem()` has no MIDI-layer substitute, since scaling a
-tempo meta or shifting a note number does nothing to a `.wav`.
+`src/miditrack/rubberband.py` keeps a real-audio chip/DAC stem in sync with
+a non-default MIDI speed/transpose. Batch variations remain a MIDI-layer
+feature: they apply each transform to MIDI, then render each combination.
+No miditrack path invokes `pitch_shift.sh`.
 
-`resolve_pitch_shift_bin()` uses the same resolution order every other
-`resolve_*_bin()` in this package follows (`PITCH_SHIFT_BIN` env var, fatal
-if set but not executable → the script found relative to this package's
-own resolved repo root → a bare `"pitch_shift.sh"` on `PATH`), and
-`run_pitch_shift()` calls `subprocess.run(argv, shell=False, cwd=work_dir,
-...)` with an explicit `list[str]` argv, for the same reason `render.py`
-never shells out: this repository's own path contains a space and an `&`.
-
-**Why `run_pitch_shift()` diffs `work_dir`'s `*.wav` files before/after the
-subprocess call, rather than constructing the expected output filenames
-itself**: `pitch_shift.sh` builds each output name as
-`${STEM}_p${PITCH_LABEL}_x${SPEED_LABEL}.wav`, where `PITCH_LABEL`/
-`SPEED_LABEL` are themselves `awk`-formatted (`%+g` for pitch — always
-signed, e.g. `+0`/`+1`/`-2` — and `%.1f` for speed, e.g. `1` becomes `1.0`)
-rather than the literal string passed to `-s`/`-p`. Reconstructing that
-exact string formatting in Python to predict filenames would be a second,
-drift-prone implementation of `pitch_shift.sh`'s own naming logic. Listing
-what's actually on disk after the run is both simpler and correct by
-construction. This matters
-less now than it did for the old batch feature — `_synced_stem()` always
-calls with a single-element `[speed]`/`[transpose]` list, so the diff
-always yields exactly one file — but the guard against mistaking a
-leftover `.wav` for freshly generated output is still worth keeping, since
-`work_dir` here is a fresh `render-NNNN.stemsync/` directory rather than a
-long-lived one.
+`transform_stem()` runs `rubberband` directly with an explicit argv list and
+`shell=False`, including an explicit output path. Its tempo ratio is
+`1 / speed`, matching MIDI's tempo-meta scaling direction. It writes to a
+same-directory `.partial.wav` path, verifies the result is a non-empty WAV,
+then atomically replaces the requested output; every failure path removes
+the partial file. This avoids both script-path configuration and inferring
+output names from a shell script. The repository path contains a space and
+an `&`, so do not introduce shell invocation here.
 
 ## Speed/pitch is a MIDI-layer edit — one control, one batch, sharing one render path
 
@@ -815,7 +793,7 @@ Program Change dropdown for a percussion track: GM drum note numbers pick
 *which drum*, not a pitch, so shifting them would swap kick for snare
 rather than transposing anything.
 
-**Why real chip-noise/DAC stems get pitch-shifted through `pitch_shift.sh`
+**Why real chip-noise/DAC stems get transformed through `rubberband`
 right before mixing, only when a transform is active**: `chip_stem_path`/
 `dac_stem_path` (see "Added: real chip-noise mixing" below) are rendered
 audio, not MIDI — scaling the MIDI's tempo and transposing its notes does
@@ -823,20 +801,14 @@ nothing to those WAVs, so leaving them untouched while the MIDI half speeds
 up/transposes would put the stem out of sync and out of tune with the rest
 of the mix the moment either control moves off its default.
 `_render_applied_midi()` detects a non-default speed/transpose (via the
-now-argument-taking `_has_transform()`) and, only then, copies each present
-stem into a fresh `render-NNNN.stemsync/` directory and calls the same
-injected `run_pitch_shift()` with a single-element `[speed]`/`[transpose]`
-list — reusing `pitch_shift.sh` here instead of writing a second
-time-stretch implementation. The synced copies, not the original stem
-paths, are what get passed to `mix.mix_wav()`. At default speed/transpose,
-`run_pitch_shift()` is never called at all — this keeps the ordinary
-(untransformed) render path exactly as fast and dependency-free as before
-this feature, matching the project's existing "don't add ffmpeg/rubberband
-to the common case" posture for `mix.py`/`pitch_shift.py`.
-`render-NNNN.stemsync/` is removed in the same `finally` block that already
-cleans up `.partN.wav`/split-MIDI temp files. **This is the sole remaining
-reason `pitch_shift.py` is still part of this codebase** — see the section
-above.
+now-argument-taking `_has_transform()`) and, only then, writes each present
+stem into a fresh `render-NNNN.stemsync/` directory through the injected
+`stem_transformer(input, output, speed, transpose)`. The synced output, not
+the original stem path, is passed to `mix.mix_wav()`. At default
+speed/transpose, `stem_transformer` is never called; the ordinary
+untransformed render remains dependency-free. `render-NNNN.stemsync/` is
+removed in the same `finally` block that already cleans up
+`.partN.wav`/split-MIDI temp files.
 
 **Why this and `gameSoundfont`'s track-subset split don't interact**: the
 MIDI split in `_plan_render_jobs()` happens against whichever applied MIDI
@@ -845,7 +817,7 @@ batch combination's own path for `POST /api/variations`), which already has
 that combination's speed/transpose baked in by `_apply_to()` — so both the
 game-SoundFont half and the GM half are always rendered from
 already-transformed MIDI, and only the real-audio stems need the separate
-`pitch_shift.sh` pass described above.
+direct `rubberband` pass described above.
 
 ## Added: per-track WAV export (「トラックごとに出力」)
 
@@ -3044,7 +3016,7 @@ state in this package (`render.py`'s SoundFont resolution, `WebSession`'s
 `soundfont_override`): `preferences_path()` resolves to `~/Library/
 Application Support/miditrack/preferences.json` by default, with a
 `MIDITRACK_PREFERENCES_PATH` env var override — not for runtime
-flexibility (unlike `MIDI2WAV_BIN`/`PITCH_SHIFT_BIN`, no ordinary user is
+flexibility (unlike `MIDI2WAV_BIN`, no ordinary user is
 expected to set this), but purely so tests can point it at a temp
 directory instead of writing into the real user's home directory (see
 `tests/test_preferences.py`, `TestWebAppPreferences` in `test_web.py`).
@@ -3169,8 +3141,8 @@ activating `POST /api/render`, only `POST /api/render/prewarm`, and never
 moves `activePlayer()`'s `src`.
 
 `tests/test_gm.py`, `test_midi.py`, `test_render.py`, `test_convert.py`,
-`test_pitch_shift.py`, and `test_preferences.py` need no real MIDI file,
-fluidsynth, or converter/`pitch_shift.sh` subprocess, or Flask test
+`test_rubberband.py`, and `test_preferences.py` need no real MIDI file,
+fluidsynth, converter, or real `rubberband` subprocess, or Flask test
 client. `test_preferences.py` sets `MIDITRACK_PREFERENCES_PATH` to a temp
 file in `setUp()`/restores it in `tearDown()` so it never reads or writes
 the real user's `~/Library/Application Support/miditrack/preferences.json`;
@@ -3214,13 +3186,10 @@ titles and hex track numbers — and ZIP extraction, including zip-slip
 absolute-path/`..` rejection and the member-count/uncompressed-size caps,
 built with real `zipfile.ZipFile` writes to temp directories, no mocking
 needed since `zipfile` itself has no external side effects).
-`test_pitch_shift.py` mirrors `test_render.py`'s approach: it mocks
-`subprocess.run` to assert argv shape (`-s`/`-p` per speed/pitch, `cwd` set
-to the work directory, `shell=False`), covers `resolve_pitch_shift_bin()`'s
-same three-tier resolution order, and that `run_pitch_shift()` diffs
-`work_dir`'s `*.wav` files before/after the call rather than trusting a
-predicted filename (including that a pre-existing leftover `.wav` in
-`work_dir` isn't mistaken for freshly generated output). The speed/pitch
+`test_rubberband.py` mirrors `test_render.py`'s approach: it mocks
+`subprocess.run` to assert the direct `rubberband -q -t -p` argv, explicit
+output path, and `shell=False`; it covers missing binaries, timeouts,
+non-zero exits, empty output, and partial-file cleanup. The speed/pitch
 defaulting/range/count-cap validation this module used to own moved to
 `midi.validate_variation_options()` when the batch-variations feature
 became a MIDI-layer edit — see `TestValidateVariationOptions` in
@@ -3233,8 +3202,8 @@ env-var/PATH resolution and failure-mode coverage (`FFMPEG_BIN` never
 silently falling through, non-zero exit, timeout, empty output) as
 `test_render.py`'s own `RenderError` cases. `test_web.py` uses
 `create_app(renderer=<fake>, list_songs=<fake>, converter=<fake>,
-pitch_shifter=<fake>)` so no real `fluidsynth`, converter, or
-`pitch_shift.sh` process is spawned; it does directly verify
+stem_transformer=<fake>)` so no real `fluidsynth`, converter, or
+`rubberband` process is spawned; it does directly verify
 `Range: bytes=...` returns `206` with a `Content-Range` header, which is
 the actual seek guarantee, that `GET /api/download/wav` renders on
 demand but reuses an existing render rather than re-rendering, that a
@@ -3248,7 +3217,7 @@ from the default lists (15 = 3 speeds × 5 transposes), honors custom
 non-integer transpose, and a non-`bool` `includeMidi` with `400` without
 ever calling the injected `renderer`, applies the session's current track
 assignments to every combination, never touches the injected
-`pitch_shifter` when no chip stem is present (the headline regression
+`stem_transformer` when no chip stem is present (the headline regression
 guard that the batch path is fully MIDI-layer now, not a `rubberband`
 post-process), leaves the session's own `speed`/`transpose` and the
 existing audition render (`/api/audio`) untouched by a batch run, cleans up
@@ -3290,7 +3259,7 @@ that class and `TestWebAppChipStem` (a new
 `gain_applier=<fake>` fixture (mirroring the pre-existing `mixer=<fake>`
 pattern) so `mix.apply_gain()`'s real `ffmpeg` invocation is never
 exercised by these tests; the chip-stem test additionally confirms the
-noise stem is pitch/speed-synced through the injected `pitch_shifter`
+noise stem is pitch/speed-synced through the injected `stem_transformer`
 before its `mix.STEM_GAIN` is baked in, matching `_render_applied_midi()`'s
 own `_synced_stem()` usage. `test_mix.py`'s `TestApplyGain` covers
 `mix.apply_gain()` directly (argv shape, the single `-i`/`-filter:a
@@ -3332,7 +3301,7 @@ and `hasChipStem`, `GET /api/download/wav` receives the mixed audio, a
 `chipNoise` never calls the injected mixer at all (the regression guard
 for not adding a hard `ffmpeg` dependency to the ordinary case), and that
 a `POST /api/variations` batch mixes every combination independently while
-only syncing the stem (via the injected `pitch_shifter`) for combinations
+only syncing the stem (via the injected `stem_transformer`) for combinations
 whose own speed/transpose isn't the default — the sharpest guard that this
 decision is made per-combination, not per-session or "always sync because
 it's a batch." The same class's
@@ -3411,23 +3380,23 @@ end-to-end (partial updates preserve the untouched field, invalid values
 return 400, no-body requests return 400, an upload with no MIDI returns
 400, `POST /api/render` on a transformed session produces MIDI with the
 scaled tempo/shifted note, a fresh MIDI upload resets both fields to their
-defaults) and confirms `run_pitch_shift` (the ZIP feature's own injected
-fake, reused here) is **never** called for a session with no chip/DAC stem
+defaults) and confirms `stem_transformer` is **never** called for a session
+with no chip/DAC stem
 at all, regardless of the transform setting — the stem-sync path only
 exists to keep a stem in sync with a transform, so a stem-less session has
 nothing for it to do. `TestWebAppChipStem` gained
 `test_transform_syncs_stem_before_mixing` (a non-default transform makes
-`ensure_render()` call the injected `pitch_shifter` with `[speed]`/
-`[transpose]` exactly once and feed `mix_wav()` the *synced* WAV rather
+`ensure_render()` call the injected `stem_transformer` with `speed` and
+`transpose` exactly once and feed `mix_wav()` the *synced* WAV rather
 than the raw `chip_stem_path`) and
-`test_default_transform_never_invokes_pitch_shifter_even_with_stem` (the
+`test_default_transform_never_invokes_stem_transformer_even_with_stem` (the
 regression guard: even with a real stem present, leaving speed/transpose
-at their defaults must never invoke `pitch_shifter` at all, so the
+at their defaults must never invoke `stem_transformer` at all, so the
 ordinary `chipNoise` path gains no new dependency from this feature).
 
 Beyond the mocked unit tests, this feature was verified through a live,
 fully non-mocked `create_app()` with the real `fluidsynth`/`ffmpeg`/
-`pitch_shift.sh` all wired in — see the dedicated verification paragraph
+`rubberband` all wired in — see the dedicated verification paragraph
 above ("The MIDI-layer speed/pitch feature ... was verified end-to-end").
 
 `TestWebApp` also covers the download-filename override
@@ -3561,33 +3530,15 @@ output was confirmed `afinfo`-valid and unclipped (17.5% peak) with the
 reassigned track audibly playing the GM organ patch while every other
 track kept the original game timbres.
 
-The MIDI-layer speed/pitch feature (`speed`/`transpose` on
-`WebSession`, `PATCH /api/session/transform`) was verified end-to-end
-through a live, fully non-mocked `create_app()` — the real
-`render.render_wav()` (real `fluidsynth`), the real `mix.mix_wav()` (real
-`ffmpeg`), and the real `pitch_shift.run_pitch_shift()` (real
-`pitch_shift.sh`/`rubberband`) were all injected, with no fakes anywhere in
-the stack. A 2-second, 120 BPM one-note fixture was uploaded with a real
-WAV attached as `chip_stem_path` (standing in for what a real
-`chipNoise` NSF/VGM conversion would have produced), then
-`PATCH /api/session/transform` set `speed=1.2, transpose=-2` over HTTP.
-`POST /api/render` returned 200; `GET /api/download` returned a `.mid`
-confirmed via `mido` to carry `tempo=416667` (500000/1.2) and note 58
-(60-2); `GET /api/download/wav` returned a real mixed WAV whose `afinfo`
-duration (4.64s) matched a separately-rendered transform-only WAV
-(fluidsynth's fixed reverb tail explains why this isn't exactly 2.0/1.2
-seconds — the note-only portion scales correctly, confirmed by comparing
-against the untransformed baseline's 4.95s render). Independently, calling
-`pitch_shift.run_pitch_shift()` directly against that same baseline WAV
-with `[1.2]`/`[-2.0]` produced exactly one output file (confirming the
-"combination count is always 1, so `outputs[0]` needs no filename
-prediction" assumption `_synced_stem()` relies on) whose duration (4.13s)
-was 1.2× shorter than the input (4.95s), matching the MIDI side's own
-1.2× speed direction. The `gameSoundfont` split path was not independently
-re-verified with a real `.spc` under this change, since `_plan_render_jobs()`
-splits `applied_path` — which `ensure_applied()` already produces with the
-transform baked in — so no new interaction exists beyond what
-`TestWebAppGameSoundfont`'s existing mocked tests already cover.
+The MIDI-layer speed/pitch feature (`speed`/`transpose` on `WebSession`,
+`PATCH /api/session/transform`) keeps its existing end-to-end MIDI and mix
+behavior. Real-audio stem synchronization is now owned by
+`rubberband.transform_stem()`; its direct CLI contract, failure handling,
+and cleanup are covered by `test_rubberband.py`, while the Flask tests inject
+`stem_transformer` to verify the render and per-track-export paths use the
+synced output only for non-default transforms. Before a release that changes
+the shipped Rubber Band version, additionally run this path against a real
+WAV and verify duration/pitch alignment with the transformed MIDI render.
 
 ## Project session archives
 

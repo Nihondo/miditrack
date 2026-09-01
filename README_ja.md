@@ -2,7 +2,7 @@
 
 NES（`.nsf`）、SNES（`.spc`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップチューン音楽を、ブラウザだけで楽器を差し替え・リミックス・書き出しできるMIDIファイルに変換します。日常的な利用にターミナルは不要です。
 
-`miditrack`はローカルで動くWebアプリで、チップチューンの音源ファイルをMIDIに変換し、各トラックにGeneral MIDIの楽器と音量を割り当て、その場で試聴できます。汎用シンセの代わりに実機・原曲のチップサウンドを鳴らすオプションも備えています。内部では3つのバンドル済みコマンドラインコンバーター（`nsf2midi`・`spc2midi`・`vgm2midi`）と2つの共有スクリプト（`midi2wav.sh`・`pitch_shift.sh`）が動いており、ブラウザ操作よりスクリプトを好む場合はこれらを単体でターミナルから使うこともできます。
+`miditrack`はローカルで動くWebアプリで、チップチューンの音源ファイルをMIDIに変換し、各トラックにGeneral MIDIの楽器と音量を割り当て、その場で試聴できます。汎用シンセの代わりに実機・原曲のチップサウンドを鳴らすオプションも備えています。内部では3つのバンドル済みコマンドラインコンバーター（`nsf2midi`・`spc2midi`・`vgm2midi`）と`midi2wav.sh`が動いています。独立した`pitch_shift.sh`は、ターミナル用の単体ユーティリティとして引き続き利用できます。
 
 ## クイックスタート
 
@@ -51,9 +51,9 @@ NES（`.nsf`）、SNES（`.spc`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップ�
 | **spc2midi** | SNESの`.spc`/`.spc2`/`.rsn`ファイルをMIDIに変換（対応するSoundFontも生成可） | miditrackに内蔵、またはターミナルから直接 |
 | **vgm2midi** | VGM/VGZコマンドログファイル（メガドライブ、アーケード、PC-88など）をMIDIに変換 | miditrackに内蔵、またはターミナルから直接 |
 | **midi2wav.sh** | fluidsynthを使い、任意の`.mid`ファイルを試聴用`.wav`に変換 | 上記4つのツールから自動的に呼び出される、または単体で直接実行 |
-| **pitch_shift.sh** | 音声ファイルの速度・ピッチのバリエーションをWAVとして生成 | miditrackのZIP書き出し機能から自動的に呼び出される、または単体で直接実行 |
+| **pitch_shift.sh** | 音声ファイルの速度・ピッチのバリエーションをWAVとして生成 | ターミナル用の単体ユーティリティ。miditrackは実音声ステムの同期に`rubberband`を直接呼び出す |
 
-ほとんどの場合は`miditrack`だけで十分です。3つのコンバーターと2つのスクリプトはその構成要素として存在していますが、ブラウザ操作よりスクリプトによる変換パイプラインを組みたい場合は、それぞれ単体でも動作します。
+ほとんどの場合は`miditrack`だけで十分です。3つのコンバーターと`midi2wav.sh`がその構成要素であり、単体の音声バリエーションユーティリティが必要な場合は`pitch_shift.sh`も利用できます。
 
 ## 必要環境
 
@@ -68,7 +68,7 @@ NES（`.nsf`）、SNES（`.spc`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップ�
   - `/opt/homebrew/share/fluid-synth/sf2`
 - 3つのコンバーター（`nsf2midi`・`spc2midi`・`vgm2midi`）は、このリポジトリにビルド済みでバンドルされており、通常の利用では別途ビルドは不要です。
 - VGMトラックの原曲の音源を試聴するには、バンドルされたネイティブヘルパーを一度だけビルドしてください（`cd vgm2midi && ./scripts/build-native.sh`）。NSFの原曲の音源には別途のビルド手順は不要です。
-- 実機ノイズのミキシング、速度・ピッチバリエーションZIPの書き出し、非デフォルトの速度・ピッチにチップノイズのステムを同期させる場合: [ffmpeg](https://ffmpeg.org/)と[rubberband-cli](https://breakfastquay.com/rubberband/) — `brew install ffmpeg rubberband`。
+- 実機ノイズのミキシングまたはトラックごとの出力には[ffmpeg](https://ffmpeg.org/)が必要。非デフォルトの速度・ピッチに実音声ステムを同期させる場合、miditrackは[rubberband-cli](https://breakfastquay.com/rubberband/)を直接呼び出す — `brew install ffmpeg rubberband`。miditrackは`pitch_shift.sh`を使用しない。
 
 ## miditrackの使い方
 
@@ -172,7 +172,7 @@ vgm2midi song.vgz --loops 3             # ループ部分を合計3回再生
 - **「対応する音源ファイルが見つかりません」** — アップロードされたファイルのいずれも対応拡張子に一致しませんでした。
 - **「有効なZIPファイルではありません」** — アップロードした`.zip`が破損しているか、実際にはZIPではありません。
 - **「miditrack requires Flask」** — 上記の[クイックスタート](#クイックスタート)の手順に従って`.venv`を作り直してください。
-- **「pitch_shift.sh が見つかりません」** — `ffmpeg`と`rubberband-cli`がインストールされているか確認してください（`brew install ffmpeg rubberband`）。
+- **「rubberband が見つかりません」** — miditrackで実音声ステムに非デフォルトの速度・ピッチを適用する前に、`rubberband-cli`をインストールしてください（`brew install rubberband`）。
 - **「速度×ピッチの組み合わせ数が多すぎます」** — ZIP書き出し機能で指定する速度・ピッチの数を減らしてください（上限は40組み合わせです）。
 
 ## 謝辞
@@ -184,7 +184,7 @@ vgm2midi song.vgz --loops 3             # ループ部分を合計3回再生
 - **[VGMTrans](https://github.com/vgmtrans/vgmtrans)** — `spc2midi`は、ノート検出をゼロから実装するのではなく、VGMTransが持つドライバ別のSNESシーケンスパーサーの上に直接構築されています。
 - **[jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi)** — `vgm2midi`はこのプロジェクトのフォークとして始まり、いくつかの音源チップ対応とバグ修正を加えて拡張したものです。
 - **[FluidSynth](https://www.fluidsynth.org/)** — `midi2wav.sh`がすべてのWAV試聴・ダウンロードを描画する際に使うSoundFontシンセサイザー。
-- **[Rubber Band Library](https://breakfastquay.com/rubberband/)**（`rubberband-cli`経由） — `pitch_shift.sh`が速度・ピッチのバリエーションを生成するために使うタイムストレッチ・ピッチシフトエンジン。
+- **[Rubber Band Library](https://breakfastquay.com/rubberband/)**（`rubberband-cli`経由） — miditrackが実音声ステムの同期に直接使い、単体ユーティリティ`pitch_shift.sh`も使うタイムストレッチ・ピッチシフトエンジン。
 - **[DSEG](https://github.com/keshikan/DSEG)**（keshikan氏作） — 再生時間表示に使用しているローカル同梱のDSEG7 Classic Webフォント。SIL Open Font License 1.1で配布されています。
 
 詳細なクレジットとライセンスについては、各サブプロジェクト自身の`README.md`/`NOTICE.md`を参照してください。
