@@ -72,12 +72,14 @@ const POINTER_FOCUS_CONTROL_SELECTOR = [
   'input[type="checkbox"]',
   'input[type="range"]',
   'input[type="file"]',
+  'input[type="color"]',
 ].join(",");
 const POINTER_CHANGE_CONTROL_SELECTOR = [
   "select",
   'input[type="radio"]',
   'input[type="checkbox"]',
   'input[type="file"]',
+  'input[type="color"]',
 ].join(",");
 
 const state = {
@@ -1659,6 +1661,14 @@ function setupEnsemblePresets() {
   $("#ensemble-preset-form").addEventListener("submit", handleEnsemblePresetSave);
   $("#ensemble-preset-cancel").addEventListener("click", () => {
     $("#ensemble-preset-dialog").close();
+  });
+  // ダイアログを閉じると開いたボタン（新規作成・編集）へフォーカスが戻るため、
+  // closeイベント後にblur()してスペースキーで再生トグルを使えるようにする。
+  $("#ensemble-preset-dialog").addEventListener("close", () => {
+    const active = document.activeElement;
+    if (active === $("#ensemble-preset-new") || active === $("#ensemble-preset-edit")) {
+      active.blur();
+    }
   });
   renderEnsemblePresetOptions();
   updateEnsemblePresetControls();
@@ -4125,6 +4135,13 @@ function setupOpenDialog() {
   });
   $("#open-dialog-close").addEventListener("click", () => dialog.close());
 
+  // ダイアログを閉じるとブラウザが開くボタンへフォーカスを戻す。その状態で
+  // スペースキーを押すとボタンの既定動作（再クリック）が優先されてしまうため、
+  // closeイベント後にblur()してグローバルの再生トグルへスペースを届くようにする。
+  dialog.addEventListener("close", () => {
+    $("#open-dialog-button").blur();
+  });
+
   // 通常表示ではdetailsの開閉を維持し、全画面のモーダル内だけは常時展開する。
   uploadSummary.addEventListener("click", (event) => {
     if (document.body.classList.contains("is-fullscreen")) event.preventDefault();
@@ -4145,6 +4162,11 @@ function setupSettingsDialog() {
   const dialog = $("#settings-dialog");
   $("#settings-open").addEventListener("click", () => dialog.showModal());
   $("#settings-close").addEventListener("click", () => dialog.close());
+  // ダイアログを閉じると歯車ボタンへフォーカスが戻るため、
+  // closeイベント後にblur()してスペースキーで再生トグルを使えるようにする。
+  dialog.addEventListener("close", () => {
+    $("#settings-open").blur();
+  });
 
   $("#app-theme").addEventListener("change", (event) => {
     state.appTheme = event.target.value;
