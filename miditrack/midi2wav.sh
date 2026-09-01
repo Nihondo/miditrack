@@ -9,6 +9,7 @@ SAMPLE_RATE=44100
 GAIN=""
 FORCE=false
 VERBOSE=false
+DYNAMIC_SAMPLE_LOADING=true
 SELECT_MODE=false
 SOUNDFONT=""
 OUTPUT=""
@@ -76,6 +77,8 @@ Options:
   -g, --gain VALUE             fluidsynth の -g（未指定時は fluidsynth の既定値）
   -f, --force                  既存の出力 WAV を上書き
   -v, --verbose                 fluidsynth の詳細出力を表示（デフォルトは抑制）
+      --no-dynamic-sample-loading
+                               SoundFontサンプルの動的読込を無効化
   -h, --help                    このヘルプを表示
 
 SoundFont の解決順:
@@ -236,6 +239,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -f|--force)      FORCE=true; shift ;;
         -v|--verbose)    VERBOSE=true; shift ;;
+        --no-dynamic-sample-loading)
+            DYNAMIC_SAMPLE_LOADING=false
+            shift
+            ;;
         -h|--help)       usage ;;
         -*)              err_line "不明なオプション: $1"; usage ;;
         *)               INPUTS+=("$1"); shift ;;
@@ -308,6 +315,7 @@ fi
 # --- 変換 ---
 FLUIDSYNTH_OPTS=(-ni)
 [[ "$VERBOSE" == true ]] || FLUIDSYNTH_OPTS+=(-q)
+[[ "$DYNAMIC_SAMPLE_LOADING" == true ]] && FLUIDSYNTH_OPTS+=(-o synth.dynamic-sample-loading=1)
 [[ -n "$GAIN" ]] && FLUIDSYNTH_OPTS+=(-g "$GAIN")
 
 info_line "SoundFont: ${C_BOLD}$SOUNDFONT${C_RESET}"

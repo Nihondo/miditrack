@@ -174,6 +174,7 @@ class TestWebApp(unittest.TestCase):
             converter=fake_converter,
             stem_transformer=fake_stem_transformer,
         )
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
         self.client = self.app.test_client()
         self.addCleanup(self._clear_session)
 
@@ -447,13 +448,13 @@ class TestWebApp(unittest.TestCase):
         )
         self.assertIn('if (event.detail === 0) return', javascript)
 
-    def test_render_reload_preserves_relative_playback_position(self) -> None:
+    def test_render_reload_preserves_absolute_playback_position(self) -> None:
         """再レンダリング後も音を止めずに乗り換える、A/Bクロスフェード実装の存在を確認する。
 
         再生中のクロスフェードは実ブラウザでなければ検証できないため、ここでは
         app.js自体の文字列を検査し、（1）設定変更が<audio>のsrc/再生に触れない
-        markRenderStale()経由になっていること、（2）crossfadeToRender()が曲長の
-        変化（速度変更）を跨いでも進捗率ベースで位置を復元すること、の2点を
+        markRenderStale()経由になっていること、（2）crossfadeToRender()が短区間WAVの
+        ローカル秒を曲全体の絶対秒へ変換して位置を復元すること、の2点を
         リグレッションガードする。miditrack/CLAUDE.mdの
         「Why render-then-play, not a live softsynth」も参照。
         """
@@ -465,19 +466,19 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("function scheduleAutoRender(delay = PREWARM_DELAY_MS)", javascript)
         self.assertNotIn("resetPlayer({ preservePosition: true })", javascript)
 
-        # crossfadeToRender()は絶対秒ではなく進捗率で位置を換算する
-        # （速度変更で曲長が変わっても音楽上の同じ位置を継続するため）。
-        self.assertIn("function crossfadeToRender(renderId, canCommit)", javascript)
-        self.assertIn("async function runSwap(renderId, canCommit = () => true)", javascript)
-        self.assertIn(
-            "if (!Number.isFinite(fromDuration) || fromDuration <= 0) return 0;",
-            javascript,
-        )
+        # 短区間WAVのcurrentTimeは曲全体の秒ではないため、差替え時は絶対秒を
+        # sourceLocalSeconds()で次の音源のローカル秒へ変換する。
+        self.assertIn("function sourceGlobalSeconds(", javascript)
+        self.assertIn("function sourceLocalSeconds(", javascript)
+        self.assertIn("function crossfadeToRender(renderId, canCommit, nextSource = null)", javascript)
+        self.assertIn("async function runSwap(renderId, canCommit = () => true, nextSource = null)", javascript)
+        self.assertIn("const currentGlobalSeconds = () => sourceGlobalSeconds(active, state.activeSource);", javascript)
+        self.assertNotIn("const currentRatio = () =>", javascript)
         # ロード待ち・play()の起動待ちで進み続けたactiveの位置に合わせて、フェード
         # 開始前（next.volumeがまだ0の間）にもう一度シークし直す。これが無いと
         # 乗り換えの瞬間にピアノロールの再生位置バーが一瞬ずれて見える回帰を防ぐ。
-        self.assertIn("seekNextTo(currentRatio())", javascript)
-        self.assertEqual(javascript.count("seekNextTo(currentRatio())"), 2)
+        self.assertIn("seekNextTo(currentGlobalSeconds())", javascript)
+        self.assertEqual(javascript.count("seekNextTo(currentGlobalSeconds())"), 2)
 
     def test_speed_change_defers_pianoroll_duration_update_until_audio_catches_up(
         self,
@@ -517,17 +518,29 @@ class TestWebApp(unittest.TestCase):
         """停止中も最新WAVをロードし、再生で旧音源を鳴らさないことを確認する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
 
-        self.assertIn("function requestRenderGeneration(generation)", javascript)
+        self.assertIn(
+            "function requestRenderGeneration(generation, { preferPreview = false } = {})",
+            javascript,
+        )
         self.assertIn("async function ensureLatestRender()", javascript)
         self.assertIn("async function playPreparedPlayer(player)", javascript)
         self.assertIn("scheduleAutoRender(0);", javascript)
         self.assertIn('apiFetch("/api/render", {', javascript)
+        self.assertIn('apiFetch("/api/render/preview", {', javascript)
+        self.assertIn("requestRenderGeneration(generation, { preferPreview: true })", javascript)
+        self.assertIn('...(background ? { priority: "low" } : {}),', javascript)
         self.assertNotIn('apiFetch("/api/render/prewarm", {', javascript)
         self.assertIn("if (!isCurrentRenderGeneration(generation)) return null;", javascript)
         self.assertIn("await ensureLatestRender();", javascript)
         self.assertIn("await flushPendingTransform()", javascript)
         self.assertIn("setRenderSpinner(true)", javascript)
         self.assertIn("setRenderSpinner(false)", javascript)
+        self.assertIn("const fullTask = renderTask.finally(() => {", javascript)
+        self.assertIn("setRenderSpinner(state.fullRenderTask !== null);", javascript)
+        self.assertIn("soloOperation: null", javascript)
+        self.assertIn("if (state.soloOperation) return state.soloOperation;", javascript)
+        self.assertIn("for (const track of state.session?.tracks || [])", javascript)
+        self.assertIn("state.soloVolumeSnapshot = null;", javascript)
 
     # --- アップロード ---
 
@@ -1176,6 +1189,22 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(second["renderId"], first["renderId"])
         self.assertEqual(len(self.render_calls), 1)
 
+    def test_render_returns_breakdown_and_caches_applied_duration(self) -> None:
+        self._upload()
+        response = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        session = self.app.config["MIDITRACK_SESSION"]
+
+        self.assertEqual(
+            set(response["renderBreakdown"]),
+            {"applyMs", "splitMs", "fluidSynthMs", "chipMs", "mixMs"},
+        )
+        self.assertTrue(all(value >= 0 for value in response["renderBreakdown"].values()))
+        self.assertEqual(response["durationSeconds"], 0.5)
+        self.assertEqual(session.applied_duration_seconds, 0.5)
+
+        cached = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(cached["renderBreakdown"]["applyMs"], 0)
+
     def test_render_cache_evicts_oldest_entry_after_sixteen_states(self) -> None:
         self._upload()
         session = self.app.config["MIDITRACK_SESSION"]
@@ -1264,6 +1293,70 @@ class TestWebApp(unittest.TestCase):
             data=json.dumps({"renderMode": "quality"}),
         ).get_json()
         self.assertTrue(render_response["cacheHit"])
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_preview_uses_separate_cache_without_replacing_full_render_state(self) -> None:
+        self._upload()
+        session = self.app.config["MIDITRACK_SESSION"]
+        response = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"timelineSeconds": 0.0}),
+        ).get_json()
+
+        self.assertTrue(response["available"])
+        self.assertEqual(response["renderKind"], "segment")
+        self.assertIsNone(session.audio_path)
+        self.assertIsNone(session.current_render_key)
+        self.assertEqual(len(session.render_cache), 0)
+        self.assertEqual(len(session.preview_cache), 1)
+        self.assertEqual(len(self.render_calls), 1)
+
+        full = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        self.assertFalse(full["cacheHit"])
+        self.assertEqual(len(self.render_calls), 2)
+        self.assertIsNotNone(session.audio_path)
+
+    def test_preview_skips_work_when_full_render_is_cached(self) -> None:
+        self._upload()
+        self.client.post("/api/render", headers=AUTH_HEADERS)
+        session = self.app.config["MIDITRACK_SESSION"]
+
+        response = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"timelineSeconds": 0.0}),
+        ).get_json()
+
+        self.assertFalse(response["available"])
+        self.assertEqual(response["reason"], "full-cached")
+        self.assertEqual(len(session.preview_cache), 0)
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_preview_mixes_trimmed_chip_stem(self) -> None:
+        self._upload()
+        session = self.app.config["MIDITRACK_SESSION"]
+        assert session.root is not None
+        session.chip_stem_path = session.root / "chip-stem.wav"
+        session.chip_stem_path.write_bytes(b"chip")
+
+        def fake_trim(_input, output, *_args, **_kwargs):
+            Path(output).write_bytes(b"trimmed")
+
+        def fake_mix(_inputs, output, **_kwargs):
+            Path(output).write_bytes(b"mixed")
+
+        with mock.patch("miditrack.web.mix.trim_wav", side_effect=fake_trim) as trimmed, mock.patch(
+            "miditrack.web.mix.mix_wav", side_effect=fake_mix
+        ):
+            response = self.client.post(
+                "/api/render/preview",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"timelineSeconds": 0.0}),
+            ).get_json()
+
+        self.assertTrue(response["available"])
+        self.assertEqual(trimmed.call_count, 1)
         self.assertEqual(len(self.render_calls), 1)
 
     def test_render_rejects_unknown_mode(self) -> None:
@@ -3094,6 +3187,7 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         self.mix_calls: list[list[tuple[Path, float]]] = []
         self.gain_calls: list[tuple[Path, float]] = []
         self.render_delay = 0.0
+        self.suggested_chip_indices = {1}
         self.active_render_jobs = 0
         self.max_active_render_jobs = 0
         self.render_job_lock = threading.Lock()
@@ -3118,12 +3212,12 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
                     {"trackIndex": 0, "libvgm": {
                         "deviceType": 0, "instance": 0, "mainMask": 1,
                         "linkedMask": 0, "groupId": "tone-0",
-                        "suggestedForHardwareMix": False,
+                        "suggestedForHardwareMix": 0 in self.suggested_chip_indices,
                     }},
                     {"trackIndex": 1, "libvgm": {
                         "deviceType": 0, "instance": 0, "mainMask": 8,
                         "linkedMask": 0, "groupId": "noise-3",
-                        "suggestedForHardwareMix": True,
+                        "suggestedForHardwareMix": 1 in self.suggested_chip_indices,
                     }},
                 ],
             }), encoding="utf-8")
@@ -3181,6 +3275,7 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
             libvgm_renderer=fake_libvgm,
             stem_transformer=fake_stem_transformer,
         )
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
         self.client = self.app.test_client()
         self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
 
@@ -3203,6 +3298,55 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         self.assertEqual(payload["tracks"][1]["source"], "game")
         self.assertTrue(payload["tracks"][1]["sourceSuggested"])
         self.assertEqual(payload["tracks"][1]["availableSources"], ["soundfont", "game"])
+
+    def test_conversion_prewarms_selected_chip_audio(self) -> None:
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = True
+
+        response = self._convert(True)
+
+        self.assertEqual(response.status_code, 200)
+        deadline = time.monotonic() + 1.0
+        while not self.libvgm_calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(self.libvgm_calls), 1)
+        session = self.app.config["MIDITRACK_SESSION"]
+        self.assertTrue(any(key.startswith("chip:") for key in session.render_cache))
+
+        self.client.post("/api/render", headers=AUTH_HEADERS)
+        self.assertEqual(len(self.libvgm_calls), 1)
+
+    def test_chip_prewarm_survives_volume_edit(self) -> None:
+        """ソロ相当の音量編集中も、生チップWAVの温めを中断しない。"""
+        self.suggested_chip_indices = {0, 1}
+        self.render_delay = 0.05
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = True
+
+        response = self._convert(True)
+        self.assertEqual(response.status_code, 200)
+        patch = self.client.patch(
+            "/api/session/tracks",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"volumes": {"0": 50}}),
+        )
+        self.assertEqual(patch.status_code, 200)
+
+        session = self.app.config["MIDITRACK_SESSION"]
+        deadline = time.monotonic() + 1.0
+        while len([key for key in session.render_cache if key.startswith("chip:")]) < 3:
+            if time.monotonic() >= deadline:
+                self.fail("音量変更後もチャンネル別チップ音源の温めが完了しません")
+            time.sleep(0.01)
+        self.assertEqual(len(self.libvgm_calls), 3)
+
+    def test_preview_waits_for_chip_channel_prewarm(self) -> None:
+        self._convert(True)
+        response = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"timelineSeconds": 0.0}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"available": False, "reason": "chip-warmup"})
 
     def test_selection_renders_libvgm_and_removes_midi_track_from_dry_mix(self) -> None:
         self._convert(True)
@@ -3560,6 +3704,7 @@ class TestWebAppNsfChipTrackSource(unittest.TestCase):
             mixer=fake_mixer,
             nsf_chip_renderer=fake_nsf_chip,
         )
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
         self.client = self.app.test_client()
         self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
 

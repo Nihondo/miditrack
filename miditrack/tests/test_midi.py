@@ -319,7 +319,9 @@ class TestApplyAssignments(unittest.TestCase):
     def test_update_existing_program_change_preserves_timing(self) -> None:
         output_path = Path(self.tmp.name) / "out.mid"
         summary = midi.apply_assignments(self.fixture_path, {0: 30}, output_path)
-        self.assertEqual(summary, {"updated": 1, "inserted": 0})
+        self.assertEqual(summary["updated"], 1)
+        self.assertEqual(summary["inserted"], 0)
+        self.assertEqual(summary["durationSeconds"], 0.5)
 
         edited = mido.MidiFile(output_path)
         pcs = [m.program for m in edited.tracks[0] if m.type == "program_change"]
@@ -329,7 +331,9 @@ class TestApplyAssignments(unittest.TestCase):
     def test_insert_program_change_preserves_timing(self) -> None:
         output_path = Path(self.tmp.name) / "out.mid"
         summary = midi.apply_assignments(self.fixture_path, {2: 33}, output_path)
-        self.assertEqual(summary, {"updated": 0, "inserted": 1})
+        self.assertEqual(summary["updated"], 0)
+        self.assertEqual(summary["inserted"], 1)
+        self.assertEqual(summary["durationSeconds"], 0.5)
 
         edited = mido.MidiFile(output_path)
         pcs = [(m.channel, m.program) for m in edited.tracks[2] if m.type == "program_change"]
@@ -383,6 +387,16 @@ class TestApplyAssignments(unittest.TestCase):
         edited = mido.MidiFile(output_path)
         note_on = next(message for message in edited.tracks[0] if message.type == "note_on")
         self.assertEqual(note_on.velocity, 127)
+
+    def test_volume_for_empty_window_track_is_ignored(self) -> None:
+        """短区間MIDIにノートが無いトラックがあっても他の音量変更を適用できる。"""
+        output_path = Path(self.tmp.name) / "out.mid"
+        # Track 4はテンポだけの空トラック。短区間プレビューでは本来ノートがある
+        # トラックも同じ状態になり得るため、ソロが全トラックへ送る0%を拒否しない。
+        midi.apply_assignments(self.fixture_path, {}, output_path, {0: 50, 4: 0})
+        edited = mido.MidiFile(output_path)
+        note_on = next(message for message in edited.tracks[0] if message.type == "note_on")
+        self.assertEqual(note_on.velocity, 50)
 
 
 def build_transpose_boundary_fixture(path: Path) -> None:
@@ -502,6 +516,22 @@ class TestApplyTransform(unittest.TestCase):
         tempos = [m.tempo for track in edited.tracks for m in track if m.type == "set_tempo"]
         self.assertEqual(tempos, [250000])
 
+    def test_duration_uses_global_tempo_for_type_two_midi(self) -> None:
+        midi_file = mido.MidiFile(type=2, ticks_per_beat=480)
+        tempo_track = mido.MidiTrack()
+        tempo_track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+        tempo_track.append(mido.MetaMessage("end_of_track", time=480))
+        note_track = mido.MidiTrack()
+        note_track.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+        note_track.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=960))
+        midi_file.tracks.extend([tempo_track, note_track])
+        source_path = Path(self.tmp.name) / "type-two.mid"
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi_file.save(source_path)
+
+        summary = midi.apply_assignments(source_path, {}, output_path)
+
+        self.assertEqual(summary["durationSeconds"], 1.0)
     def test_speed_inserts_tempo_when_none_exists(self) -> None:
         mf = mido.MidiFile(ticks_per_beat=480)
         track = mido.MidiTrack()
@@ -623,6 +653,49 @@ class TestApplyTransform(unittest.TestCase):
         notes = [m.note for m in edited.tracks[0] if m.type == "note_on"]
         self.assertEqual(tempos, [250000])  # 500000/2のまま。二重に割られていない
         self.assertEqual(notes, [72])  # 60+12のまま。二重に加算されていない
+
+
+class TestWriteTimeWindow(unittest.TestCase):
+    """短区間プレビュー用のMIDI切り出しを検証する。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.source_path = Path(self.tmp.name) / "source.mid"
+        midi_file = mido.MidiFile(ticks_per_beat=480)
+        track = mido.MidiTrack()
+        track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+        track.append(mido.Message("program_change", program=40, channel=0, time=0))
+        track.append(mido.Message("control_change", control=7, value=80, channel=0, time=0))
+        track.append(mido.Message("pitchwheel", pitch=1024, channel=0, time=0))
+        track.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+        track.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=1920))
+        midi_file.tracks.append(track)
+        midi_file.save(self.source_path)
+
+    def test_restores_channel_state_and_active_note_at_window_start(self) -> None:
+        output_path = Path(self.tmp.name) / "window.mid"
+        window = midi.write_time_window(self.source_path, output_path, 1.0, 2.0)
+        output = mido.MidiFile(output_path)
+        messages = output.tracks[0]
+
+        self.assertEqual(window, midi.MidiWindow(1.0, 2.0))
+        self.assertEqual(
+            [message.type for message in messages[:5]],
+            ["set_tempo", "program_change", "control_change", "pitchwheel", "note_on"],
+        )
+        self.assertTrue(all(message.time == 0 for message in messages[:5]))
+        self.assertEqual(messages[4].note, 60)
+        self.assertEqual(messages[5].type, "note_off")
+        self.assertEqual(sum(message.time for message in messages), 960)
+
+    def test_speed_interprets_window_on_output_timeline(self) -> None:
+        output_path = Path(self.tmp.name) / "window.mid"
+        window = midi.write_time_window(self.source_path, output_path, 0.25, 0.75, speed=2.0)
+        output = mido.MidiFile(output_path)
+
+        self.assertEqual(window, midi.MidiWindow(0.25, 0.75))
+        self.assertEqual(sum(message.time for message in output.tracks[0]), 960)
 
 
 class TestValidateSpeedRatio(unittest.TestCase):

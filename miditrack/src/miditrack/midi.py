@@ -376,6 +376,37 @@ def _scale_tempo(midi_file: Any, speed: float) -> None:
     midi_file.tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=tempo, time=0))
 
 
+def calculate_duration_seconds(midi_file: Any) -> float:
+    """全トラック共通のテンポマップでMIDI全体の演奏時間を秒単位で返す。
+
+    type-2 MIDIにもアプリ内のピアノロールと同じ「全トラック横断のテンポ」解釈を
+    適用する。MidoのMidiFile.lengthはtype-2で例外にするため、適用済みMIDIを
+    すでにメモリに持つレンダー経路ではこの関数を使う。
+    """
+    current_tempo = DEFAULT_TEMPO_MICROSECONDS
+    previous_tick = 0
+    elapsed_seconds = 0.0
+    tempo_changes: list[tuple[int, int]] = []
+    end_ticks: list[int] = []
+    for track in midi_file.tracks:
+        absolute_tick = 0
+        for message in track:
+            absolute_tick += message.time
+            if message.is_meta and message.type == "set_tempo":
+                tempo_changes.append((absolute_tick, message.tempo))
+        end_ticks.append(absolute_tick)
+    for tick, tempo in sorted(tempo_changes):
+        elapsed_seconds += (tick - previous_tick) * current_tempo / 1_000_000 / midi_file.ticks_per_beat
+        previous_tick = tick
+        current_tempo = tempo
+    return elapsed_seconds + (
+        (max(end_ticks, default=0) - previous_tick)
+        * current_tempo
+        / 1_000_000
+        / midi_file.ticks_per_beat
+    )
+
+
 def _transpose_track(track: Any, semitones: int) -> None:
     """note_on/note_off/polytouchのノート番号を移調する。
 
@@ -409,7 +440,7 @@ def apply_assignments(
     source_volumes: dict[int, int] | None = None,
     speed: float = DEFAULT_SPEED_RATIO,
     transpose: int = DEFAULT_TRANSPOSE_SEMITONES,
-) -> dict[str, int]:
+) -> dict[str, int | float]:
     """原本を読み直し、音色・トラック別Note Onベロシティ倍率・全体の速度/移調を適用して保存する。
 
     既存のプログラムチェンジがあれば値を書き換えるだけ（delta-time連鎖を壊さない
@@ -466,7 +497,11 @@ def apply_assignments(
             raise WebValidationError(f"トラック番号が不正です: {track_index}")
         track = midi_file.tracks[track_index]
         if not any(message.type == "note_on" and message.velocity > 0 for message in track):
-            raise WebValidationError(f"トラック{track_index}は音量変更対象外です")
+            # 短区間プレビューでは、曲全体では発音するトラックでも切り出し窓の
+            # 中にはノートが無いことがある。PATCH時のvalidate_volumes()が元の
+            # トラックに対する編集可否を検証済みなので、ここでは空の窓を無音の
+            # まま通し、他トラックのソロ／ミュート処理を失敗させない。
+            continue
         for message in track:
             if message.type != "note_on" or message.velocity <= 0:
                 continue
@@ -497,8 +532,15 @@ def apply_assignments(
         for track in midi_file.tracks:
             _transpose_track(track, transpose)
 
+    # ここでは既に編集後のMIDI全体をメモリ上に持っている。保存後に再度
+    # MidiFile(path)を開くよりも、レンダー開始を1回分のフルパースだけ短縮できる。
+    duration_seconds = round(calculate_duration_seconds(midi_file), 3)
     save_midi_atomic(midi_file, output_path)
-    return {"updated": updated, "inserted": inserted}
+    return {
+        "updated": updated,
+        "inserted": inserted,
+        "durationSeconds": duration_seconds,
+    }
 
 
 def _single_note_channel(track: Any) -> int | None:
@@ -597,6 +639,148 @@ def _filter_track(track: Any, keep: Any) -> None:
     if carried and kept:
         kept[-1].time += carried
     track[:] = kept
+
+
+@dataclass(frozen=True)
+class MidiWindow:
+    """出力時間軸で表した、切り出し済みMIDIのタイムライン範囲。"""
+
+    start_seconds: float
+    end_seconds: float
+
+
+def _tempo_events(midi_file: Any) -> list[tuple[int, int]]:
+    """全トラックのテンポイベントを絶対tick順で返す。"""
+    events: list[tuple[int, int]] = []
+    for track in midi_file.tracks:
+        absolute_tick = 0
+        for message in track:
+            absolute_tick += message.time
+            if message.is_meta and message.type == "set_tempo":
+                events.append((absolute_tick, message.tempo))
+    return sorted(events)
+
+
+def _seconds_to_tick(midi_file: Any, seconds: float) -> int:
+    """テンポマップに従って秒を絶対tickへ変換する。"""
+    if seconds <= 0:
+        return 0
+    elapsed_seconds = 0.0
+    previous_tick = 0
+    current_tempo = DEFAULT_TEMPO_MICROSECONDS
+    for event_tick, event_tempo in _tempo_events(midi_file):
+        segment_seconds = (
+            (event_tick - previous_tick)
+            * current_tempo
+            / 1_000_000
+            / midi_file.ticks_per_beat
+        )
+        if elapsed_seconds + segment_seconds >= seconds:
+            return previous_tick + round(
+                (seconds - elapsed_seconds)
+                * 1_000_000
+                * midi_file.ticks_per_beat
+                / current_tempo
+            )
+        elapsed_seconds += segment_seconds
+        previous_tick = event_tick
+        current_tempo = event_tempo
+    return previous_tick + round(
+        (seconds - elapsed_seconds)
+        * 1_000_000
+        * midi_file.ticks_per_beat
+        / current_tempo
+    )
+
+
+def write_time_window(
+    source_path: Path,
+    output_path: Path,
+    start_seconds: float,
+    end_seconds: float,
+    *,
+    speed: float = DEFAULT_SPEED_RATIO,
+) -> MidiWindow:
+    """指定時間帯を、独立して発音可能なMIDIとして書き出す。
+
+    start/endは速度適用後の出力時間軸で受け、切り出し対象の原本時間軸へ戻して
+    tickを求める。窓の開始時点で有効なprogram change・CC・pitch bendと発音中の
+    ノートをtick 0へ復元するため、長いノートも短区間プレビューで鳴る。
+    """
+    if start_seconds < 0 or end_seconds <= start_seconds or speed <= 0:
+        raise WebValidationError("MIDI区間の開始・終了秒または速度が不正です")
+    mido = import_mido()
+    try:
+        source = mido.MidiFile(source_path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(f"MIDIを読み込めません: {source_path}: {error}") from error
+
+    output_duration_seconds = calculate_duration_seconds(source) / speed
+    effective_end_seconds = min(end_seconds, output_duration_seconds)
+    if effective_end_seconds <= start_seconds:
+        raise WebValidationError("短区間プレビューを作成できる演奏時間がありません")
+    start_tick = _seconds_to_tick(source, start_seconds * speed)
+    end_tick = _seconds_to_tick(source, effective_end_seconds * speed)
+    if end_tick <= start_tick:
+        end_tick = start_tick + 1
+
+    result = mido.MidiFile(type=source.type, ticks_per_beat=source.ticks_per_beat)
+    initial_tempo = DEFAULT_TEMPO_MICROSECONDS
+    for tick, tempo in _tempo_events(source):
+        if tick > start_tick:
+            break
+        initial_tempo = tempo
+
+    for track_index, source_track in enumerate(source.tracks):
+        absolute_tick = 0
+        latest_state: dict[tuple[int, str, int | None], Any] = {}
+        active_notes: dict[tuple[int, int], list[Any]] = {}
+        events: list[tuple[int, int, Any]] = []
+        for order, message in enumerate(source_track):
+            absolute_tick += message.time
+            if message.type == "end_of_track":
+                continue
+            if absolute_tick < start_tick:
+                if (
+                    not message.is_meta
+                    and message.type not in ("note_on", "note_off")
+                    and hasattr(message, "channel")
+                ):
+                    control = message.control if message.type == "control_change" else None
+                    latest_state[(message.channel, message.type, control)] = message.copy(time=0)
+                if message.type == "note_on" and message.velocity > 0:
+                    active_notes.setdefault((message.channel, message.note), []).append(
+                        message.copy(time=0)
+                    )
+                elif message.type == "note_off" or (
+                    message.type == "note_on" and message.velocity == 0
+                ):
+                    notes = active_notes.get((message.channel, message.note), [])
+                    if notes:
+                        notes.pop(0)
+                continue
+            if absolute_tick <= end_tick:
+                events.append((absolute_tick - start_tick, order, message.copy(time=0)))
+
+        prefix: list[Any] = []
+        if track_index == 0:
+            prefix.append(mido.MetaMessage("set_tempo", tempo=initial_tempo, time=0))
+        prefix.extend(latest_state.values())
+        prefix.extend(note for notes in active_notes.values() for note in notes)
+        ordered = [(0, index, message) for index, message in enumerate(prefix)]
+        ordered.extend((tick, len(prefix) + order, message) for tick, order, message in events)
+        ordered.sort(key=lambda item: (item[0], item[1]))
+        target = mido.MidiTrack()
+        previous_tick = 0
+        for event_tick, _order, message in ordered:
+            message.time = max(0, event_tick - previous_tick)
+            target.append(message)
+            previous_tick = event_tick
+        target.append(mido.MetaMessage("end_of_track", time=max(0, end_tick - start_tick - previous_tick)))
+        result.tracks.append(target)
+
+    save_midi_atomic(result, output_path)
+    return MidiWindow(start_seconds=start_seconds, end_seconds=effective_end_seconds)
 
 
 def save_midi_atomic(midi_file: Any, path: Path) -> None:

@@ -630,6 +630,81 @@ directory) → a bare
 `"midi2wav"` on `PATH` (letting `subprocess.run()`'s own PATH search
 resolve it, still without invoking a shell).
 
+`midi2wav.sh` enables FluidSynth's `synth.dynamic-sample-loading=1` by
+default so a render does not eagerly load unused SoundFont samples. The
+`--no-dynamic-sample-loading` switch is an explicit comparison and recovery
+path; preserve it when changing the wrapper or FluidSynth option ordering.
+
+## Render measurement contract
+
+`POST /api/render` and `POST /api/render/prewarm` return `renderMs` together
+with `renderBreakdown` (`applyMs`, `splitMs`, `fluidSynthMs`, `chipMs`, and
+`mixMs`). The first is full request wall time. The per-category values measure
+their critical path: concurrent FluidSynth and hardware-chip jobs report the
+longest job in that category rather than summed CPU time, so they remain
+comparable to the perceived wait. A cache hit has zero work-category values.
+
+`midi.apply_assignments()` returns `durationSeconds` from the already loaded,
+edited `MidiFile`, using the same all-track tempo interpretation as the piano
+roll (including type-2 files). `WebSession.applied_duration_seconds` caches
+that value with `applied_path` and must be reset whenever `invalidate_render()`
+resets the applied MIDI. Do not add a second `MidiFile(path)` parse merely to
+obtain the duration.
+
+## Short preview rendering contract
+
+`POST /api/render/preview` first checks the matching full-render cache. A hit
+returns `available:false, reason:"full-cached"` without parsing MIDI or starting
+FluidSynth. Otherwise it cuts the original MIDI window before applying the
+current assignments, volumes, speed, and transpose; `write_time_window()`
+restores channel state and active notes at tick zero. Its window coordinates are
+always on the post-speed output timeline.
+
+Preview WAVs live in `WebSession.preview_cache`, not the full-render LRU.
+Preview activation adds only an `audio_sources[render_id]` entry: it must never
+write `audio_path`, `current_render_key`, or `current_render_mode`. After a
+VGM/NSF conversion, `start_chip_prewarm()` renders the default selection first,
+registers it immediately, then renders at most four priority selected channels
+in a daemon thread and registers each completed WAV in the LRU under
+`render_lock`. Warming every channel in a large VGM would exceed the shared
+16-entry/256MB LRU and evict the useful first results. Its long
+emulation work stays outside that lock and uses a separate `chip-warm-*` path,
+so a foreground render can win the same cache key without corrupting its output.
+The cancellation generation is `midi_revision`, not `state_revision`: raw chip
+WAVs are independent of volumes, programs, and source selections, so an edit
+such as solo must not discard useful in-flight channel warmups. VGM/NSF previews
+trim the warmed default-group WAV when all selected game tracks use their
+baseline volumes. Non-muted volume edits add a warmed individual channel only
+as a gain delta; a solo or mute instead uses only the audible individual
+channels, never requesting a 0% channel. Noise/DAC stems are trimmed with
+`mix.trim_wav()`. A missing needed channel cache returns
+`available:false, reason:"chip-warmup"` and lets the browser take the exact
+full-render path rather than starting another expensive emulation synchronously.
+
+A cut window can legitimately contain no note events for a track that is
+editable in the complete song. `validate_volumes()` remains the authoritative
+validation at the session PATCH boundary, against the full source tracks.
+After that validation, `apply_assignments()` must skip a volume change for an
+empty window track rather than reject the whole preview. In particular, solo
+sets every non-solo editable track to 0%, so treating such a window as an
+invalid volume target makes the first solo preview fail despite valid input.
+
+The browser serializes a solo action with `state.soloOperation` and disables
+all solo buttons while it is pending. It snapshots volumes from
+`state.session.tracks` (not a DOM list that may be rebuilt by a PATCH), and
+clears that snapshot only after the exit PATCH succeeds. Thus a failed exit
+keeps enough state to retry restoring every track's pre-solo volume.
+
+The browser stores `activeSource` with the source's global start/end seconds.
+Clock display, piano-roll playhead, auto-follow, seeking, loops, and A/B swaps
+use global seconds; a short WAV's local `currentTime` is converted through
+`sourceGlobalSeconds()` and `sourceLocalSeconds()`. The exact full render is
+requested with Fetch `priority: "low"` after a preview and crossfades at the
+same global position. Keep the request low-priority: it is background work and
+unsupported browsers safely ignore the hint. `renderGeneration()` must leave
+the spinner visible while `fullRenderTask` remains pending; the preview's early
+return may only end the outer task, never the background full-render indicator.
+
 ## Why `rubberband.py` exists — direct chip-stem sync, not batch variations
 
 `src/miditrack/rubberband.py` keeps a real-audio chip/DAC stem in sync with

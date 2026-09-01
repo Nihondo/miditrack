@@ -119,6 +119,7 @@ const state = {
   soundfontPayload: null, // 直近の /api/soundfonts レスポンス（hasGameSoundfont変化時の再描画用）
   soloTrackIndex: null,     // ソロ試聴中のトラック番号（無ければnull）
   soloVolumeSnapshot: null, // ソロ開始直前の全トラック音量 { トラック番号: パーセント }。解除時に戻す。
+  soloOperation: null,      // ソロ開始・解除中のPromise。同時クリックによる状態競合を防ぐ。
   trackSort: { key: "index", direction: "asc" },
   hideEmptyTracks: true, // ノート数0のトラックを一覧から隠すか（#hide-empty-tracksチェックボックスの状態）。設定として永続化する。
   trackRenderId: 0,
@@ -150,6 +151,12 @@ const state = {
   renderGeneration: 0,
   renderTask: null,
   renderTaskGeneration: null,
+  renderTaskUsesPreview: false,
+  fullRenderTask: null,
+  // 現在の<audio>が曲全体タイムラインのどの範囲を表すか。短区間WAVの
+  // currentTimeは窓内ローカル秒なので、すべての表示・シークはここを介して
+  // 曲全体の絶対秒へ変換する。
+  activeSource: { kind: "full", timelineStartSeconds: 0, timelineEndSeconds: null },
   // A/Bクロスフェード再生（crossfadeToRender()）関連の状態。
   // "a"|"b"のどちらの<audio>要素が現在の再生源かを指す。もう一方は次のレンダリング
   // 結果を裏でロード・シークしておく待避先として使う。
@@ -526,6 +533,7 @@ function showStatus(message, type = "") {
 function setBusy(isBusy, message = "") {
   document.body.classList.toggle("busy", isBusy);
   if (message) showStatus(message);
+  document.querySelectorAll(".solo-button").forEach((button) => { button.disabled = isBusy; });
   updatePlaybackControls();
 }
 
@@ -582,62 +590,138 @@ function applyRenderPayload(payload) {
   updateSectionsReadiness();
 }
 
+function sourceFromPayload(payload) {
+  return {
+    kind: payload.renderKind || "full",
+    timelineStartSeconds: Number(payload.timelineStartSeconds) || 0,
+    timelineEndSeconds: Number.isFinite(payload.timelineEndSeconds)
+      ? Number(payload.timelineEndSeconds)
+      : null,
+  };
+}
+
+function sourceGlobalSeconds(player = activePlayer(), source = state.activeSource) {
+  return (source?.timelineStartSeconds || 0) + (player.currentTime || 0);
+}
+
+function sourceLocalSeconds(globalSeconds, source) {
+  const start = source?.timelineStartSeconds || 0;
+  const end = source?.timelineEndSeconds;
+  const local = Math.max(0, globalSeconds - start);
+  return Number.isFinite(end) ? Math.min(Math.max(0, end - start), local) : local;
+}
+
+function sourceContainsTimelineSeconds(seconds, source = state.activeSource) {
+  const start = source?.timelineStartSeconds || 0;
+  const end = source?.timelineEndSeconds;
+  return seconds >= start && (!Number.isFinite(end) || seconds <= end);
+}
+
 // 指定世代の試聴音声を生成し、停止中は無音で、再生中はクロスフェードで差し替える。
 // 後発の編集に追い越された応答は、プレイヤーへ反映しない。
-async function renderGeneration(generation) {
+async function renderGeneration(generation, { preferPreview = false } = {}) {
   const renderMode = selectedRenderMode();
   if (!state.session || state.session.tracks.length === 0) return null;
   if (isCurrentRenderGeneration(generation)) setRenderSpinner(true);
   try {
-    const response = await apiFetch("/api/render", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ renderMode }),
+    let player = activePlayer();
+    let didActivatePreview = false;
+    if (preferPreview) {
+      const previewResponse = await apiFetch("/api/render/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          renderMode,
+          stateRevision: state.session.stateRevision,
+          timelineSeconds: sourceGlobalSeconds(),
+        }),
+      });
+      const preview = await previewResponse.json();
+      if (!isCurrentRenderGeneration(generation)) return null;
+      if (preview.available) {
+        applyRenderPayload(preview);
+        player = await crossfadeToRender(
+          preview.renderId,
+          () => isCurrentRenderGeneration(generation),
+          sourceFromPayload(preview),
+        );
+        didActivatePreview = true;
+        if (!isCurrentRenderGeneration(generation)) return null;
+        await applyPendingPianorollReload();
+        if (!isCurrentRenderGeneration(generation)) return null;
+        clearRenderStale();
+        updatePianorollInteraction();
+        updatePianorollPlayhead();
+      }
+    }
+    const renderTask = renderFullGeneration(generation, renderMode, { background: preferPreview });
+    const fullTask = renderTask.finally(() => {
+      if (state.fullRenderTask !== fullTask) return;
+      state.fullRenderTask = null;
+      if (isCurrentRenderGeneration(generation)) setRenderSpinner(false);
     });
-    const payload = await response.json();
-    if (!isCurrentRenderGeneration(generation)) return null;
-    applyRenderPayload(payload);
-    const player = await crossfadeToRender(
-      payload.renderId,
-      () => isCurrentRenderGeneration(generation),
-    );
-    if (!isCurrentRenderGeneration(generation)) return null;
-    await applyPendingPianorollReload();
-    if (!isCurrentRenderGeneration(generation)) return null;
-    clearRenderStale();
-    updatePianorollInteraction();
-    updatePianorollPlayhead();
-    return player;
+    state.fullRenderTask = fullTask;
+    fullTask.catch(() => {});
+    return didActivatePreview ? player : fullTask;
   } catch (error) {
     if (isCurrentRenderGeneration(generation)) showStatus(error.message, "error");
     throw error;
   } finally {
-    if (isCurrentRenderGeneration(generation)) setRenderSpinner(false);
+    if (isCurrentRenderGeneration(generation)) {
+      setRenderSpinner(state.fullRenderTask !== null);
+    }
   }
 }
 
+async function renderFullGeneration(generation, renderMode, { background = false } = {}) {
+  const response = await apiFetch("/api/render", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ renderMode }),
+    ...(background ? { priority: "low" } : {}),
+  });
+  const payload = await response.json();
+  if (!isCurrentRenderGeneration(generation)) return null;
+  applyRenderPayload(payload);
+  const player = await crossfadeToRender(
+    payload.renderId,
+    () => isCurrentRenderGeneration(generation),
+    sourceFromPayload(payload),
+  );
+  if (!isCurrentRenderGeneration(generation)) return null;
+  await applyPendingPianorollReload();
+  clearRenderStale();
+  updatePianorollInteraction();
+  updatePianorollPlayhead();
+  return player;
+}
+
 // 同じ編集世代なら、自動処理・再生操作・ソロ試聴で1つのレンダーを共有する。
-function requestRenderGeneration(generation) {
+function requestRenderGeneration(generation, { preferPreview = false } = {}) {
   if (
     state.renderTask
     && state.renderTaskGeneration === generation
+    && (state.renderTaskUsesPreview || !preferPreview)
   ) {
     return state.renderTask;
   }
-  const task = renderGeneration(generation);
+  const task = renderGeneration(generation, { preferPreview });
   state.renderTask = task;
   state.renderTaskGeneration = generation;
+  state.renderTaskUsesPreview = preferPreview;
   task.finally(() => {
     if (state.renderTask === task) {
       state.renderTask = null;
       state.renderTaskGeneration = null;
+      state.renderTaskUsesPreview = false;
     }
   }).catch(() => {});
   return task;
 }
 
 // トラック設定・SoundFont・速度/ピッチ・試聴モード等の変更から500ms操作が無かったら、
-// 最新状態を自動レンダーする。停止中でもWAVをプレイヤーへロードするが、自動再生はしない。
+// 最新状態を自動レンダーする。停止中の編集では短区間プレビューを作らず、従来どおり
+// 全尺だけを仕上げる。再生開始時のensureLatestRender()だけがpreferPreviewを指定する。
 function scheduleAutoRender(delay = PREWARM_DELAY_MS) {
   cancelAutoRender();
   if (!state.session || state.session.tracks.length === 0) return;
@@ -1583,18 +1667,23 @@ function setupEnsemblePresets() {
 // 指定トラック以外を音量0にしてレンダリング・再生する「ソロ試聴」を
 // 開始／解除する。もう一度同じボタンを押すと解除に切り替わる。
 async function toggleTrackSolo(trackIndex) {
-  if (state.soloTrackIndex === trackIndex) {
-    await exitSolo();
-  } else {
-    await enterSolo(trackIndex);
+  if (state.soloOperation) return state.soloOperation;
+  const operation = state.soloTrackIndex === trackIndex
+    ? exitSolo()
+    : enterSolo(trackIndex);
+  state.soloOperation = operation;
+  try {
+    await operation;
+  } finally {
+    if (state.soloOperation === operation) state.soloOperation = null;
   }
 }
 
 function collectCurrentVolumes() {
   const volumes = {};
-  for (const row of state.trackRows) {
-    if (!row.volumeSlider) continue;
-    volumes[row.index] = Number(row.volumeSlider.value);
+  for (const track of state.session?.tracks || []) {
+    if (!track.volumeEditable) continue;
+    volumes[track.index] = track.volumePercent;
   }
   return volumes;
 }
@@ -1649,8 +1738,6 @@ async function enterSolo(trackIndex) {
 
 async function exitSolo() {
   const snapshot = state.soloVolumeSnapshot;
-  state.soloTrackIndex = null;
-  state.soloVolumeSnapshot = null;
   if (!snapshot) return;
 
   setBusy(true);
@@ -1661,11 +1748,15 @@ async function exitSolo() {
       body: JSON.stringify({ volumes: snapshot }),
     });
     state.session = await response.json();
+    state.soloTrackIndex = null;
+    state.soloVolumeSnapshot = null;
     await renderTrackList();
     updateSectionsReadiness();
     markRenderStale();
     scheduleAutoRender();
   } catch (error) {
+    // PATCHに失敗した場合は、解除前のソロ状態と復元用スナップショットを保持する。
+    // ここで捨てると、他トラックが0%のままになり再試行もできない。
     showStatus(error.message, "error");
   } finally {
     // enterSolo()と同じ理由でピアノロールを再描画する。
@@ -2354,7 +2445,7 @@ function followPianorollPlayback() {
   const scrollArea = $("#pianoroll-scroll");
   const canvasWidth = state.pianorollTimelineWidth;
   const viewportHalf = scrollArea.clientWidth / 2;
-  const progress = Math.min(1, activePlayer().currentTime / state.pianoroll.durationSeconds);
+  const progress = Math.min(1, sourceGlobalSeconds() / state.pianoroll.durationSeconds);
   const playheadX = progress * canvasWidth;
   if (playheadX <= viewportHalf) return;
   const maximumScroll = Math.max(0, canvasWidth - scrollArea.clientWidth);
@@ -2505,10 +2596,10 @@ function handleSeekKeydown(event) {
       PageUp: 10,
     };
     if (keySteps[event.key] !== undefined) {
-      target = activePlayer().currentTime + keySteps[event.key];
+      target = sourceGlobalSeconds() + keySteps[event.key];
     }
     else if (event.key === "Home") target = 0;
-    else if (event.key === "End") target = getPlaybackDuration();
+    else if (event.key === "End") target = getTimelineDuration();
   }
   if (target === null) return;
   event.preventDefault();
@@ -2667,6 +2758,8 @@ function resetPlayer() {
     player.load();
   }
   state.activePlayerId = "a";
+  state.activeSource = { kind: "full", timelineStartSeconds: 0, timelineEndSeconds: null };
+  state.fullRenderTask = null;
   clearRenderStale();
   setPianorollAutoFollow(false);
   stopPlaybackTimeAnimation();
@@ -3237,7 +3330,7 @@ function runCrossfade(from, to, generation, canCommit) {
 
 // crossfadeToRender()の実処理。swapQueueで直列化されるので、呼び出し時点の
 // activePlayer()/inactivePlayer()は常に一貫している。
-async function runSwap(renderId, canCommit = () => true) {
+async function runSwap(renderId, canCommit = () => true, nextSource = null) {
   const generation = ++state.swapGeneration;
   state.isSwapping = true;
   try {
@@ -3250,14 +3343,10 @@ async function runSwap(renderId, canCommit = () => true) {
     if (active.getAttribute("src") === nextUrl) return active;
 
     const wasPlaying = !active.paused && !active.ended && !!active.getAttribute("src");
-    // 速度変更等で曲長が変わっても音楽上の同じ位置を継続するため、絶対秒ではなく
-    // 曲全体に対する進捗率で換算する。activeはこの後もawaitのたびに再生され続けるので、
-    // ratioは使う直前に毎回activeの最新currentTimeから求め直す（呼び出し箇所を参照）。
-    const fromDuration = getPlaybackDuration();
-    const currentRatio = () => {
-      if (!Number.isFinite(fromDuration) || fromDuration <= 0) return 0;
-      return Math.min(1, Math.max(0, (active.currentTime || 0) / fromDuration));
+    const resolvedNextSource = nextSource || {
+      kind: "full", timelineStartSeconds: 0, timelineEndSeconds: null,
     };
+    const currentGlobalSeconds = () => sourceGlobalSeconds(active, state.activeSource);
 
     next.src = nextUrl;
     next.load();
@@ -3269,15 +3358,17 @@ async function runSwap(renderId, canCommit = () => true) {
       return activePlayer();
     }
 
-    const nextDuration = Number.isFinite(next.duration) ? next.duration : fromDuration;
-    const seekNextTo = (ratio) => {
-      if (!Number.isFinite(nextDuration)) return;
-      next.currentTime = Math.min(nextDuration, Math.max(0, ratio * nextDuration));
+    const seekNextTo = (globalSeconds) => {
+      const localSeconds = sourceLocalSeconds(globalSeconds, resolvedNextSource);
+      const nextDuration = next.duration;
+      next.currentTime = Number.isFinite(nextDuration)
+        ? Math.min(nextDuration, localSeconds)
+        : localSeconds;
     };
     // 一度目のシーク: play()をactiveに近い位置から開始させ、無関係な区間をバッファ
     // させないため。waitForLoadOutcome()のネットワーク待ちの間もactiveは進み続けて
     // いるので、この時点のratioはあくまで暫定値。
-    seekNextTo(currentRatio());
+    seekNextTo(currentGlobalSeconds());
 
     let didStartPlaying = false;
     if (wasPlaying) {
@@ -3290,7 +3381,7 @@ async function runSwap(renderId, canCommit = () => true) {
         // 省くと、フェード完了・入れ替えの瞬間にnextがactiveより数十ms遅れたまま
         // 表示に反映され、ピアノロールの再生位置バーが一瞬戻ってから正しい位置へ
         // 戻るように見える（ユーザー報告のバグ）。
-        seekNextTo(currentRatio());
+        seekNextTo(currentGlobalSeconds());
         didStartPlaying = true;
       } catch (_error) {
         // 自動再生がブロックされた場合はフェード無しの即差し替えへフォールバックする。
@@ -3320,6 +3411,7 @@ async function runSwap(renderId, canCommit = () => true) {
     active.removeAttribute("src");
     active.load();
     swapActivePlayer();
+    state.activeSource = resolvedNextSource;
     updatePlaybackControls();
     // rAFループの次フレームを待たず、乗り換えた直後の位置を即座に反映する。
     // 1フレーム（最大16ms程度）とはいえ待つ理由が無く、ここで描き直しておけば
@@ -3334,10 +3426,10 @@ async function runSwap(renderId, canCommit = () => true) {
 // 現在鳴っている（かもしれない）試聴音声を止めずに、renderIdのWAVへ乗り換える。
 // 再生中なら短時間の等パワークロスフェードで、停止中（または初回読み込み）なら
 // 位置を保ったまま即座に差し替える。戻り値は乗り換え完了後のactivePlayer()。
-function crossfadeToRender(renderId, canCommit) {
+function crossfadeToRender(renderId, canCommit, nextSource = null) {
   const task = swapQueue.then(
-    () => runSwap(renderId, canCommit),
-    () => runSwap(renderId, canCommit),
+    () => runSwap(renderId, canCommit, nextSource),
+    () => runSwap(renderId, canCommit, nextSource),
   );
   swapQueue = task.catch(() => {});
   return task;
@@ -3356,7 +3448,7 @@ async function ensureLatestRender() {
       return activePlayer();
     }
     const generation = state.renderGeneration;
-    const player = await requestRenderGeneration(generation);
+    const player = await requestRenderGeneration(generation, { preferPreview: true });
     if (player && isCurrentRenderGeneration(generation)) return player;
   }
   return null;
@@ -3366,9 +3458,12 @@ async function playPreparedPlayer(player) {
   const loopRange = activePianorollLoopRange();
   if (
     loopRange
-    && (player.currentTime < loopRange.start || player.currentTime >= loopRange.end)
+    && (
+      sourceGlobalSeconds(player) < loopRange.start
+      || sourceGlobalSeconds(player) >= loopRange.end
+    )
   ) {
-    player.currentTime = loopRange.start;
+    player.currentTime = sourceLocalSeconds(loopRange.start, state.activeSource);
   }
   try {
     await player.play();
@@ -3417,15 +3512,19 @@ function getPlaybackDuration() {
   return state.pianoroll?.durationSeconds || 0;
 }
 
+function getTimelineDuration() {
+  return state.pianoroll?.durationSeconds || getPlaybackDuration();
+}
+
 // カウンタとピアノロールの再生位置バーが表示すべき秒数。activePlayer()は
 // トラック設定等の変更後もsrcを維持したまま鳴り続ける（markRenderStale()参照）ため、
 // 単純に現在のactivePlayer()から読むだけでよい。
 function getDisplayPlaybackSeconds() {
-  return activePlayer().currentTime || 0;
+  return sourceGlobalSeconds();
 }
 
 function getDisplayPlaybackDuration() {
-  return getPlaybackDuration();
+  return getTimelineDuration();
 }
 
 // 秒以下の桁を「.」と数字それぞれ別spanにして視覚的な間隔を空けるため、
@@ -3495,16 +3594,24 @@ function enforcePianorollLoop() {
   const range = activePianorollLoopRange();
   const player = activePlayer();
   if (!range || player.paused || !player.getAttribute("src")) return false;
-  if (player.currentTime >= range.start && player.currentTime < range.end - 0.02) return false;
-  player.currentTime = range.start;
+  const current = sourceGlobalSeconds(player);
+  if (current >= range.start && current < range.end - 0.02) return false;
+  if (!sourceContainsTimelineSeconds(range.start)) return false;
+  player.currentTime = sourceLocalSeconds(range.start, state.activeSource);
   return true;
 }
 
 function seekPlaybackTo(seconds) {
   const player = activePlayer();
   if (!state.session?.hasRender || !player.getAttribute("src")) return;
-  const target = Math.min(getPlaybackDuration(), Math.max(0, seconds));
-  player.currentTime = target;
+  const target = Math.min(getTimelineDuration(), Math.max(0, seconds));
+  if (!sourceContainsTimelineSeconds(target)) {
+    state.fullRenderTask?.then((fullPlayer) => {
+      if (fullPlayer && sourceContainsTimelineSeconds(target)) seekPlaybackTo(target);
+    }).catch(() => {});
+    return;
+  }
+  player.currentTime = sourceLocalSeconds(target, state.activeSource);
   if (target <= 0.05) {
     if (!player.paused) setPianorollAutoFollow(true);
     scrollPianorollToStart();
@@ -3513,7 +3620,7 @@ function seekPlaybackTo(seconds) {
 }
 
 function seekPlaybackBy(seconds) {
-  seekPlaybackTo(activePlayer().currentTime + seconds);
+  seekPlaybackTo(sourceGlobalSeconds() + seconds);
 }
 
 function updatePlaybackControls() {
@@ -3575,7 +3682,7 @@ function setupPlaybackControls() {
     updatePlayerVolume();
   });
   onActivePlayerEvent("play", (event) => {
-    if (event.target.currentTime <= 0.05) {
+    if (sourceGlobalSeconds(event.target) <= 0.05) {
       setPianorollAutoFollow(true);
       scrollPianorollToStart();
     }
@@ -3588,8 +3695,22 @@ function setupPlaybackControls() {
   });
   onActivePlayerEvent("ended", async (event) => {
     const loopRange = activePianorollLoopRange();
+    if (state.activeSource.kind === "segment" && state.fullRenderTask) {
+      try {
+        const fullPlayer = await state.fullRenderTask;
+        if (fullPlayer && fullPlayer === activePlayer()) {
+          if (loopRange) {
+            seekPlaybackTo(loopRange.start);
+          }
+          await playPreparedPlayer(fullPlayer);
+          return;
+        }
+      } catch (_error) {
+        // 全尺レンダー失敗時は通常の終了処理へ進む。
+      }
+    }
     if (loopRange) {
-      event.target.currentTime = loopRange.start;
+      event.target.currentTime = sourceLocalSeconds(loopRange.start, state.activeSource);
       await playPreparedPlayer(event.target);
       return;
     }

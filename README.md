@@ -123,7 +123,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Pitch bend lane** — Shows pitch bend data for each track below the note area.
 
-Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview.
+Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview. If you begin playback while a fresh render is still needed, miditrack can first play a short segment around the current position, then crossfade to the exact full-length WAV when it is ready. Original chip-audio tracks are prepared in the background after conversion so they can join that short preview once ready; the spinner remains visible while the full WAV is still being finished.
 
 ### Screen 4 · Output
 
@@ -239,6 +239,10 @@ See [vgm2midi/README.md](vgm2midi/README.md) for supported chips and advanced op
 ./miditrack/midi2wav.sh -S song.mid
 ./miditrack/midi2wav.sh -s MySound.sf2 -f song.mid
 ```
+
+`midi2wav.sh` uses FluidSynth's dynamic SoundFont sample loading by default to
+avoid loading unused samples before a render. Use `--no-dynamic-sample-loading`
+only when comparing output with FluidSynth's eager-loading behaviour.
 
 ## Troubleshooting
 

@@ -22,7 +22,7 @@ import time
 import webbrowser
 import zipfile
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -67,6 +67,14 @@ RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
 RENDER_CACHE_MAX_ENTRIES = 16
 RENDER_CACHE_VERSION = 1
 RENDER_WORKERS = 2
+# VGMには数十の実機チャンネルを持つ曲がある。全チャンネルの生WAVを温めると
+# render_cache（16件／256MB）から先に完成したWAVを追い出してしまうため、既定集合に
+# 加えて先頭の少数だけを温める。未温めチャンネルは正確な全尺レンダーへフォールバック
+# し、その結果は通常キャッシュに残る。
+CHIP_PREWARM_MAX_CHANNELS = 4
+PREVIEW_CACHE_MAX_ENTRIES = 3
+PREVIEW_PREROLL_SECONDS = 2.0
+PREVIEW_FORWARD_SECONDS = 12.0
 # /api/audio?v=Nがrender_idごとに解決できるWAVの保持件数。クロスフェード中は旧render_idの
 # 要素が引き続きこの音源へRangeリクエストを送り続けるため、invalidate_render()後も
 # ここに載っている間は消さない（LRU（render_cache）からの追い出し対象からも保護する）。
@@ -96,6 +104,15 @@ class CachedAudio:
 
 
 @dataclass(frozen=True)
+class PreviewAudio:
+    """短区間プレビュー専用LRUに保持するWAVと、その曲全体上の範囲。"""
+
+    path: Path
+    size_bytes: int
+    window: midi.MidiWindow
+
+
+@dataclass(frozen=True)
 class RenderOutcome:
     """1回の試聴／最終レンダー要求の結果と計測値。"""
 
@@ -104,6 +121,33 @@ class RenderOutcome:
     cache_key: str
     cache_hit: bool
     render_ms: int
+    breakdown: "RenderBreakdown"
+
+
+@dataclass
+class RenderBreakdown:
+    """レンダーのクリティカルパスを構成する処理時間（ミリ秒）。
+
+    FluidSynthと実機チップのジョブは最大2本まで並列実行するため、各カテゴリは
+    合計CPU時間ではなく最長ジョブ時間を持つ。これによりrenderMsとの比較で実際の
+    待ち時間を判断できる。
+    """
+
+    apply_ms: int = 0
+    split_ms: int = 0
+    fluid_synth_ms: int = 0
+    chip_ms: int = 0
+    mix_ms: int = 0
+
+    def to_response(self) -> dict[str, int]:
+        """API応答用のcamelCase計測値を返す。"""
+        return {
+            "applyMs": self.apply_ms,
+            "splitMs": self.split_ms,
+            "fluidSynthMs": self.fluid_synth_ms,
+            "chipMs": self.chip_ms,
+            "mixMs": self.mix_ms,
+        }
 
 
 @dataclass(frozen=True)
@@ -155,7 +199,10 @@ class WebSession:
     speed_ratio: float = midi.DEFAULT_SPEED_RATIO
     transpose_semitones: int = midi.DEFAULT_TRANSPOSE_SEMITONES
     applied_path: Path | None = None
-    apply_summary: dict[str, int] | None = None
+    apply_summary: dict[str, int | float] | None = None
+    # apply_assignments()が同じMIDIオブジェクトから求めた演奏時間。プレビュー窓の
+    # 終端やクライアントの曲全体タイムラインで使うため、applied_pathと同じ寿命で持つ。
+    applied_duration_seconds: float | None = None
     audio_path: Path | None = None
     current_render_key: str | None = None
     current_render_mode: str | None = None
@@ -165,6 +212,11 @@ class WebSession:
         default_factory=OrderedDict, repr=False
     )
     render_cache_bytes: int = 0
+    # 短区間プレビューは使い捨てのため、全尺LRUとは別の小さなキャッシュへ置く。
+    # プレビューで全尺WAVを追い出すと、設定を戻したときの即時再生が失われる。
+    preview_cache: OrderedDict[str, PreviewAudio] = field(
+        default_factory=OrderedDict, repr=False
+    )
     # ブラウザの音声キャッシュを確実に更新する世代番号。MIDI再変換やセッションの
     # clear()をまたいでもサーバープロセス中は単調増加させ、同じ/api/audio?v=Nを
     # 別内容へ再利用しない。プロセス再起動時は認証tokenも変わるため0開始で安全。
@@ -240,6 +292,7 @@ class WebSession:
 
     def clear_render_cache(self) -> None:
         """試聴・最終WAV・実機ステムのセッション内キャッシュを破棄する。"""
+        self.clear_preview_cache()
         for entry in self.render_cache.values():
             entry.path.unlink(missing_ok=True)
         self.render_cache.clear()
@@ -249,6 +302,14 @@ class WebSession:
         # audio_sourcesが指すパスはすべてrender_cache由来なので、上のループで
         # 既にunlink済み。ここでは辞書自体をクリアするだけでよい。
         self.audio_sources.clear()
+
+    def clear_preview_cache(self, *, preserve_active_sources: bool = False) -> None:
+        """短区間プレビューの専用キャッシュを破棄する。"""
+        protected = set(self.audio_sources.values()) if preserve_active_sources else set()
+        for entry in self.preview_cache.values():
+            if entry.path not in protected:
+                entry.path.unlink(missing_ok=True)
+        self.preview_cache.clear()
 
     def reset_midi_state(self) -> None:
         """MIDI（原本・トラック解析・割り当て・レンダリング結果）だけを初期状態に戻す。
@@ -276,6 +337,7 @@ class WebSession:
         self.transpose_semitones = midi.DEFAULT_TRANSPOSE_SEMITONES
         self.applied_path = None
         self.apply_summary = None
+        self.applied_duration_seconds = None
         self.audio_path = None
         self.variations_zip_path = None
         self.track_export_zip_path = None
@@ -343,8 +405,10 @@ class WebSession:
         ので同時に無効化する。ポインタをNoneにするだけで実ファイルの削除は次回
         生成時に行う（audio_path自身の扱いと同じ）。
         """
+        self.clear_preview_cache(preserve_active_sources=True)
         self.applied_path = None
         self.apply_summary = None
+        self.applied_duration_seconds = None
         self.audio_path = None
         self.current_render_key = None
         self.current_render_mode = None
@@ -734,6 +798,7 @@ def create_app(
         MIDITRACK_TOKEN=launch_token,
         MIDITRACK_SESSION=web_session,
         MIDITRACK_REQUIRE_TOKEN=require_token,
+        MIDITRACK_ENABLE_BACKGROUND_PREWARM=True,
     )
 
     @app.before_request
@@ -1500,6 +1565,38 @@ def create_app(
         _evict_render_cache(protected)
         return path
 
+    def _preview_cache_lookup(cache_key: str) -> PreviewAudio | None:
+        """短区間プレビュー専用キャッシュから有効なWAVを返す。"""
+        entry = web_session.preview_cache.get(cache_key)
+        if entry is None:
+            return None
+        if not entry.path.exists() or entry.path.stat().st_size <= 44:
+            web_session.preview_cache.pop(cache_key, None)
+            return None
+        web_session.preview_cache.move_to_end(cache_key)
+        return entry
+
+    def _preview_cache_store(
+        cache_key: str, path: Path, window: midi.MidiWindow
+    ) -> PreviewAudio:
+        """完成済み短区間WAVを専用LRUへ登録する。"""
+        old_entry = web_session.preview_cache.pop(cache_key, None)
+        if old_entry is not None and old_entry.path != path:
+            old_entry.path.unlink(missing_ok=True)
+        entry = PreviewAudio(path, path.stat().st_size, window)
+        web_session.preview_cache[cache_key] = entry
+        protected_paths = set(web_session.audio_sources.values())
+        while len(web_session.preview_cache) > PREVIEW_CACHE_MAX_ENTRIES:
+            for old_key, entry in list(web_session.preview_cache.items()):
+                if entry.path in protected_paths:
+                    continue
+                web_session.preview_cache.pop(old_key)
+                entry.path.unlink(missing_ok=True)
+                break
+            else:
+                break
+        return entry
+
     def _cache_output_path(kind: str, cache_key: str) -> Path:
         """セッションキャッシュ内の衝突しないWAVパスを返す。"""
         assert web_session.root is not None
@@ -1507,8 +1604,10 @@ def create_app(
         cache_dir.mkdir(exist_ok=True)
         return cache_dir / f"{kind}-{cache_key[:24]}.wav"
 
-    def _apply_to(output_path: Path, speed: float, transpose: int) -> dict[str, int]:
-        """assignments・volumesを適用したMIDIをoutput_pathへ書き、summaryを返す。
+    def _apply_source_to(
+        source_path: Path, output_path: Path, speed: float, transpose: int
+    ) -> dict[str, int | float]:
+        """指定MIDIへassignments・volumesを適用してsummaryを返す。
 
         常にoriginal_pathを読み直すので冪等（apply_assignments()自身の契約）。
         speed/transposeを引数で受けるのは、バリエーション一括生成
@@ -1534,7 +1633,7 @@ def create_app(
         }
         source_volumes = {track.index: track.source_volume_percent for track in web_session.tracks}
         return midi.apply_assignments(
-            web_session.original_path,
+            source_path,
             active_assignments,
             output_path,
             effective_volumes,
@@ -1543,7 +1642,14 @@ def create_app(
             transpose=transpose,
         )
 
-    def ensure_applied() -> Path:
+    def _apply_to(
+        output_path: Path, speed: float, transpose: int
+    ) -> dict[str, int | float]:
+        """原本MIDIへ現在の編集を適用してoutput_pathへ書く。"""
+        assert web_session.original_path is not None
+        return _apply_source_to(web_session.original_path, output_path, speed, transpose)
+
+    def ensure_applied(breakdown: RenderBreakdown | None = None) -> Path:
         """assignments適用済みのMIDIパスを返す。未適用ならその場で適用する。
 
         invalidate_render()がapplied_path/apply_summaryを対で無効化するため、
@@ -1556,12 +1662,16 @@ def create_app(
                 return web_session.applied_path
             state_revision = web_session.state_revision
             applied_path = web_session.root / "miditrack_edited.mid"
+            started_at = time.perf_counter()
             apply_summary = _apply_to(
                 applied_path, web_session.speed_ratio, web_session.transpose_semitones
             )
+            if breakdown is not None:
+                breakdown.apply_ms += round((time.perf_counter() - started_at) * 1000)
             if state_revision != web_session.state_revision:
                 continue
             web_session.apply_summary = apply_summary
+            web_session.applied_duration_seconds = float(apply_summary["durationSeconds"])
             web_session.applied_path = applied_path
             return applied_path
         raise WebValidationError("設定が連続して変更されたため、MIDIの適用をやり直してください")
@@ -1798,6 +1908,87 @@ def create_app(
             raise
         return plan.inputs
 
+    def prewarm_chip_hardware(midi_revision: int) -> None:
+        """変換直後の実機音源キャッシュをバックグラウンドで温める。
+
+        まず既定選択の全チャンネルWAVを温める。これが全尺レンダーのクリティカル
+        パスなので、個別チャンネルの温め完了を待たず即座にLRUへ登録する。その後に
+        個別チャンネルWAVを完成順に登録し、短区間プレビューで使えるようにする。
+
+        長いエミュレーションはrender_lockの外で実行する。通常レンダーと同時に
+        なった場合は、先に登録されたものを優先して温め側の一時WAVを捨てるため、
+        同じキャッシュキーを壊さない。
+        """
+        def prepare_plan(*, per_track: bool) -> list[ChipCacheMiss] | None:
+            with web_session.render_lock:
+                if midi_revision != web_session.midi_revision or web_session.root is None:
+                    return None
+                plan = _plan_chip_hardware(per_track=per_track)
+                return [
+                    ChipCacheMiss(
+                        miss.cache_key,
+                        miss.indices,
+                        _cache_output_path("chip-warm", miss.cache_key),
+                    )
+                    for miss in plan.misses
+                ]
+
+        def render_and_store(misses: list[ChipCacheMiss]) -> bool:
+            """温めたWAVを完了順に登録し、状態更新時は安全に破棄する。"""
+            if not misses:
+                return True
+            stored_paths: set[Path] = set()
+            try:
+                with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                    futures = {
+                        executor.submit(_render_chip_targets, miss.indices, miss.path): miss
+                        for miss in misses
+                    }
+                    for future in as_completed(futures):
+                        miss = futures[future]
+                        future.result()
+                        with web_session.render_lock:
+                            if midi_revision != web_session.midi_revision:
+                                miss.path.unlink(missing_ok=True)
+                                continue
+                            if _cache_lookup(miss.cache_key) is None:
+                                _cache_store(miss.cache_key, miss.path)
+                                stored_paths.add(miss.path)
+                            else:
+                                miss.path.unlink(missing_ok=True)
+                return midi_revision == web_session.midi_revision
+            except Exception:
+                for miss in misses:
+                    if miss.path not in stored_paths:
+                        miss.path.unlink(missing_ok=True)
+                return False
+
+        default_misses = prepare_plan(per_track=False)
+        if default_misses is None or not render_and_store(default_misses):
+            return
+
+        individual_misses = prepare_plan(per_track=True)
+        if individual_misses is not None:
+            render_and_store(individual_misses[:CHIP_PREWARM_MAX_CHANNELS])
+
+    def start_chip_prewarm() -> None:
+        """現状態の実機音源キャッシュ温めを開始する。"""
+        if (
+            not app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"]
+            or web_session.source_format not in CHIP_HARDWARE_SOURCE_FORMATS
+        ):
+            return
+        # 生チップWAVのキーは元MIDI／変換元だけで決まり、音量・音色・音源選択は
+        # 含まれない。これらの編集でstate_revisionが変わっても温めを中止せず、
+        # ソロ直後の短区間プレビューで再利用できるようにする。
+        midi_revision = web_session.midi_revision
+        threading.Thread(
+            target=prewarm_chip_hardware,
+            args=(midi_revision,),
+            name="miditrack-chip-prewarm",
+            daemon=True,
+        ).start()
+
     def _render_applied_midi(
         applied_path: Path,
         wav_path: Path,
@@ -1807,6 +1998,8 @@ def create_app(
         transpose: int,
         sample_rate: int = 44100,
         chip_render_stems: list[tuple[Path, float]] | None = None,
+        include_session_stems: bool = True,
+        breakdown: RenderBreakdown | None = None,
     ) -> None:
         """適用済みMIDI(applied_path)をwav_pathへレンダリングする。
 
@@ -1830,6 +2023,7 @@ def create_app(
         （POST /api/variations）が、speed/transposeに依存しないこの結果を
         全組み合わせで1回だけ生成して使い回すため。
         """
+        split_started_at = time.perf_counter()
         chip_plan = ChipHardwarePlan(inputs=[], misses=[])
         if chip_render_stems is None:
             chip_plan = _plan_chip_hardware()
@@ -1837,11 +2031,13 @@ def create_app(
 
         effective_soundfont = web_session.soundfont_override or soundfont
         jobs = _plan_render_jobs(applied_path, effective_soundfont, render_id)
+        if breakdown is not None:
+            breakdown.split_ms += round((time.perf_counter() - split_started_at) * 1000)
 
-        stem = web_session.chip_stem_path
+        stem = web_session.chip_stem_path if include_session_stems else None
         if stem is not None and not stem.exists():
             stem = None
-        dac_stem = web_session.dac_stem_path
+        dac_stem = web_session.dac_stem_path if include_session_stems else None
         if dac_stem is not None and not dac_stem.exists():
             dac_stem = None
         has_stem = stem is not None or dac_stem is not None or len(chip_render_stems) > 0
@@ -1870,7 +2066,13 @@ def create_app(
                 ]
 
             if len(jobs) == 1 and not has_stem:
+                fluid_started_at = time.perf_counter()
                 render_wav(jobs[0][0], wav_path, jobs[0][1], sample_rate)
+                if breakdown is not None:
+                    breakdown.fluid_synth_ms = max(
+                        breakdown.fluid_synth_ms,
+                        round((time.perf_counter() - fluid_started_at) * 1000),
+                    )
             else:
                 # 実機チップステム（ノイズ・DAC、どちらか片方または両方）と合成する
                 # 場合だけヘッドルームを取る（mix.DRY_GAIN）。ゲームSF2側とGM側の
@@ -1885,23 +2087,39 @@ def create_app(
                     temp_paths.append(part_path)
                     render_parts.append((job_mid, job_soundfont, part_path))
                     inputs.append((part_path, fluid_gain))
+                def render_chip_job(miss: ChipCacheMiss) -> int:
+                    started_at = time.perf_counter()
+                    _render_chip_targets(miss.indices, miss.path)
+                    return round((time.perf_counter() - started_at) * 1000)
+
+                def render_fluid_job(
+                    job_mid: Path, job_soundfont: Path | None, part_path: Path
+                ) -> int:
+                    started_at = time.perf_counter()
+                    render_wav(job_mid, part_path, job_soundfont, sample_rate)
+                    return round((time.perf_counter() - started_at) * 1000)
+
                 with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
                     chip_futures = [
-                        executor.submit(_render_chip_targets, miss.indices, miss.path)
+                        executor.submit(render_chip_job, miss)
                         for miss in chip_plan.misses
                     ]
                     render_futures = [
                         executor.submit(
-                            render_wav,
+                            render_fluid_job,
                             job_mid,
-                            part_path,
                             job_soundfont,
-                            sample_rate,
+                            part_path,
                         )
                         for job_mid, job_soundfont, part_path in render_parts
                     ]
-                    for future in chip_futures + render_futures:
-                        future.result()
+                    chip_durations = [future.result() for future in chip_futures]
+                    fluid_durations = [future.result() for future in render_futures]
+                if breakdown is not None:
+                    breakdown.chip_ms = max(breakdown.chip_ms, max(chip_durations, default=0))
+                    breakdown.fluid_synth_ms = max(
+                        breakdown.fluid_synth_ms, max(fluid_durations, default=0)
+                    )
                 _store_chip_hardware(chip_plan)
                 if stem is not None:
                     inputs.append((stem, mix.STEM_GAIN))
@@ -1911,7 +2129,10 @@ def create_app(
                 if len(inputs) == 1:
                     shutil.copyfile(inputs[0][0], wav_path)
                 else:
+                    mix_started_at = time.perf_counter()
                     mix_wav(inputs, wav_path, sample_rate)
+                    if breakdown is not None:
+                        breakdown.mix_ms += round((time.perf_counter() - mix_started_at) * 1000)
         finally:
             for miss in chip_plan.misses:
                 if miss.cache_key not in web_session.render_cache:
@@ -1931,8 +2152,9 @@ def create_app(
         with web_session.render_lock:
             started_at = time.perf_counter()
             for _attempt in range(3):
+                breakdown = RenderBreakdown()
                 state_revision = web_session.state_revision
-                applied_path = ensure_applied()
+                applied_path = ensure_applied(breakdown)
                 state_key = _render_state_key(mode)
                 cache_key = f"render:{state_key}"
                 wav_path = _cache_lookup(cache_key)
@@ -1952,6 +2174,7 @@ def create_app(
                             speed=web_session.speed_ratio,
                             transpose=web_session.transpose_semitones,
                             sample_rate=RENDER_SAMPLE_RATES[mode],
+                            breakdown=breakdown,
                         )
                     except Exception:
                         generated_path.unlink(missing_ok=True)
@@ -1995,6 +2218,196 @@ def create_app(
                 cache_key=cache_key,
                 cache_hit=cache_hit,
                 render_ms=render_ms,
+                breakdown=breakdown,
+            )
+
+    def _preview_chip_stems(
+        window: midi.MidiWindow, work_id: int
+    ) -> tuple[list[tuple[Path, float]], list[Path]]:
+        """短区間プレビュー用に原曲ステムを切り出し、ミックス入力を返す。
+
+        既定音量の選択集合は変換直後に温めた集合WAVをそのまま切り出す。音量を
+        変更した少数チャンネルは個別WAVを差分として重ね、ソロ／ミュートでは無音の
+        チャンネルを要求しない。必要な生WAVがまだ無ければ、重い全曲エミュレー
+        ションを同期で始めず全尺レンダーへフォールバックさせる。
+        """
+        assert web_session.root is not None
+        source_start = window.start_seconds * web_session.speed_ratio
+        source_duration = (window.end_seconds - window.start_seconds) * web_session.speed_ratio
+        if source_duration <= 0:
+            return [], []
+
+        inputs: list[tuple[Path, float]] = []
+        temporary_paths: list[Path] = []
+
+        def add_trimmed_stem(source_path: Path, label: str, gain: float) -> None:
+            output_path = web_session.root / f"preview-{work_id:04d}.{label}.wav"
+            mix.trim_wav(
+                source_path,
+                output_path,
+                source_start,
+                source_duration,
+                sample_rate=RENDER_SAMPLE_RATES[FAST_RENDER_MODE],
+            )
+            temporary_paths.append(output_path)
+            inputs.append((output_path, gain))
+
+        if web_session.chip_stem_path is not None and web_session.chip_stem_path.exists():
+            add_trimmed_stem(web_session.chip_stem_path, "noise", mix.STEM_GAIN)
+        if web_session.dac_stem_path is not None and web_session.dac_stem_path.exists():
+            add_trimmed_stem(web_session.dac_stem_path, "dac", mix.STEM_GAIN)
+
+        if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS:
+            tracks_by_index = {track.index: track for track in web_session.tracks}
+            selected_indices = sorted(
+                index for index, source in web_session.track_sources.items() if source == "game"
+            )
+            baseline_for = lambda index: (
+                tracks_by_index[index].source_volume_percent
+                or midi.DEFAULT_TRACK_VOLUME_PERCENT
+            )
+            volume_for = lambda index: web_session.volumes.get(index, baseline_for(index))
+            default_group_path = _cache_lookup(_chip_cache_key(selected_indices))
+            has_muted_channel = any(volume_for(index) == 0 for index in selected_indices)
+            if default_group_path is not None and not has_muted_channel:
+                add_trimmed_stem(default_group_path, "chip-default", mix.STEM_GAIN)
+                for index in selected_indices:
+                    baseline = baseline_for(index)
+                    volume = volume_for(index)
+                    if volume == baseline:
+                        continue
+                    raw_path = _cache_lookup(_chip_cache_key([index]))
+                    if raw_path is None:
+                        for path in temporary_paths:
+                            path.unlink(missing_ok=True)
+                        raise WebValidationError("原曲音源の短区間プレビューを温めています")
+                    # 集合WAVには基準音量のこのチャンネルが既に含まれるため、差分だけ
+                    # を加える。ミュートを含む場合は集合WAVを使わず、下の個別経路で
+                    # 可聴チャンネルだけを使う。
+                    delta_gain = mix.STEM_GAIN * (volume / baseline - 1)
+                    add_trimmed_stem(raw_path, f"chip{index}-delta", delta_gain)
+                return inputs, temporary_paths
+
+            for index in selected_indices:
+                baseline = baseline_for(index)
+                volume = volume_for(index)
+                if volume == 0:
+                    continue
+                raw_path = _cache_lookup(_chip_cache_key([index]))
+                if raw_path is None:
+                    for path in temporary_paths:
+                        path.unlink(missing_ok=True)
+                    raise WebValidationError("原曲音源の短区間プレビューを温めています")
+                add_trimmed_stem(
+                    raw_path,
+                    f"chip{index}",
+                    mix.STEM_GAIN * volume / baseline,
+                )
+        return inputs, temporary_paths
+
+    def ensure_preview(
+        mode: str, timeline_seconds: float
+    ) -> tuple[RenderOutcome | None, midi.MidiWindow | None]:
+        """再生位置付近の短区間WAVを生成し、audio_sourcesだけへ登録する。
+
+        full renderのaudio_path/current_render_keyは絶対に書き換えない。プレビューを
+        選んだ後もダウンロード、全尺キャッシュ判定、後続の全尺クロスフェードが
+        従来どおり全尺WAVだけを対象にできるようにするためである。
+        """
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("MIDIファイルがアップロードされていません")
+        with web_session.render_lock:
+            started_at = time.perf_counter()
+            state_key = _render_state_key(mode)
+            if _cache_lookup(f"render:{state_key}") is not None:
+                return None, None
+            start_seconds = max(0.0, timeline_seconds - PREVIEW_PREROLL_SECONDS)
+            end_seconds = timeline_seconds + PREVIEW_FORWARD_SECONDS
+            window_key = f"{start_seconds:.3f}:{end_seconds:.3f}"
+            cache_key = f"preview:{state_key}:{window_key}"
+            entry = _preview_cache_lookup(cache_key)
+            cache_hit = entry is not None
+            if entry is None:
+                for _attempt in range(3):
+                    state_revision = web_session.state_revision
+                    web_session.render_id += 1
+                    work_id = web_session.render_id
+                    raw_window_path = web_session.root / f"preview-{work_id:04d}.raw.mid"
+                    applied_window_path = web_session.root / f"preview-{work_id:04d}.mid"
+                    wav_path = web_session.root / f"preview-{work_id:04d}.wav"
+                    preview_stem_paths: list[Path] = []
+                    try:
+                        window = midi.write_time_window(
+                            web_session.original_path,
+                            raw_window_path,
+                            start_seconds,
+                            end_seconds,
+                            speed=web_session.speed_ratio,
+                        )
+                        summary = _apply_source_to(
+                            raw_window_path,
+                            applied_window_path,
+                            web_session.speed_ratio,
+                            web_session.transpose_semitones,
+                        )
+                        # 切り出しMIDIの実際の長さを正とする。終端付近では要求した
+                        # 12秒先まで存在しないため、固定窓長を返すとクライアントの
+                        # シーク・ループの上限が曲末を越えてしまう。
+                        window = midi.MidiWindow(
+                            window.start_seconds,
+                            window.start_seconds + float(summary["durationSeconds"]),
+                        )
+                        preview_chip_stems, preview_stem_paths = _preview_chip_stems(
+                            window, work_id
+                        )
+                        breakdown = RenderBreakdown()
+                        _render_applied_midi(
+                            applied_window_path,
+                            wav_path,
+                            render_id=work_id,
+                            speed=web_session.speed_ratio,
+                            transpose=web_session.transpose_semitones,
+                            sample_rate=RENDER_SAMPLE_RATES[FAST_RENDER_MODE],
+                            chip_render_stems=preview_chip_stems,
+                            include_session_stems=False,
+                            breakdown=breakdown,
+                        )
+                    except Exception:
+                        wav_path.unlink(missing_ok=True)
+                        raise
+                    finally:
+                        raw_window_path.unlink(missing_ok=True)
+                        applied_window_path.unlink(missing_ok=True)
+                        for preview_stem_path in preview_stem_paths:
+                            preview_stem_path.unlink(missing_ok=True)
+                    if state_revision != web_session.state_revision:
+                        wav_path.unlink(missing_ok=True)
+                        continue
+                    entry = _preview_cache_store(cache_key, wav_path, window)
+                    break
+                else:
+                    raise WebValidationError(
+                        "設定が連続して変更されたため、短区間プレビューをやり直してください"
+                    )
+            else:
+                breakdown = RenderBreakdown()
+
+            web_session.render_id += 1
+            preview_render_id = web_session.render_id
+            web_session.audio_sources[preview_render_id] = entry.path
+            web_session.audio_sources.move_to_end(preview_render_id)
+            while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
+                web_session.audio_sources.popitem(last=False)
+            return (
+                RenderOutcome(
+                    path=entry.path,
+                    mode=mode,
+                    cache_key=cache_key,
+                    cache_hit=cache_hit,
+                    render_ms=round((time.perf_counter() - started_at) * 1000),
+                    breakdown=breakdown,
+                ),
+                entry.window,
             )
 
     @app.post("/api/render")
@@ -2015,6 +2428,7 @@ def create_app(
             sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
             cacheHit=outcome.cache_hit,
             renderMs=outcome.render_ms,
+            renderBreakdown=outcome.breakdown.to_response(),
             **(web_session.apply_summary or {}),
         )
 
@@ -2033,6 +2447,48 @@ def create_app(
             sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
             cacheHit=outcome.cache_hit,
             renderMs=outcome.render_ms,
+            renderBreakdown=outcome.breakdown.to_response(),
+        )
+
+    @app.post("/api/render/preview")
+    def render_preview_endpoint() -> Response:
+        """現在の曲全体タイムライン位置付近の短区間WAVを返す。"""
+        web_session.require_tracks()
+        if web_session.root is None or web_session.original_path is None:
+            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+        body = request.get_json(silent=True) or {}
+        requested_revision = body.get("stateRevision")
+        if requested_revision is not None and requested_revision != web_session.state_revision:
+            return jsonify(error="設定が更新されたため短区間プレビューを破棄しました"), 409
+        timeline_seconds = body.get("timelineSeconds", 0.0)
+        if (
+            isinstance(timeline_seconds, bool)
+            or not isinstance(timeline_seconds, (int, float))
+            or not math.isfinite(timeline_seconds)
+            or timeline_seconds < 0
+        ):
+            raise WebValidationError("timelineSecondsは0以上の有限な秒数で指定してください")
+        mode = _validate_render_mode(body.get("renderMode"))
+        try:
+            outcome, window = ensure_preview(mode, float(timeline_seconds))
+        except WebValidationError as error:
+            if "短区間プレビューを温めています" not in str(error):
+                raise
+            return jsonify(available=False, reason="chip-warmup"), 200
+        if outcome is None or window is None:
+            return jsonify(available=False, reason="full-cached"), 200
+        return jsonify(
+            available=True,
+            audioUrl=f"/api/audio?v={web_session.render_id}",
+            renderId=web_session.render_id,
+            renderKind="segment",
+            renderMode=outcome.mode,
+            sampleRate=RENDER_SAMPLE_RATES[FAST_RENDER_MODE],
+            timelineStartSeconds=window.start_seconds,
+            timelineEndSeconds=window.end_seconds,
+            cacheHit=outcome.cache_hit,
+            renderMs=outcome.render_ms,
+            renderBreakdown=outcome.breakdown.to_response(),
         )
 
     @app.get("/api/audio")
@@ -2625,6 +3081,7 @@ def create_app(
             web_session.track_sources = {
                 track.index: "game" for track in tracks if track.note_count > 0
             }
+        start_chip_prewarm()
         return jsonify(**session_payload(web_session))
 
     return app
