@@ -2231,12 +2231,16 @@ Fullscreen no longer reserves a top-left grid row for a collapsed upload
 summary. `.app-shell` uses five rows: transport, flexible piano roll,
 piano-roll footer, download toolbar, and output panel. `#tracks-card` spans
 all five rows from the first row, keeps its normal-layout card heading hidden
-only in fullscreen, and overrides the base blue top border with the ordinary
-neutral card border. This gives the track
+only in fullscreen, uses an 8px fullscreen-only card padding, and overrides
+the base blue top border with the ordinary neutral card border. This gives the track
 controls the first visible pixel of the left workspace. The responsive fallback
 also starts with `#tracks-card`; the open dialog remains a top-layer modal at
 every viewport width. Escape's fullscreen shortcut explicitly returns when any
 native dialog is open, so closing the file dialog cannot change display mode.
+
+The header keeps `miditrack` as the `h1`'s primary label and wraps the smaller
+`GM Instrument Assigner` descriptor in `.app-title-subtitle`, preserving the
+single accessible heading while reducing the descriptor's visual prominence.
 
 `tests/test_web.py` asserts the normal-layout upload card, fullscreen-only
 header/dialog ownership, the obsolete track heading's absence, the neutral

@@ -362,6 +362,8 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("音源またはMIDIを選択", html)
         self.assertIn('id="tracks-card-heading"', html)
         self.assertIn("トラックごとの音源・楽器・音量", html)
+        self.assertIn('<span class="app-title-subtitle">GM Instrument Assigner</span>', html)
+        self.assertIn(".app-title-subtitle {\n  font-size: 0.68em", css)
         self.assertIn("#open-dialog-button,\n#open-dialog-close { display: none; }", css)
         self.assertIn("body.is-fullscreen #open-dialog-button { display: inline-flex; }", css)
         self.assertIn("body.is-fullscreen #open-dialog > #upload-card {", css)
@@ -377,6 +379,9 @@ class TestWebApp(unittest.TestCase):
             css,
         )
         self.assertIn("border-top: 1px solid var(--neutral-30)", css)
+        self.assertIn("body.is-fullscreen #tracks-card {", css)
+        fullscreen_tracks_rule = css.split("body.is-fullscreen #tracks-card {", 1)[1].split("}", 1)[0]
+        self.assertIn("padding: 8px", fullscreen_tracks_rule)
 
     def test_pianoroll_draws_pitchwheel_paths(self) -> None:
         """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""

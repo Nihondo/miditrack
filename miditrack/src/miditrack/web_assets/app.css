@@ -131,6 +131,14 @@ button { color: inherit; }
   text-shadow: 0 -1px rgba(0, 51, 102, 0.35), 0 1px rgba(0, 51, 102, 0.35);
 }
 
+/* 製品名を主見出しとして保ち、機能説明の副題は視覚的な優先度を下げる。 */
+.app-title-subtitle {
+  font-size: 0.68em;
+  font-weight: 600;
+  letter-spacing: 0;
+  opacity: 0.86;
+}
+
 .eyebrow {
   margin: 0 0 2px;
   color: rgba(255, 255, 255, 0.78);
@@ -1423,6 +1431,7 @@ body.is-fullscreen #tracks-card {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  padding: 8px;
   border-top: 1px solid var(--neutral-30);
 }
 
