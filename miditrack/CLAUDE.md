@@ -35,6 +35,8 @@ fail without overwriting an existing non-matching command or link.
 Install Homebrew formulae individually so a conflicting same-named formula
 from another tap does not prevent later setup steps; verify every required
 runtime command on `PATH` before continuing to the Python and Node.js setup.
+Use cyan `▶` and `✓` status lines for installer progress only when stdout is a TTY; keep
+redirected output free of ANSI escape sequences.
 
 ## Architecture
 

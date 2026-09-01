@@ -22,6 +22,22 @@ fail() {
     exit 1
 }
 
+if [[ -t 1 ]]; then
+    C_CYAN='\033[36m'
+    C_RESET='\033[0m'
+else
+    C_CYAN=''
+    C_RESET=''
+fi
+
+info_line() {
+    printf '%b▶ %s%b\n' "$C_CYAN" "$*" "$C_RESET"
+}
+
+success_line() {
+    printf '%b✓ %s%b\n' "$C_CYAN" "$*" "$C_RESET"
+}
+
 resolve_script_path() {
     local source_path="$1"
     local source_dir
@@ -54,17 +70,17 @@ validate_command_link() {
 
 install_command_link() {
     if [[ -L "$COMMAND_LINK" && "$(readlink "$COMMAND_LINK")" == "$LAUNCHER_PATH" ]]; then
-        printf '✓ miditrackコマンドは設定済みです: %s\n' "$COMMAND_LINK"
+        success_line "miditrackコマンドは設定済みです: $COMMAND_LINK"
         return
     fi
     ln -s "$LAUNCHER_PATH" "$COMMAND_LINK"
-    printf '✓ miditrackコマンドを作成しました: %s\n' "$COMMAND_LINK"
+    success_line "miditrackコマンドを作成しました: $COMMAND_LINK"
 }
 
 install_brew_formula() {
     local formula_name="$1"
 
-    printf '▶ Homebrew依存をインストールしています: %s\n' "$formula_name"
+    info_line "Homebrew依存をインストールしています: $formula_name"
     if ! brew install "$formula_name"; then
         printf '⚠ %sの導入に失敗しました。既存の別tap版を利用できる場合は続行します。\n' \
             "$formula_name" >&2
@@ -110,15 +126,16 @@ command -v rubberband >/dev/null 2>&1 || fail "rubberbandが見つかりませ�
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
     || fail "Python 3.10以上が必要です"
 
-printf '▶ Python仮想環境をセットアップしています\n'
+info_line "Python仮想環境をセットアップしています"
 python3 -m venv "$VIRTUAL_ENV_DIR"
 "$VIRTUAL_ENV_DIR/bin/python" -m pip install --upgrade pip
 "$VIRTUAL_ENV_DIR/bin/python" -m pip install -e "$PACKAGE_DIR"
 
-printf '▶ VGM変換用のNode.js依存をセットアップしています\n'
+info_line "VGM変換用のNode.js依存をセットアップしています"
 npm --prefix "$VGM_DIR" ci --omit=dev
 install_command_link
 
-printf '\n✓ セットアップが完了しました\n'
+printf '\n'
+success_line "セットアップが完了しました"
 printf '  起動: miditrack\n'
-printf '  カスタムSoundFont: %s/soundfonts/ に.sf2または.sf3を配置\n' "$REPOSITORY_DIR"
+printf '  カスタムSoundFont: %s/soundfonts/ に.sf2または.sf3を配置してください\n' "$REPOSITORY_DIR"

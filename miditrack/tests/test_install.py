@@ -38,6 +38,24 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn('if ! brew install "$formula_name"; then', installer)
         self.assertIn('command -v ffmpeg', installer)
 
+    def test_colours_entire_status_lines_only_for_a_terminal(self) -> None:
+        repository_root = Path(__file__).resolve().parents[2]
+        installer = (repository_root / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn('if [[ -t 1 ]]; then', installer)
+        self.assertIn("C_CYAN='\\033[36m'", installer)
+        self.assertIn("info_line()", installer)
+        self.assertIn(
+            "printf '%b▶ %s%b\\n' \"$C_CYAN\" \"$*\" \"$C_RESET\"",
+            installer,
+        )
+        self.assertIn("success_line()", installer)
+        self.assertIn(
+            "printf '%b✓ %s%b\\n' \"$C_CYAN\" \"$*\" \"$C_RESET\"",
+            installer,
+        )
+        self.assertNotIn("printf '%b▶%b %s\\n'", installer)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
