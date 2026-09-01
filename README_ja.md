@@ -240,6 +240,8 @@ vgm2midi song.vgz --loops 3
 ./miditrack/midi2wav.sh -s MySound.sf2 -f song.mid
 ```
 
+`midi2wav.sh`は、レンダリング前に使わないサンプルまで読み込むことを避けるため、既定でFluidSynthのSoundFontサンプル動的読込を使います。FluidSynthの事前読込時の出力と比較する場合だけ、`--no-dynamic-sample-loading`を使います。
+
 ## トラブルシューティング
 
 - **SoundFontが見つからない**: `--soundfont`を指定する、`MIDI2WAV_SOUNDFONT`を設定する、または上記のいずれかのディレクトリへ`.sf2`/`.sf3`を配置します。

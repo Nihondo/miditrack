@@ -104,6 +104,33 @@ class RenderOutcome:
     cache_key: str
     cache_hit: bool
     render_ms: int
+    breakdown: "RenderBreakdown"
+
+
+@dataclass
+class RenderBreakdown:
+    """レンダーのクリティカルパスを構成する処理時間（ミリ秒）。
+
+    FluidSynthと実機チップのジョブは最大2本まで並列実行するため、各カテゴリは
+    合計CPU時間ではなく最長ジョブ時間を持つ。これによりrenderMsとの比較で実際の
+    待ち時間を判断できる。
+    """
+
+    apply_ms: int = 0
+    split_ms: int = 0
+    fluid_synth_ms: int = 0
+    chip_ms: int = 0
+    mix_ms: int = 0
+
+    def to_response(self) -> dict[str, int]:
+        """API応答用のcamelCase計測値を返す。"""
+        return {
+            "applyMs": self.apply_ms,
+            "splitMs": self.split_ms,
+            "fluidSynthMs": self.fluid_synth_ms,
+            "chipMs": self.chip_ms,
+            "mixMs": self.mix_ms,
+        }
 
 
 @dataclass(frozen=True)
@@ -155,7 +182,10 @@ class WebSession:
     speed_ratio: float = midi.DEFAULT_SPEED_RATIO
     transpose_semitones: int = midi.DEFAULT_TRANSPOSE_SEMITONES
     applied_path: Path | None = None
-    apply_summary: dict[str, int] | None = None
+    apply_summary: dict[str, int | float] | None = None
+    # apply_assignments()が同じMIDIオブジェクトから求めた演奏時間。プレビュー窓の
+    # 終端やクライアントの曲全体タイムラインで使うため、applied_pathと同じ寿命で持つ。
+    applied_duration_seconds: float | None = None
     audio_path: Path | None = None
     current_render_key: str | None = None
     current_render_mode: str | None = None
@@ -276,6 +306,7 @@ class WebSession:
         self.transpose_semitones = midi.DEFAULT_TRANSPOSE_SEMITONES
         self.applied_path = None
         self.apply_summary = None
+        self.applied_duration_seconds = None
         self.audio_path = None
         self.variations_zip_path = None
         self.track_export_zip_path = None
@@ -345,6 +376,7 @@ class WebSession:
         """
         self.applied_path = None
         self.apply_summary = None
+        self.applied_duration_seconds = None
         self.audio_path = None
         self.current_render_key = None
         self.current_render_mode = None
@@ -1507,7 +1539,9 @@ def create_app(
         cache_dir.mkdir(exist_ok=True)
         return cache_dir / f"{kind}-{cache_key[:24]}.wav"
 
-    def _apply_to(output_path: Path, speed: float, transpose: int) -> dict[str, int]:
+    def _apply_to(
+        output_path: Path, speed: float, transpose: int
+    ) -> dict[str, int | float]:
         """assignments・volumesを適用したMIDIをoutput_pathへ書き、summaryを返す。
 
         常にoriginal_pathを読み直すので冪等（apply_assignments()自身の契約）。
@@ -1543,7 +1577,7 @@ def create_app(
             transpose=transpose,
         )
 
-    def ensure_applied() -> Path:
+    def ensure_applied(breakdown: RenderBreakdown | None = None) -> Path:
         """assignments適用済みのMIDIパスを返す。未適用ならその場で適用する。
 
         invalidate_render()がapplied_path/apply_summaryを対で無効化するため、
@@ -1556,12 +1590,16 @@ def create_app(
                 return web_session.applied_path
             state_revision = web_session.state_revision
             applied_path = web_session.root / "miditrack_edited.mid"
+            started_at = time.perf_counter()
             apply_summary = _apply_to(
                 applied_path, web_session.speed_ratio, web_session.transpose_semitones
             )
+            if breakdown is not None:
+                breakdown.apply_ms += round((time.perf_counter() - started_at) * 1000)
             if state_revision != web_session.state_revision:
                 continue
             web_session.apply_summary = apply_summary
+            web_session.applied_duration_seconds = float(apply_summary["durationSeconds"])
             web_session.applied_path = applied_path
             return applied_path
         raise WebValidationError("設定が連続して変更されたため、MIDIの適用をやり直してください")
@@ -1807,6 +1845,7 @@ def create_app(
         transpose: int,
         sample_rate: int = 44100,
         chip_render_stems: list[tuple[Path, float]] | None = None,
+        breakdown: RenderBreakdown | None = None,
     ) -> None:
         """適用済みMIDI(applied_path)をwav_pathへレンダリングする。
 
@@ -1830,6 +1869,7 @@ def create_app(
         （POST /api/variations）が、speed/transposeに依存しないこの結果を
         全組み合わせで1回だけ生成して使い回すため。
         """
+        split_started_at = time.perf_counter()
         chip_plan = ChipHardwarePlan(inputs=[], misses=[])
         if chip_render_stems is None:
             chip_plan = _plan_chip_hardware()
@@ -1837,6 +1877,8 @@ def create_app(
 
         effective_soundfont = web_session.soundfont_override or soundfont
         jobs = _plan_render_jobs(applied_path, effective_soundfont, render_id)
+        if breakdown is not None:
+            breakdown.split_ms += round((time.perf_counter() - split_started_at) * 1000)
 
         stem = web_session.chip_stem_path
         if stem is not None and not stem.exists():
@@ -1870,7 +1912,13 @@ def create_app(
                 ]
 
             if len(jobs) == 1 and not has_stem:
+                fluid_started_at = time.perf_counter()
                 render_wav(jobs[0][0], wav_path, jobs[0][1], sample_rate)
+                if breakdown is not None:
+                    breakdown.fluid_synth_ms = max(
+                        breakdown.fluid_synth_ms,
+                        round((time.perf_counter() - fluid_started_at) * 1000),
+                    )
             else:
                 # 実機チップステム（ノイズ・DAC、どちらか片方または両方）と合成する
                 # 場合だけヘッドルームを取る（mix.DRY_GAIN）。ゲームSF2側とGM側の
@@ -1885,23 +1933,39 @@ def create_app(
                     temp_paths.append(part_path)
                     render_parts.append((job_mid, job_soundfont, part_path))
                     inputs.append((part_path, fluid_gain))
+                def render_chip_job(miss: ChipCacheMiss) -> int:
+                    started_at = time.perf_counter()
+                    _render_chip_targets(miss.indices, miss.path)
+                    return round((time.perf_counter() - started_at) * 1000)
+
+                def render_fluid_job(
+                    job_mid: Path, job_soundfont: Path | None, part_path: Path
+                ) -> int:
+                    started_at = time.perf_counter()
+                    render_wav(job_mid, part_path, job_soundfont, sample_rate)
+                    return round((time.perf_counter() - started_at) * 1000)
+
                 with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
                     chip_futures = [
-                        executor.submit(_render_chip_targets, miss.indices, miss.path)
+                        executor.submit(render_chip_job, miss)
                         for miss in chip_plan.misses
                     ]
                     render_futures = [
                         executor.submit(
-                            render_wav,
+                            render_fluid_job,
                             job_mid,
-                            part_path,
                             job_soundfont,
-                            sample_rate,
+                            part_path,
                         )
                         for job_mid, job_soundfont, part_path in render_parts
                     ]
-                    for future in chip_futures + render_futures:
-                        future.result()
+                    chip_durations = [future.result() for future in chip_futures]
+                    fluid_durations = [future.result() for future in render_futures]
+                if breakdown is not None:
+                    breakdown.chip_ms = max(breakdown.chip_ms, max(chip_durations, default=0))
+                    breakdown.fluid_synth_ms = max(
+                        breakdown.fluid_synth_ms, max(fluid_durations, default=0)
+                    )
                 _store_chip_hardware(chip_plan)
                 if stem is not None:
                     inputs.append((stem, mix.STEM_GAIN))
@@ -1911,7 +1975,10 @@ def create_app(
                 if len(inputs) == 1:
                     shutil.copyfile(inputs[0][0], wav_path)
                 else:
+                    mix_started_at = time.perf_counter()
                     mix_wav(inputs, wav_path, sample_rate)
+                    if breakdown is not None:
+                        breakdown.mix_ms += round((time.perf_counter() - mix_started_at) * 1000)
         finally:
             for miss in chip_plan.misses:
                 if miss.cache_key not in web_session.render_cache:
@@ -1931,8 +1998,9 @@ def create_app(
         with web_session.render_lock:
             started_at = time.perf_counter()
             for _attempt in range(3):
+                breakdown = RenderBreakdown()
                 state_revision = web_session.state_revision
-                applied_path = ensure_applied()
+                applied_path = ensure_applied(breakdown)
                 state_key = _render_state_key(mode)
                 cache_key = f"render:{state_key}"
                 wav_path = _cache_lookup(cache_key)
@@ -1952,6 +2020,7 @@ def create_app(
                             speed=web_session.speed_ratio,
                             transpose=web_session.transpose_semitones,
                             sample_rate=RENDER_SAMPLE_RATES[mode],
+                            breakdown=breakdown,
                         )
                     except Exception:
                         generated_path.unlink(missing_ok=True)
@@ -1995,6 +2064,7 @@ def create_app(
                 cache_key=cache_key,
                 cache_hit=cache_hit,
                 render_ms=render_ms,
+                breakdown=breakdown,
             )
 
     @app.post("/api/render")
@@ -2015,6 +2085,7 @@ def create_app(
             sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
             cacheHit=outcome.cache_hit,
             renderMs=outcome.render_ms,
+            renderBreakdown=outcome.breakdown.to_response(),
             **(web_session.apply_summary or {}),
         )
 
@@ -2033,6 +2104,7 @@ def create_app(
             sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
             cacheHit=outcome.cache_hit,
             renderMs=outcome.render_ms,
+            renderBreakdown=outcome.breakdown.to_response(),
         )
 
     @app.get("/api/audio")

@@ -630,6 +630,27 @@ directory) → a bare
 `"midi2wav"` on `PATH` (letting `subprocess.run()`'s own PATH search
 resolve it, still without invoking a shell).
 
+`midi2wav.sh` enables FluidSynth's `synth.dynamic-sample-loading=1` by
+default so a render does not eagerly load unused SoundFont samples. The
+`--no-dynamic-sample-loading` switch is an explicit comparison and recovery
+path; preserve it when changing the wrapper or FluidSynth option ordering.
+
+## Render measurement contract
+
+`POST /api/render` and `POST /api/render/prewarm` return `renderMs` together
+with `renderBreakdown` (`applyMs`, `splitMs`, `fluidSynthMs`, `chipMs`, and
+`mixMs`). The first is full request wall time. The per-category values measure
+their critical path: concurrent FluidSynth and hardware-chip jobs report the
+longest job in that category rather than summed CPU time, so they remain
+comparable to the perceived wait. A cache hit has zero work-category values.
+
+`midi.apply_assignments()` returns `durationSeconds` from the already loaded,
+edited `MidiFile`, using the same all-track tempo interpretation as the piano
+roll (including type-2 files). `WebSession.applied_duration_seconds` caches
+that value with `applied_path` and must be reset whenever `invalidate_render()`
+resets the applied MIDI. Do not add a second `MidiFile(path)` parse merely to
+obtain the duration.
+
 ## Why `rubberband.py` exists — direct chip-stem sync, not batch variations
 
 `src/miditrack/rubberband.py` keeps a real-audio chip/DAC stem in sync with

@@ -319,7 +319,9 @@ class TestApplyAssignments(unittest.TestCase):
     def test_update_existing_program_change_preserves_timing(self) -> None:
         output_path = Path(self.tmp.name) / "out.mid"
         summary = midi.apply_assignments(self.fixture_path, {0: 30}, output_path)
-        self.assertEqual(summary, {"updated": 1, "inserted": 0})
+        self.assertEqual(summary["updated"], 1)
+        self.assertEqual(summary["inserted"], 0)
+        self.assertEqual(summary["durationSeconds"], 0.5)
 
         edited = mido.MidiFile(output_path)
         pcs = [m.program for m in edited.tracks[0] if m.type == "program_change"]
@@ -329,7 +331,9 @@ class TestApplyAssignments(unittest.TestCase):
     def test_insert_program_change_preserves_timing(self) -> None:
         output_path = Path(self.tmp.name) / "out.mid"
         summary = midi.apply_assignments(self.fixture_path, {2: 33}, output_path)
-        self.assertEqual(summary, {"updated": 0, "inserted": 1})
+        self.assertEqual(summary["updated"], 0)
+        self.assertEqual(summary["inserted"], 1)
+        self.assertEqual(summary["durationSeconds"], 0.5)
 
         edited = mido.MidiFile(output_path)
         pcs = [(m.channel, m.program) for m in edited.tracks[2] if m.type == "program_change"]
@@ -501,6 +505,23 @@ class TestApplyTransform(unittest.TestCase):
         edited = mido.MidiFile(output_path)
         tempos = [m.tempo for track in edited.tracks for m in track if m.type == "set_tempo"]
         self.assertEqual(tempos, [250000])
+
+    def test_duration_uses_global_tempo_for_type_two_midi(self) -> None:
+        midi_file = mido.MidiFile(type=2, ticks_per_beat=480)
+        tempo_track = mido.MidiTrack()
+        tempo_track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+        tempo_track.append(mido.MetaMessage("end_of_track", time=480))
+        note_track = mido.MidiTrack()
+        note_track.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+        note_track.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=960))
+        midi_file.tracks.extend([tempo_track, note_track])
+        source_path = Path(self.tmp.name) / "type-two.mid"
+        output_path = Path(self.tmp.name) / "out.mid"
+        midi_file.save(source_path)
+
+        summary = midi.apply_assignments(source_path, {}, output_path)
+
+        self.assertEqual(summary["durationSeconds"], 1.0)
 
     def test_speed_inserts_tempo_when_none_exists(self) -> None:
         mf = mido.MidiFile(ticks_per_beat=480)

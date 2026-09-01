@@ -240,6 +240,10 @@ See [vgm2midi/README.md](vgm2midi/README.md) for supported chips and advanced op
 ./miditrack/midi2wav.sh -s MySound.sf2 -f song.mid
 ```
 
+`midi2wav.sh` uses FluidSynth's dynamic SoundFont sample loading by default to
+avoid loading unused samples before a render. Use `--no-dynamic-sample-loading`
+only when comparing output with FluidSynth's eager-loading behaviour.
+
 ## Troubleshooting
 
 - **SoundFont not found**: pass `--soundfont`, set `MIDI2WAV_SOUNDFONT`, or place a `.sf2`/`.sf3` in one of the directories listed above.

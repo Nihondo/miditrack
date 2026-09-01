@@ -376,6 +376,37 @@ def _scale_tempo(midi_file: Any, speed: float) -> None:
     midi_file.tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=tempo, time=0))
 
 
+def calculate_duration_seconds(midi_file: Any) -> float:
+    """全トラック共通のテンポマップでMIDI全体の演奏時間を秒単位で返す。
+
+    type-2 MIDIにもアプリ内のピアノロールと同じ「全トラック横断のテンポ」解釈を
+    適用する。MidoのMidiFile.lengthはtype-2で例外にするため、適用済みMIDIを
+    すでにメモリに持つレンダー経路ではこの関数を使う。
+    """
+    current_tempo = DEFAULT_TEMPO_MICROSECONDS
+    previous_tick = 0
+    elapsed_seconds = 0.0
+    tempo_changes: list[tuple[int, int]] = []
+    end_ticks: list[int] = []
+    for track in midi_file.tracks:
+        absolute_tick = 0
+        for message in track:
+            absolute_tick += message.time
+            if message.is_meta and message.type == "set_tempo":
+                tempo_changes.append((absolute_tick, message.tempo))
+        end_ticks.append(absolute_tick)
+    for tick, tempo in sorted(tempo_changes):
+        elapsed_seconds += (tick - previous_tick) * current_tempo / 1_000_000 / midi_file.ticks_per_beat
+        previous_tick = tick
+        current_tempo = tempo
+    return elapsed_seconds + (
+        (max(end_ticks, default=0) - previous_tick)
+        * current_tempo
+        / 1_000_000
+        / midi_file.ticks_per_beat
+    )
+
+
 def _transpose_track(track: Any, semitones: int) -> None:
     """note_on/note_off/polytouchのノート番号を移調する。
 
@@ -409,7 +440,7 @@ def apply_assignments(
     source_volumes: dict[int, int] | None = None,
     speed: float = DEFAULT_SPEED_RATIO,
     transpose: int = DEFAULT_TRANSPOSE_SEMITONES,
-) -> dict[str, int]:
+) -> dict[str, int | float]:
     """原本を読み直し、音色・トラック別Note Onベロシティ倍率・全体の速度/移調を適用して保存する。
 
     既存のプログラムチェンジがあれば値を書き換えるだけ（delta-time連鎖を壊さない
@@ -497,8 +528,15 @@ def apply_assignments(
         for track in midi_file.tracks:
             _transpose_track(track, transpose)
 
+    # ここでは既に編集後のMIDI全体をメモリ上に持っている。保存後に再度
+    # MidiFile(path)を開くよりも、レンダー開始を1回分のフルパースだけ短縮できる。
+    duration_seconds = round(calculate_duration_seconds(midi_file), 3)
     save_midi_atomic(midi_file, output_path)
-    return {"updated": updated, "inserted": inserted}
+    return {
+        "updated": updated,
+        "inserted": inserted,
+        "durationSeconds": duration_seconds,
+    }
 
 
 def _single_note_channel(track: Any) -> int | None:

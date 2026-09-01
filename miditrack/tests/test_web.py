@@ -1176,6 +1176,22 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(second["renderId"], first["renderId"])
         self.assertEqual(len(self.render_calls), 1)
 
+    def test_render_returns_breakdown_and_caches_applied_duration(self) -> None:
+        self._upload()
+        response = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        session = self.app.config["MIDITRACK_SESSION"]
+
+        self.assertEqual(
+            set(response["renderBreakdown"]),
+            {"applyMs", "splitMs", "fluidSynthMs", "chipMs", "mixMs"},
+        )
+        self.assertTrue(all(value >= 0 for value in response["renderBreakdown"].values()))
+        self.assertEqual(response["durationSeconds"], 0.5)
+        self.assertEqual(session.applied_duration_seconds, 0.5)
+
+        cached = self.client.post("/api/render", headers=AUTH_HEADERS).get_json()
+        self.assertEqual(cached["renderBreakdown"]["applyMs"], 0)
+
     def test_render_cache_evicts_oldest_entry_after_sixteen_states(self) -> None:
         self._upload()
         session = self.app.config["MIDITRACK_SESSION"]
