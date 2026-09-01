@@ -71,46 +71,87 @@ The converter binaries and the Apple Silicon native helper for Original VGM soun
 
 ## Using miditrack
 
-### Start from MIDI
+Drop a source file or a `.mid` onto the upload area and work through the four numbered screens. **Save project** downloads a `.miditrack` archive with the editable MIDI, conversion settings, track choices, speed/pitch, loop, and preset. **Open project** restores that state without re-converting the source. Rendered audio and generated ZIPs are not stored in a project.
 
-1. Upload or drag a `.mid`/`.midi` file.
-2. Select an instrument, volume, mute state, and (when offered) SoundFont or Original game sound for each track.
-3. Pick a SoundFont and **Fast** (22.05 kHz) or **Quality** (44.1 kHz) auditioning. Quality matches WAV download.
-4. Use the speed and transpose controls when needed. They affect every subsequent render and download.
-5. Use the piano roll to inspect, seek, and define a playback loop. Display settings change only the view and are remembered.
-6. Download MIDI or WAV. The WAV download always uses the 44.1 kHz quality render.
+### Screen 1 · File Selection
 
-Use **Save project** to download a `.miditrack` archive containing the editable MIDI, the source and conversion settings when available, and the saved editing state (track choices, speed/pitch, filename, loop, and preset). **Open project** restores that state without reconverting the source. Rendered audio and generated ZIPs are deliberately not stored in a project.
+![File Selection](images/miditrack_s01.png)
 
-### Start from a source file
+**Upload area** — Drag a file onto the dashed area, or click to open a file picker. Accepted: `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.rsn`, `.vgm`, `.vgz`, `.zip`, `.m3u`. Drop multiple source files, a ZIP rip pack, or a source file together with an `.m3u` playlist at once. ZIP uploads allow up to 200 files and 512 MiB extracted. A playlist loaded alongside a source file supplies song titles.
 
-1. Upload one source file, several files, a source file plus `.m3u`, or a `.zip` archive. ZIP uploads allow up to 200 files and 512 MiB after extraction.
-2. Choose a file when the upload contains several convertible sources, then choose a song when the format provides several.
-3. Choose conversion settings:
-   - NSF: duration and optional PAL timing
-   - SPC: loop count
-   - VGM: loop count or duration, plus optional OPN Ch3 Special percussion conversion
-4. **Original game sound by default** is only an initial selection. You can still change any supported track after conversion.
-5. Select **Convert to MIDI**, then edit and export as for an uploaded MIDI file.
+**File and song picker** — When the upload contains multiple convertible sources a file dropdown appears. If the format provides multiple songs (NSF, SPC rip packs) a song picker appears below it.
 
-### SoundFont and Original game sound
+**Conversion settings** — Appear after format detection and vary by format:
 
-- **SoundFont** plays the MIDI through your selected General MIDI SoundFont, so instrument changes apply.
-- **Original game sound** uses a game-derived SoundFont for SPC or hardware/chip rendering for NSF and VGM. Instrument selection is unavailable for these tracks, but volume remains adjustable.
-- VGM routing follows physical chip channels. Rows which share a hardware channel can change together; ambiguous shared channels are not selected as Original automatically.
+- **VGM/VGZ** — Loop count or duration (mutually exclusive). **Original game sound by default** pre-selects noise/DAC/rhythm tracks for chip rendering; any track can be changed after conversion. **OPN Ch3 Special to GM drums** maps YM2203/YM2608/YM2612 Ch3 Special operators to kick, snare, hi-hat, cymbal, and tom.
+- **NSF/NSFE** — Duration in seconds and optional PAL timing.
+- **SPC/SPC2/RSN** — Loop count.
 
-### Output options
+Click **Convert to MIDI** to start. After conversion the remaining screens work identically to starting from an uploaded MIDI.
 
-- **Generate variations in bulk** produces every specified speed × transpose combination as a ZIP. It can include the corresponding MIDI files.
-- **Export per track** produces one WAV per audible track. Original-game-sound channels can be combined into one file to avoid a full re-render for each hardware channel.
-- Variation generation accepts up to 6 speeds, 8 transposes, and 15 total combinations. Speed is limited to 0.1×–10× and transpose to −24–+24 semitones. MIDI notes outside 0–127 are omitted; percussion is never transposed.
+### Screen 2 · Tracks
+
+![Tracks](images/miditrack_s02.png)
+
+**Track list** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
+
+**SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically.
+
+**Instrument selector** — Choose any GM instrument. The star icon saves it as a favourite for quick access.
+
+**Mute / Solo** — Both affect the rendered preview.
+
+**Ensemble presets** — Save the current combination of instruments and source settings as a named preset. While a preset is active the instrument column switches to a role selector. Presets are stored locally in the browser.
+
+**SoundFont** — Select a `.sf2`/`.sf3` from those found in the standard search directories. **Fast** (22.05 kHz) renders quickly for auditioning; **Quality** (44.1 kHz) matches the WAV download.
+
+### Screen 3 · Audition
+
+![Audition](images/miditrack_s03.png)
+
+**Transport** — ◀◀ rewinds 5 s, ▶▶ skips 5 s, ⏮ returns to start, ▶/⏸ plays or pauses. The timer shows the current position over the total duration.
+
+**Speed** — Playback rate from 0.1× to 10×. Applies to all subsequent renders and the WAV download.
+
+**Pitch** — Shifts by −24 to +24 semitones. Percussion is never transposed; notes that fall outside MIDI range 0–127 are omitted.
+
+**Volume** — Master level for the session.
+
+**Piano roll** — Displays all tracks as coloured note bars on a vertical keyboard. Scroll to navigate; pinch or use the scroll wheel to zoom. Click to seek.
+
+**Pitch bend lane** — Shows pitch bend data for each track below the note area.
+
+Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview.
+
+### Screen 4 · Output
+
+![Output](images/miditrack_s04.png)
+
+**Download MIDI / WAV** — Download MIDI saves the edited file with current instrument assignments. Download WAV produces a 44.1 kHz stereo WAV using the current track settings, speed, and pitch. Edit the **filename** field before downloading to set the base name.
+
+**Generate variations in bulk** — Enter comma-separated speed multipliers and semitone values, then click **Download variations as ZIP**. Check **Include MIDI in ZIP** to add the corresponding MIDI file for each combination. Accepts up to 6 speeds, 8 transposes, and 15 total combinations. The audition speed and pitch settings are not changed.
+
+**Export per track** — **Download per track as ZIP** produces one WAV per audible track. Check **Combine original-sound tracks** to merge all original-sound channels into one file, avoiding a full re-render per hardware channel. File names include `_midi` or `_orig` to indicate the render source.
+
+Changing a SoundFont, a track setting, or the filename invalidates previously generated variation and per-track ZIPs; regenerate them after the change.
+
+### Full-Screen Mode
+
+![Full-screen mode](images/miditrack_full.png)
+
+Full-screen mode shows the track panel and the piano roll side-by-side on a single screen. Click **Full screen** in the header to enter; click **Exit full screen** to leave.
+
+**Track panel (left)** — The same controls as Screen 2: source toggle, instrument, mute, solo, and volume per track. Ensemble presets and the SoundFont selector are anchored at the bottom of the panel.
+
+**Piano roll (right)** — Identical to Screen 3. The transport bar and speed/pitch controls appear at the top.
+
+**Output bar (bottom)** — MIDI and WAV download buttons and the output options panel replace the separate Screen 4.
 
 ### Limits and behaviour
 
-- MIDI channel 10 is not available for instrument remapping, and tracks spanning multiple channels (including format-0 MIDI) are not editable.
-- Auditioning renders then plays audio; it is not a live software synthesizer. Completed renders are cached for the current session and edits refresh the preview after a short delay.
+- MIDI channel 10 is not available for instrument remapping, and multi-channel tracks (including format-0 MIDI) are not editable.
+- Auditioning renders then plays audio; it is not a live software synthesizer. Completed renders are cached for the current session.
 - `.m3u` title matching is best-effort. A stale or mismatched playlist leaves song titles unchanged instead of failing.
-- Changing a SoundFont, track edit, or output filename invalidates generated variation and per-track ZIPs; generate them again after the change.
 
 ### Command-line options
 
