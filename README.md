@@ -147,6 +147,23 @@ Full-screen mode shows the track panel and the piano roll side-by-side on a sing
 
 **Output bar (bottom)** — MIDI and WAV download buttons and the output options panel replace the separate Screen 4.
 
+### Display Settings
+
+![Display Settings](images/miditrack_ss.png)
+
+Open the display settings panel from any screen. Changes take effect immediately and are preserved across restarts.
+
+**Theme** — **Global display** sets the colour scheme: follow the system setting, light, or dark.
+
+**Piano roll**
+- *Round note corners*, *Add note outline*, *Show grid lines*, *Show keyboard* — toggle each element individually.
+- *Height* — Sets the piano roll height in the step-by-step layout. In full-screen mode the roll always fills the window height.
+- *Background colour* / *Grid line colour* — Pick a custom colour or reset to the theme default.
+- *Track colour scheme* — Controls the saturation of the per-track note colours.
+- *Vertical grid divisions* — Number of subdivisions per beat.
+
+**Track list** — *Hide tracks with zero notes* removes empty tracks from the list.
+
 ### Limits and behaviour
 
 - MIDI channel 10 is not available for instrument remapping, and multi-channel tracks (including format-0 MIDI) are not editable.
