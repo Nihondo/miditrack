@@ -111,7 +111,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 ![Audition](images/miditrack_s03.png)
 
-**Transport** — ◀◀ rewinds 5 s, ▶▶ skips 5 s, ⏮ returns to start, ▶/⏸ plays or pauses. The timer shows the current position over the total duration.
+**Transport** — ◀◀ and ▶▶ step by 5 s per click, ⏮ returns to the start, and ▶/⏸ plays or pauses. Keyboard shortcuts are also available: Space toggles play/pause; Left/Right arrows seek ±1 s; Shift + Left/Right arrows seek ±5 s; Page Up/Page Down seek ±10 s; Home jumps to the start; End jumps to the end; and Cmd+← jumps to the start. The timer shows the current position over the total duration.
 
 **Speed** — Playback rate from 0.1× to 10×. Applies to all subsequent renders and the WAV download.
 

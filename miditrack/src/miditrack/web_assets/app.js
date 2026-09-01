@@ -32,6 +32,7 @@ const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
 const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 const PLAYBACK_SEEK_SECONDS = 1;
+const SHIFT_PLAYBACK_SEEK_SECONDS = 5;
 const LOOP_DRAG_THRESHOLD_PX = 6;
 const MIN_LOOP_SECONDS = 0.1;
 const PREWARM_DELAY_MS = 500;
@@ -2599,9 +2600,11 @@ function handleSeekKeydown(event) {
   if (event.metaKey && event.key === "ArrowLeft") {
     target = 0;
   } else {
+    const isShiftSeek = event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight");
+    const stepSeconds = isShiftSeek ? SHIFT_PLAYBACK_SEEK_SECONDS : PLAYBACK_SEEK_SECONDS;
     const keySteps = {
-      ArrowLeft: -PLAYBACK_SEEK_SECONDS,
-      ArrowRight: PLAYBACK_SEEK_SECONDS,
+      ArrowLeft: -stepSeconds,
+      ArrowRight: stepSeconds,
       PageDown: -10,
       PageUp: 10,
     };
@@ -3670,11 +3673,11 @@ function setupPlaybackControls() {
   applyPlayerGains();
   $("#playback-backward").addEventListener(
     "click",
-    () => seekPlaybackBy(-PLAYBACK_SEEK_SECONDS),
+    () => seekPlaybackBy(-SHIFT_PLAYBACK_SEEK_SECONDS),
   );
   $("#playback-forward").addEventListener(
     "click",
-    () => seekPlaybackBy(PLAYBACK_SEEK_SECONDS),
+    () => seekPlaybackBy(SHIFT_PLAYBACK_SEEK_SECONDS),
   );
   $("#playback-start").addEventListener("click", () => {
     seekPlaybackTo(activePianorollLoopRange()?.start ?? 0);
