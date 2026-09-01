@@ -21,7 +21,7 @@ NSF_C_SRCS   := $(NSF_DIR)/fmopl.c
 
 APP_SRCS := $(SRC_DIR)/main.cpp $(SRC_DIR)/mdf.cpp $(SRC_DIR)/channel_map.cpp \
             $(SRC_DIR)/pitch.cpp $(SRC_DIR)/detector.cpp $(SRC_DIR)/smf.cpp \
-            $(SRC_DIR)/midi2wav.cpp $(SRC_DIR)/wav_writer.cpp $(SRC_DIR)/chip_render.cpp \
+            $(SRC_DIR)/wav_writer.cpp $(SRC_DIR)/chip_render.cpp \
             $(SRC_DIR)/track_metadata.cpp
 
 OBJ_DIR := build

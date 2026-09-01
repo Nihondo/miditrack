@@ -17,8 +17,6 @@ instrument-definition file format as the original.
 - Reads `.mdf` instrument-definition files for per-channel instrument,
   volume, pitch-bend, note-on detection sensitivity, mono/portamento mode,
   etc. — fully compatible with the original `default.mdf`
-- `--wav` also renders the output MIDI to a listenable `.wav` via the
-  bundled `midi2wav` tool (fluidsynth + a General MIDI SoundFont)
 - `--chip-wav` renders the Noise and DPCM channels as real chip-emulated
   audio to a separate `.wav` instead of GM drum MIDI notes, for mixing back
   in with a truer percussion sound (see below)
@@ -58,8 +56,6 @@ extension changed to `.mid`.
 | `-l, --list` | List the file's title, tracks and detected expansion chip, then exit |
 | `--pal` | Force PAL timing (default: auto-detected from the NSF header) |
 | `-v, --verbose` | Print each detected note to stderr as it's written |
-| `--wav` | Also render the output MIDI to a `.wav` via `midi2wav.sh` (see the project root's `midi2wav` tool) |
-| `--soundfont <file>` | SoundFont to use with `--wav` (default: `midi2wav.sh`'s own resolution) |
 | `--chip-wav <file>` | Render the Noise and DPCM channels as real chip-emulated audio to `<file>` instead of GM drum MIDI notes. By default this also removes both channels from the `.mid` |
 | `--keep-chip-midi` | With `--chip-wav`, also keep the Noise/DPCM GM drum notes in the `.mid` (requires `--chip-wav`) |
 | `--track-metadata <file>` | Write a JSON sidecar mapping each MIDI track to its NES channel label, for later arbitrary-channel selection via `--chip-render` (see below) |
@@ -94,12 +90,6 @@ square-wave lead, flat velocity, `Instrument`-only drum notes), pass
 
 ```
 nsf2midi -m default.mdf castlevania.nsf theme.mid
-```
-
-Convert and immediately render a listenable WAV alongside the MIDI:
-
-```
-nsf2midi --wav castlevania.nsf theme.mid
 ```
 
 Convert, but render the Noise/DPCM channels as real chip audio instead of

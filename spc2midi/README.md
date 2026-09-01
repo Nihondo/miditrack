@@ -20,8 +20,6 @@ reported as such rather than converted.
   Standard MIDI Files
 - Optionally exports a matching SoundFont2 (`--sf2`) and/or DLS (`--dls`)
   instrument bank built from the SPC's own BRR samples
-- `--wav` also renders the output MIDI to a listenable `.wav` via the
-  bundled `midi2wav` tool (fluidsynth + a General MIDI SoundFont)
 - `--list` shows every sequence VGMTrans found in the file along with its
   detected driver, without converting anything
 - `-a`/`--all` converts every sequence found (an `.rsn` commonly holds an
@@ -73,8 +71,6 @@ the same base name.
 | `--loops <n>` | Number of times to unroll an infinite loop into the MIDI (default: `1`) |
 | `--sf2` | Also write a SoundFont2 (`.sf2`) file |
 | `--dls` | Also write a DLS (`.dls`) file |
-| `--wav` | Also render each output MIDI to a `.wav` via `midi2wav.sh` (see the project root's `midi2wav` tool) |
-| `--soundfont <file>` | SoundFont to use with `--wav` (default: `midi2wav.sh`'s own resolution) |
 | `-v, --verbose` | Print VGMTrans's own log messages (info/debug level) to stderr |
 | `-h, --help` | Show usage |
 
@@ -107,12 +103,6 @@ Unroll a looping song's loop section 4 times instead of just 1 pass through it:
 
 ```
 spc2midi --loops 4 chrono_trigger.rsn theme.mid
-```
-
-Convert and immediately render a listenable WAV alongside the MIDI:
-
-```
-spc2midi -s 12 --wav chrono_trigger.rsn theme.mid
 ```
 
 ## Exit codes

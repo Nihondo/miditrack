@@ -2,7 +2,7 @@
 
 NES（`.nsf`）、SNES（`.spc`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップチューン音楽を、ブラウザだけで楽器を差し替え・リミックス・書き出しできるMIDIファイルに変換します。日常的な利用にターミナルは不要です。
 
-`miditrack`はローカルで動くWebアプリで、チップチューンの音源ファイルをMIDIに変換し、各トラックにGeneral MIDIの楽器と音量を割り当て、その場で試聴できます。汎用シンセの代わりに実機・原曲のチップサウンドを鳴らすオプションも備えています。内部では3つのバンドル済みコマンドラインコンバーター（`nsf2midi`・`spc2midi`・`vgm2midi`）と`midi2wav.sh`が動いています。独立した`pitch_shift.sh`は、ターミナル用の単体ユーティリティとして引き続き利用できます。
+`miditrack`はローカルで動くWebアプリで、チップチューンの音源ファイルをMIDIに変換し、各トラックにGeneral MIDIの楽器と音量を割り当て、その場で試聴できます。汎用シンセの代わりに実機・原曲のチップサウンドを鳴らすオプションも備えています。内部では3つのバンドル済みコマンドラインコンバーター（`nsf2midi`・`spc2midi`・`vgm2midi`）と`miditrack/midi2wav.sh`が動いています。
 
 ## クイックスタート
 
@@ -50,10 +50,9 @@ NES（`.nsf`）、SNES（`.spc`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップ�
 | **nsf2midi** | NES/ファミコンの`.nsf`/`.nsfe`ファイルをMIDIに変換 | miditrackに内蔵、またはターミナルから直接 |
 | **spc2midi** | SNESの`.spc`/`.spc2`/`.rsn`ファイルをMIDIに変換（対応するSoundFontも生成可） | miditrackに内蔵、またはターミナルから直接 |
 | **vgm2midi** | VGM/VGZコマンドログファイル（メガドライブ、アーケード、PC-88など）をMIDIに変換 | miditrackに内蔵、またはターミナルから直接 |
-| **midi2wav.sh** | fluidsynthを使い、任意の`.mid`ファイルを試聴用`.wav`に変換 | 上記4つのツールから自動的に呼び出される、または単体で直接実行 |
-| **pitch_shift.sh** | 音声ファイルの速度・ピッチのバリエーションをWAVとして生成 | ターミナル用の単体ユーティリティ。miditrackは実音声ステムの同期に`rubberband`を直接呼び出す |
+| **miditrack/midi2wav.sh** | fluidsynthを使い、任意の`.mid`ファイルを試聴用`.wav`に変換 | miditrackから自動的に呼び出される、または単体で直接実行 |
 
-ほとんどの場合は`miditrack`だけで十分です。3つのコンバーターと`midi2wav.sh`がその構成要素であり、単体の音声バリエーションユーティリティが必要な場合は`pitch_shift.sh`も利用できます。
+ほとんどの場合は`miditrack`だけで十分です。3つのコンバーターと`miditrack/midi2wav.sh`がその構成要素であり、ブラウザ操作よりスクリプトによる変換パイプラインを組みたい場合は、それぞれ単体でも動作します。
 
 ## 必要環境
 
@@ -68,7 +67,7 @@ NES（`.nsf`）、SNES（`.spc`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップ�
   - `/opt/homebrew/share/fluid-synth/sf2`
 - 3つのコンバーター（`nsf2midi`・`spc2midi`・`vgm2midi`）は、このリポジトリにビルド済みでバンドルされており、通常の利用では別途ビルドは不要です。
 - VGMトラックの原曲の音源を試聴するには、バンドルされたネイティブヘルパーを一度だけビルドしてください（`cd vgm2midi && ./scripts/build-native.sh`）。NSFの原曲の音源には別途のビルド手順は不要です。
-- 実機ノイズのミキシングまたはトラックごとの出力には[ffmpeg](https://ffmpeg.org/)が必要。非デフォルトの速度・ピッチに実音声ステムを同期させる場合、miditrackは[rubberband-cli](https://breakfastquay.com/rubberband/)を直接呼び出す — `brew install ffmpeg rubberband`。miditrackは`pitch_shift.sh`を使用しない。
+- 実機ノイズのミキシングまたはトラックごとの出力には[ffmpeg](https://ffmpeg.org/)が必要。非デフォルトの速度・ピッチに実音声ステムを同期させる場合、miditrackは[rubberband-cli](https://breakfastquay.com/rubberband/)を直接呼び出す — `brew install ffmpeg rubberband`。
 
 ## miditrackの使い方
 
@@ -121,7 +120,6 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
 ```bash
 nsf2midi song.nsf song.mid          # 変換
 nsf2midi -l song.nsf                # ファイル内の曲・トラックを一覧表示
-nsf2midi --wav song.nsf song.mid    # .wavも同時に描画
 ```
 
 `.mdf`ファイルによる楽器のカスタマイズ、PALタイミング、実機チップ音声の描画については[nsf2midi/README.md](nsf2midi/README.md)を参照してください。
@@ -146,22 +144,13 @@ vgm2midi song.vgz --loops 3             # ループ部分を合計3回再生
 
 対応する音源チップの一覧や高度なオプションについては[vgm2midi/README.md](vgm2midi/README.md)を参照してください。
 
-### midi2wav.sh（任意のMIDIをWAVに描画）
+### miditrack/midi2wav.sh（任意のMIDIをWAVに描画）
 
 ```bash
-./midi2wav.sh song.mid                  # デフォルトSoundFontで描画
-./midi2wav.sh -S song.mid               # SoundFontを対話選択
-./midi2wav.sh -s MySound.sf2 -f song.mid  # SoundFontを指定し、既存の出力を上書き
+./miditrack/midi2wav.sh song.mid                  # デフォルトSoundFontで描画
+./miditrack/midi2wav.sh -S song.mid               # SoundFontを対話選択
+./miditrack/midi2wav.sh -s MySound.sf2 -f song.mid  # SoundFontを指定し、既存の出力を上書き
 ```
-
-### pitch_shift.sh（速度・ピッチのバリエーションを一括生成）
-
-```bash
-./pitch_shift.sh song.m4a                          # 10ファイル：速度2種×ピッチ5種（デフォルト）
-./pitch_shift.sh -s 1.5 -p -3 -p -5 song.m4a        # 速度x1.5、ピッチ2種＝2ファイル
-```
-
-ローカルの音声ファイルに加えて、URL（`yt-dlp`経由でYouTubeも含む）も指定できます。
 
 ## トラブルシューティング
 
@@ -183,8 +172,8 @@ vgm2midi song.vgz --loops 3             # ループ部分を合計3回再生
 - **オリジナルの`nsf2midi.exe` 0.14** — ソースコードもコマンドラインインターフェースも公開されていないWindows GUIツール。本リポジトリの`nsf2midi`は、同じ`.mdf`楽器定義フォーマットを読み込めるように、macOS/arm64向けにゼロから再実装したものです。
 - **[VGMTrans](https://github.com/vgmtrans/vgmtrans)** — `spc2midi`は、ノート検出をゼロから実装するのではなく、VGMTransが持つドライバ別のSNESシーケンスパーサーの上に直接構築されています。
 - **[jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi)** — `vgm2midi`はこのプロジェクトのフォークとして始まり、いくつかの音源チップ対応とバグ修正を加えて拡張したものです。
-- **[FluidSynth](https://www.fluidsynth.org/)** — `midi2wav.sh`がすべてのWAV試聴・ダウンロードを描画する際に使うSoundFontシンセサイザー。
-- **[Rubber Band Library](https://breakfastquay.com/rubberband/)**（`rubberband-cli`経由） — miditrackが実音声ステムの同期に直接使い、単体ユーティリティ`pitch_shift.sh`も使うタイムストレッチ・ピッチシフトエンジン。
+- **[FluidSynth](https://www.fluidsynth.org/)** — `miditrack/midi2wav.sh`がすべてのWAV試聴・ダウンロードを描画する際に使うSoundFontシンセサイザー。
+- **[Rubber Band Library](https://breakfastquay.com/rubberband/)**（`rubberband-cli`経由） — miditrackが実音声ステムの同期に直接使うタイムストレッチ・ピッチシフトエンジン。
 - **[DSEG](https://github.com/keshikan/DSEG)**（keshikan氏作） — 再生時間表示に使用しているローカル同梱のDSEG7 Classic Webフォント。SIL Open Font License 1.1で配布されています。
 
 詳細なクレジットとライセンスについては、各サブプロジェクト自身の`README.md`/`NOTICE.md`を参照してください。

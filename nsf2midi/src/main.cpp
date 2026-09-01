@@ -24,7 +24,6 @@
 #include "chip_render.h"
 #include "detector.h"
 #include "mdf.h"
-#include "midi2wav.h"
 #include "smf.h"
 #include "track_metadata.h"
 
@@ -45,8 +44,6 @@ struct Options {
     bool list_only = false;
     bool force_pal = false;
     bool verbose = false;
-    bool want_wav = false;
-    std::string soundfont_path;  // --soundfont; 空なら midi2wav.sh のデフォルト解決に任せる
     std::string chip_wav_path;   // --chip-wav; 空なら実機ノイズ/DPCMステム出力を行わない
     bool keep_chip_midi = false; // --keep-chip-midi; --chip-wav 指定時も NOISE/PCM を MIDI 化する
     std::string track_metadata_path;  // --track-metadata; 空ならsidecarを書かない
@@ -66,8 +63,6 @@ void PrintUsage(const char* prog) {
         "  -l, --list             list tracks and exit\n"
         "      --pal              force PAL timing\n"
         "  -v, --verbose          print detected notes to stderr\n"
-        "      --wav              also render the output MIDI to a .wav via midi2wav.sh\n"
-        "      --soundfont <file> SoundFont to use with --wav (default: midi2wav.sh's own resolution)\n"
         "      --chip-wav <file>  render NOISE+DPCM as real chip-emulated audio to <file> instead of\n"
         "                         MIDI GM drum notes (both channels are removed from the .mid unless\n"
         "                         --keep-chip-midi is also given)\n"
@@ -172,10 +167,6 @@ bool ParseArgs(int argc, char** argv, Options& opt) {
             opt.force_pal = true;
         } else if (arg == "-v" || arg == "--verbose") {
             opt.verbose = true;
-        } else if (arg == "--wav") {
-            opt.want_wav = true;
-        } else if (arg == "--soundfont") {
-            opt.soundfont_path = next_value(arg.c_str());
         } else if (arg == "--chip-wav") {
             opt.chip_wav_path = next_value(arg.c_str());
         } else if (arg == "--keep-chip-midi") {
@@ -194,11 +185,6 @@ bool ParseArgs(int argc, char** argv, Options& opt) {
         } else {
             positional.push_back(arg);
         }
-    }
-
-    if (!opt.soundfont_path.empty() && !opt.want_wav) {
-        std::fprintf(stderr, "error: --soundfont requires --wav\n");
-        return false;
     }
 
     if (opt.keep_chip_midi && opt.chip_wav_path.empty()) {
@@ -320,13 +306,6 @@ int main(int argc, char** argv) {
 
     if (opt.output_path.empty()) {
         opt.output_path = ReplaceExtensionWithMid(opt.input_path);
-    }
-
-    if (!opt.chip_wav_path.empty() && opt.want_wav &&
-        opt.chip_wav_path == ReplaceExtension(opt.output_path, "wav")) {
-        std::fprintf(stderr, "error: --chip-wav path collides with --wav's output (%s)\n",
-                      opt.chip_wav_path.c_str());
-        return 1;
     }
 
     const bool is_pal = opt.force_pal || (file.nIsPal != 0);
@@ -528,13 +507,6 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::fprintf(stderr, "wrote %s (chip noise/DPCM)\n", opt.chip_wav_path.c_str());
-    }
-
-    if (opt.want_wav) {
-        std::string wav_path = ReplaceExtension(opt.output_path, "wav");
-        if (!RenderWav(opt.output_path, wav_path, opt.soundfont_path)) {
-            return 1;
-        }
     }
 
     return 0;

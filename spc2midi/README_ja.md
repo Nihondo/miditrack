@@ -20,8 +20,6 @@ SoundFont2 (`.sf2`) / DLS (`.dls`) バンクとして MIDI と一緒に書き出
   Standard MIDI File に変換
 - SPC 自身の BRR サンプルから構築した SoundFont2 (`--sf2`) / DLS
   (`--dls`) 楽器バンクを MIDI と併せて書き出すことも可能
-- `--wav` で、同梱の `midi2wav` ツール (fluidsynth + General MIDI
-  SoundFont) を使って出力 MIDI を試聴用の `.wav` にレンダリング
 - `--list` で、そのファイルから VGMTrans が検出した全シーケンスを
   (検出ドライバ名つきで) 変換せずに一覧表示
 - `-a`/`--all` で検出された全シーケンスを一括変換 (`.rsn` にはゲーム1本分
@@ -73,8 +71,6 @@ spc2midi [options] <input.spc> [output.mid]
 | `--loops <n>` | 無限ループ区間を MIDI 上に展開する回数 (既定: `1`) |
 | `--sf2` | 同時に SoundFont2 (`.sf2`) を書き出す |
 | `--dls` | 同時に DLS (`.dls`) を書き出す |
-| `--wav` | 出力 MIDI を `midi2wav.sh` (プロジェクトルートの `midi2wav` ツール) で `.wav` にレンダリング |
-| `--soundfont <file>` | `--wav` で使用する SoundFont (既定: `midi2wav.sh` 自身の解決に任せる) |
 | `-v, --verbose` | VGMTrans 自身のログ (info/debug レベル) を stderr に表示 |
 | `-h, --help` | 使い方を表示 |
 
@@ -107,12 +103,6 @@ mkdir out && spc2midi -a chrono_trigger.rsn out
 
 ```
 spc2midi --loops 4 chrono_trigger.rsn theme.mid
-```
-
-変換と同時に試聴用 WAV も生成する:
-
-```
-spc2midi -s 12 --wav chrono_trigger.rsn theme.mid
 ```
 
 ## 終了コード

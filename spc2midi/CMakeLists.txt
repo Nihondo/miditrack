@@ -21,7 +21,6 @@ FetchContent_MakeAvailable(vgmtrans)
 add_executable(spc2midi
   src/main.cpp
   src/spc2midi_root.cpp
-  src/paths.cpp
-  src/midi2wav.cpp)
+  src/paths.cpp)
 target_link_libraries(spc2midi PRIVATE vgmtranscore)
 target_compile_features(spc2midi PRIVATE cxx_std_20)

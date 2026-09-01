@@ -19,8 +19,6 @@ NSF (NES Sound Format) 音楽ファイルをエミュレーションし、スタ
 - `.mdf` 音色定義ファイルを読み込み、チャンネルごとの音色・音量・ピッチ
   ベンド・ノートオン検出感度・単音/ポルタメントモードなどを設定可能。
   オリジナルの `default.mdf` とそのまま互換
-- `--wav` で、同梱の `midi2wav` ツール (fluidsynth + General MIDI
-  SoundFont) を使って出力 MIDI を試聴用の `.wav` にレンダリング
 - `--chip-wav` で、ノイズ/DPCM チャンネルを GM ドラムの MIDI ノートでは
   なく、実機チップエミュレーションによる音声として別の `.wav` にレンダ
   リング（より原音に近いパーカッションをミックスで使いたい場合。詳細は
@@ -61,8 +59,6 @@ nsf2midi [options] <input.nsf> [output.mid]
 | `-l, --list` | 曲名・トラック一覧・検出した拡張音源を表示して終了 |
 | `--pal` | PAL タイミングを強制 (既定: NSF ヘッダから自動判定) |
 | `-v, --verbose` | 検出したノートを都度 stderr に出力 |
-| `--wav` | 出力 MIDI を `midi2wav.sh` (プロジェクトルートの `midi2wav` ツール) で `.wav` にレンダリング |
-| `--soundfont <file>` | `--wav` で使用する SoundFont (既定: `midi2wav.sh` 自身の解決に任せる) |
 | `--chip-wav <file>` | ノイズ/DPCM チャンネルを GM ドラムの MIDI ノートではなく、実機チップエミュレーションによる音声として `<file>` にレンダリングする。既定ではこの2チャンネルを `.mid` からも除外する |
 | `--keep-chip-midi` | `--chip-wav` 指定時、ノイズ/DPCM の GM ドラムノートも `.mid` に残す（`--chip-wav` が必須） |
 | `--track-metadata <file>` | 各MIDIトラックとNESチャンネルの対応を記したJSON sidecarを書き出す。後から任意のチャンネルを選んでレンダリングする `--chip-render`（下記）で使う |
@@ -97,12 +93,6 @@ nsf2midi castlevania.nsf theme.mid
 
 ```
 nsf2midi -m default.mdf castlevania.nsf theme.mid
-```
-
-変換と同時に試聴用 WAV も生成する:
-
-```
-nsf2midi --wav castlevania.nsf theme.mid
 ```
 
 ノイズ/DPCM を GM ドラムノートではなく実機チップ音でレンダリングする

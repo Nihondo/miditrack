@@ -148,7 +148,6 @@ against actual game music), verify manually:
 ```
 ./nsf2midi -l some.nsf                                  # sanity-check track list/metadata
 ./nsf2midi -m default.mdf -t 0 -d 30 some.nsf out.mid -v # convert + watch triggers on stderr
-./nsf2midi --wav -t 0 -d 30 some.nsf out.mid             # also render out.wav via midi2wav.sh
 ./nsf2midi --chip-wav out.chip.wav -t 0 -d 30 some.nsf out.mid  # Noise/DPCM as real chip audio
 ```
 
@@ -334,42 +333,6 @@ wins.
   `spc2midi` itself needed no change — it has no sibling data files to look
   up in the first place, so this class of bug never applied to it.
 
-## Added: `--wav` — render the output MIDI via `midi2wav.sh`
-
-`--wav` (plus `--soundfont <file>`) renders the just-written `.mid` to a
-listenable `.wav` immediately after `smf.Save()` succeeds
-(`main.cpp`'s `main()`, right before the final `return 0`), by deriving the
-`.wav` path with the same `ReplaceExtension()` helper `ReplaceExtensionWithMid()`
-is now built on, then calling `nsf2midi::RenderWav()` (`src/midi2wav.{h,cpp}`,
-new). Both `.mid` and `.wav` are kept — nothing is deleted.
-
-`RenderWav()` shells out to the project-root `midi2wav.sh` (a `fluidsynth`
-wrapper that resolves a General MIDI SoundFont and handles fluidsynth's
-option-ordering quirks) rather than calling `fluidsynth` directly, so that
-logic lives in exactly one place shared by `nsf2midi`/`spc2midi`/`vgm2midi`.
-Its binary resolution order is: `MIDI2WAV_BIN` env var (fatal error if set
-but not executable — no silent fallback, matching
-`tools/make_videos_web.py`'s `REC2ASS_BIN` policy) → the project-root
-`midi2wav.sh` located relative to this binary's own resolved location → a
-bare `midi2wav` on `PATH`. Locating the sibling script reuses the same
-`_NSGetExecutablePath()`-based approach as `DefaultMdfPathNextToExecutable()`
-above, for the identical reason: `argv[0]` cannot be trusted to resolve a
-PATH-symlink-installed binary's real location.
-
-**Critically, this never goes through a shell.** This repository's own path
-— `.../Chill & Relax GAME MUSIC/...` — contains a space and an `&`, either
-of which would corrupt a `system()`/`popen()`-style command string.
-`RenderWav()` therefore builds an explicit `argv[]` and calls
-`posix_spawn()`/`posix_spawnp()` directly. Verified end-to-end with a
-synthetic minimal MIDI file and, once wired into `nsf2midi` itself, would be
-exercised by any real `.nsf` conversion with `--wav` — the `midi2wav.sh`
-side of this path was independently confirmed against real audio (see
-`spc2midi/CLAUDE.md`'s Testing section for a worked example against a real
-`.rsn`, since no sample `.nsf` was available in this environment during
-implementation).
-
-`--soundfont` without `--wav` is a parse-time error, not a silent no-op.
-
 ## Added: `--chip-wav` — render Noise/DPCM as real chip audio instead of GM drums
 
 GM drum notes are a rough stand-in for the Noise and DPCM channels — a
@@ -433,17 +396,14 @@ the GM-drum approximation.
   drum hit" the default outcome of turning this feature on, which is an
   obviously-wrong double-trigger for any downstream mixdown. `--keep-chip-midi`
   is the escape hatch for CLI users who want both (e.g. A/B comparison), and
-  is a parse-time error without `--chip-wav`. `--chip-wav`'s path is also
-  checked against `--wav`'s own derived output path (`ReplaceExtension(...,
-  "wav")`) at parse time, so the two features can never silently clobber
-  each other's file.
+  is a parse-time error without `--chip-wav`.
 - Verified end-to-end with a synthetic hand-built NSF (SQ1 tone + Noise,
   generated the same way this project's other synthetic-fixture testing
   does): `--chip-wav` produced a non-silent, correctly-sized stereo WAV
   (`afinfo`-valid), the Noise/DPCM channels were absent from the `.mid`
   without `--keep-chip-midi` and present with it, and the
-  `--wav`/`--chip-wav` path-collision check and the `--keep-chip-midi`-
-  requires-`--chip-wav` check both raised the expected parse-time errors.
+  `--keep-chip-midi`-requires-`--chip-wav` check raised the expected
+  parse-time error.
 
 ## Added: `--track-metadata`/`--chip-render` — per-channel hardware selection, matching vgm2midi's sidecar design
 

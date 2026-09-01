@@ -134,8 +134,8 @@ class TestResolveMidi2WavBin(unittest.TestCase):
         with self.assertRaises(RenderError):
             render.resolve_midi2wav_bin()
 
-    def test_repo_root_midi2wav_sh_is_found_by_default(self) -> None:
-        # このリポジトリでは実際に repo_root/midi2wav.sh が存在する前提で確認する。
+    def test_miditrack_midi2wav_sh_is_found_by_default(self) -> None:
+        # このリポジトリでは実際に miditrack/midi2wav.sh が存在する前提で確認する。
         os.environ.pop("MIDI2WAV_BIN", None)
         resolved = render.resolve_midi2wav_bin()
         self.assertTrue(resolved.endswith("midi2wav.sh"))

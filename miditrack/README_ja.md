@@ -2,7 +2,7 @@
 
 `miditrack` は、チップチューン系の音源ファイルをその場でMIDIに変換し、トラックごとにGeneral MIDI音色（プログラムチェンジ）を割り当てて、その場で試聴できるローカルWebツールです。`.nsf`/`.nsfe`、`.spc`/`.spc2`/`.rsn`、`.vgm`/`.vgz`を直接読み込んで（同梱の`nsf2midi`/`spc2midi`/`vgm2midi`で変換して）使えるほか、他所で生成した`.mid`/`.midi`ファイルも扱えます。
 
-`nsf2midi`/`spc2midi`/`vgm2midi`自体はどれもMIDIを**書き出す**だけで、後から音色を選び直す手段も、それ自体のWeb UIもありません。`miditrack`はその下流の作業を1ページに集約します: 音源ファイルの変換、トラックごとの音色の選び直し、[midi2wav.sh](../midi2wav.sh)でのレンダリングと試聴・ダウンロードまでを、ターミナルへ戻ることなく行えます。
+`nsf2midi`/`spc2midi`/`vgm2midi`自体はどれもMIDIを**書き出す**だけで、後から音色を選び直す手段も、それ自体のWeb UIもありません。`miditrack`はその下流の作業を1ページに集約します: 音源ファイルの変換、トラックごとの音色の選び直し、[midi2wav.sh](midi2wav.sh)でのレンダリングと試聴・ダウンロードまでを、ターミナルへ戻ることなく行えます。
 
 ## 特徴
 
@@ -20,7 +20,7 @@
 - GM音色を16ファミリー（Piano、Chromatic Percussion、Organ、Guitar、Bass、Strings、Ensemble、Brass、Reed、Pipe、Synth Lead、Synth Pad、Synth Effects、Ethnic、Percussive、Sound Effects）にグループ化したドロップダウンから選択
 - **編集可能な役割ベースの編成プリセット**: メインUIの1つのプルダウンに「プリセット解除」「ゲームリード」「アコースティック」「ジャズカルテット」を同列表示する。プリセットを選ぶと楽器欄が主旋律・対旋律・ベース・伴奏・打楽器の役割選択へ変わり、チャンネル・音域・ノート密度・トラック名を根拠に初期役割を自動提案して、プリセットのGM音色へ割り当てる。プルダウン横の「新規」「編集」「削除」でプリセット名と各役割のGM音色をダイアログから管理し、`~/Library/Application Support/miditrack/preferences.json`へ保存する。既定値は、ゲームリード（Lead 1 square、Lead 2 sawtooth、Synth Bass 1、Pad 1 new age、Electronic Kit）、アコースティック（Nylon Guitar、Violin、Acoustic Bass、Acoustic Grand Piano、Standard Kit）、ジャズカルテット（Alto Sax、Trumpet、Acoustic Bass、Acoustic Grand Piano、Jazz Kit）で、いずれも主旋律／対旋律／ベース／伴奏／打楽器の順。プリセット間の切り替えでは役割を維持し、解除すると最初のプリセット適用前に記録した音源・楽器選択へ戻る
 - **よく使う楽器を先頭にまとめて表示**: 各楽器ドロップダウンの☆ボタンでよく使う音色を手動でピン留めできるほか、選択するたびに使用回数を自動集計し、頻度順で「よく使う」欄に補完表示する（ピン留め優先、最大8件）。この記憶は`~/Library/Application Support/miditrack/preferences.json`にサーバー側で保存されるため、`miditrack`を起動し直してポート番号が変わっても保持される
-- **ブラウザ上でSoundFontを選び直せる**: トラック一覧の直下で、`midi2wav.sh`の探索先（`../soundfonts`、`~/Library/Audio/Sounds/Banks`等——一覧は[../midi2wav.sh](../midi2wav.sh)自身の`--help`を参照）から見つかったSoundFontを選び、レンダリングに使うものを切り替えられる。選択はサーバー側に保存され、`--soundfont`を明示指定しない限り次回起動時にも復元される。全画面モードでは、この設定は左側のトラック一覧カラム下端に固定される
+- **ブラウザ上でSoundFontを選び直せる**: トラック一覧の直下で、`midi2wav.sh`の探索先（`../soundfonts`、`~/Library/Audio/Sounds/Banks`等——一覧は[midi2wav.sh](midi2wav.sh)自身の`--help`を参照）から見つかったSoundFontを選び、レンダリングに使うものを切り替えられる。選択はサーバー側に保存され、`--soundfont`を明示指定しない限り次回起動時にも復元される。全画面モードでは、この設定は左側のトラック一覧カラム下端に固定される
 - **編集セッションを保存・再開できる**: MIDIの準備後に**プロジェクトを保存**を押すと、基準MIDI、必要に応じた音源ファイルと変換設定、選択中の曲、トラックごとの音源・音色・音量、曲全体の速度・移調、ダウンロード名、試聴モード、ピアノロールのループ範囲、適用中の編成プリセット・役割・定義を含む自己完結型の`.miditrack`アーカイブを保存できる。**プロジェクトを開く**で、現在のローカル一覧にそのプリセットが無い場合も含めて、再変換せずに編集状態を復元する。選択中のSoundFontはパス参照だけを記録し、見つからない場合は警告して通常の既定SoundFontへフォールバックする
 - **セッションキャッシュ付きの高速／品質試聴モード**: 「高速」（既定）は全曲を16bitステレオ・22.05kHzで素早く確認でき、「品質」は最終WAVダウンロードとまったく同じ処理を44.1kHzで行う。完成済みの設定・モードの組み合わせは、以前の状態へ戻した場合も含め、セッション内の最大16件／256MiBキャッシュへ保持される。MIDIの準備完了時に選択中モードのレンダーを開始し、音色・音量・音源・SoundFont・速度・移調の編集後は500ms操作がなければ更新する。再生中なら新しい結果へ短時間でクロスフェードし、停止中なら無音でロードする。新しいレンダーが保留中に再生すると古い設定は鳴らさず、最新結果の完成を待つ。ピアノロール上には「1秒戻る／進む」と「先頭へ戻る／再生・一時停止」の2組のセグメントコントロールがあり、それぞれ←／→、Homeまたは⌘＋←、Spaceの既存操作と同期する。ポインターで操作した選択部品はフォーカスを解放するため、すぐにSpaceで再生へ戻れ、キーボードでフォーカスした部品は通常のネイティブ操作を維持する
 - **全画面DAWレイアウト**: ヘッダーの「全画面」をクリックすると、DAW風の2カラム表示に切り替わる——左側には表示領域の先頭から画面いっぱいの高さまで広がるスクロール可能なインストゥルメント一覧（各トラックをトラック名/ch/音源、楽器/音量の2段のチャンネルストリップで表示）と、そのカラム下端に固定されたSoundFont設定、右側にはトランスポート操作、大きなピアノロール、ダウンロード／バリエーション生成の操作を縦に並べる。このモードでだけ、通常表示の先頭にある展開式ファイル選択カードをヘッダーの**開く**モーダルへ移し、通常表示用のトラックカード見出しは一覧を最上部から始めるために隠す。これは純粋なレイアウト切り替えであり、再生・レンダリング・ピアノロールはこれまでどおり動作する——何も隠れたり失われたりせず、並びが変わるだけ。全画面ボタンまたはEscapeキーで、通常の1カラム表示と全画面表示を切り替えられる。モーダル表示中のEscapeは先にモーダルを閉じ、テキスト編集中やネイティブのドロップダウン操作中もEscape本来の操作を優先する。最後に選択した通常表示または全画面表示は、次回起動時に復元される。画面幅900px未満では自動的に1カラムのスクロール表示にフォールバックする
@@ -34,10 +34,10 @@
 
 - macOS
 - Python 3.10以上
-- [fluidsynth](https://www.fluidsynth.org/)（`brew install fluid-synth`）とGeneral MIDI SoundFont（[../midi2wav.sh](../midi2wav.sh)の解決順を参照）
+- [fluidsynth](https://www.fluidsynth.org/)（`brew install fluid-synth`）とGeneral MIDI SoundFont（[midi2wav.sh](midi2wav.sh)の解決順を参照）
 - VGMトラックの原曲の音源（libvgm）を試聴するには、一度だけ`cd ../vgm2midi && ./scripts/build-native.sh`を実行して固定バージョンのnative helperをビルドする。既定以外の場所へ置く場合だけ`VGM2MIDI_STEMS_HELPER`を設定する。NSFの原曲の音源は同梱の`nsf2midi`バイナリをそのまま使うため、別途ビルドは不要
 - 音源ファイルの変換には同梱の[`nsf2midi`](../nsf2midi/)・[`spc2midi`](../spc2midi/)・[`vgm2midi`](../vgm2midi/)——いずれもビルド済みバイナリ/`dist/`が同梱されているため、通常は別途ビルド不要。`.mid`/`.midi`ファイルだけを扱う場合はこれらは不要
-- `chipNoise`ステムのミックスには[ffmpeg](https://ffmpeg.org/)が必要。実音声ステムがある状態で「全体の速度・ピッチ」（またはバリエーション一括生成の各組み合わせ）を既定値以外に設定すると、miditrackが同期のため[rubberband-cli](https://breakfastquay.com/rubberband/)を直接呼び出す（`brew install ffmpeg rubberband`）。`pitch_shift.sh`は使用しない。実音声ステムが無い場合、速度・ピッチ機能自体（単体・バリエーションとも）はMIDIを編集するだけなのでどちらも不要。トラックごとの出力も、セッションに実音声の寄与（`chipNoise`ステムまたはVGM/NSFの原曲の音源チャンネル）がある場合は`ffmpeg`が必要——素のMIDIだけのセッションではどちらも不要
+- `chipNoise`ステムのミックスには[ffmpeg](https://ffmpeg.org/)が必要。実音声ステムがある状態で「全体の速度・ピッチ」（またはバリエーション一括生成の各組み合わせ）を既定値以外に設定すると、miditrackが同期のため[rubberband-cli](https://breakfastquay.com/rubberband/)を直接呼び出す（`brew install ffmpeg rubberband`）。実音声ステムが無い場合、速度・ピッチ機能自体（単体・バリエーションとも）はMIDIを編集するだけなのでどちらも不要。トラックごとの出力も、セッションに実音声の寄与（`chipNoise`ステムまたはVGM/NSFの原曲の音源チャンネル）がある場合は`ffmpeg`が必要——素のMIDIだけのセッションではどちらも不要
 
 ## インストール
 
@@ -112,7 +112,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
 
 ## トラブルシュート
 
-- **「SoundFontが見つかりません」**: `--soundfont`で明示指定するか、`MIDI2WAV_SOUNDFONT`環境変数を設定するか、`../midi2wav.sh --help`が示す探索先のいずれかに`.sf2`を配置してください。
+- **「SoundFontが見つかりません」**: `--soundfont`で明示指定するか、`MIDI2WAV_SOUNDFONT`環境変数を設定するか、`midi2wav.sh --help`が示す探索先のいずれかに`.sf2`を配置してください。
 - **「midi2wav が見つかりません」**: `fluidsynth`（`brew install fluid-synth`）がインストールされているか確認してください。
 - **「nsf2midi/spc2midi/vgm2midi が見つかりません」**: この3つはビルド済みバイナリ/`dist/`がリポジトリに同梱されているため、通常は発生しません。移動やビルドし直した場合は、リポジトリ相対の通常の場所に戻すか、`NSF2MIDI_BIN`/`SPC2MIDI_BIN`/`VGM2MIDI_BIN`にその実行ファイルを指定してください。
 - **「対応するSNESサウンドドライバが見つかりませんでした」**: そのSPCファイルの音楽ドライバが、`spc2midi`（VGMTrans）が解析できる約20種類のいずれにも該当しません。このファイルはmiditrackで変換できません。

@@ -72,8 +72,6 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
 - Verbose mode showing detected chips and conversion statistics
 - Refuses to report success or overwrite the output when no MIDI notes can be
   generated, instead of creating an empty 14-byte MIDI header
-- `--wav` also renders the output MIDI to a listenable `.wav` via the
-  bundled `midi2wav` tool (fluidsynth + a General MIDI SoundFont)
 - `--noise-wav FILE` renders SN76489/HuC6280 noise as a separate 16-bit,
   44.1 kHz stereo LFSR stem and suppresses the corresponding GM percussion
   notes by default; add `--keep-noise-midi` for A/B comparison
@@ -130,8 +128,6 @@ Options:
   --loops <count>        Total loop-section playback count, including the logged pass
   --duration <seconds>   Target output duration in seconds
   -v, --verbose          Verbose output
-  --wav                  Also render the output MIDI to a .wav via midi2wav.sh
-  --soundfont <file>     SoundFont to use with --wav (default: midi2wav.sh's own resolution)
   --noise-wav <file>     Render SN76489/HuC6280 hardware noise to a separate WAV stem
   --keep-noise-midi      Keep GM percussion notes when --noise-wav is used
   --dac-wav <file>       Render YM2612 DAC/PCM sample audio to a separate WAV stem
@@ -273,7 +269,6 @@ vgm2midi song.vgz -o song.mid -v
 vgm2midi "01 Magical Sound Shower.vgm" --tempo 140
 vgm2midi song.vgz --loops 3
 vgm2midi song.vgz --duration 600
-vgm2midi song.vgz --wav
 vgm2midi song.vgz --noise-wav song.noise.wav
 vgm2midi song.vgz --dac-wav song.dac.wav
 vgm2midi song.vgz --ch3-special-percussion

@@ -38,7 +38,6 @@ VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイ�
 - VGMのループ区間を合計再生回数（`--loops`）または正確な目標再生時間（`--duration`）まで展開
 - 詳細モードで検出チップと変換統計を表示
 - MIDI音符を生成できない場合は成功扱いや出力の上書きをせず、14バイトの空MIDIヘッダーを作る代わりにエラー終了
-- `--wav`で、同梱の`midi2wav`ツール（fluidsynth + General MIDI SoundFont）を使って出力MIDIを試聴用の`.wav`にレンダリング
 - `--noise-wav FILE`でSN76489/HuC6280ノイズを16bit・44.1kHz・ステレオの独立したLFSRステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-noise-midi`を追加可能
 - `--dac-wav FILE`で実際のYM2612 DAC/PCMサンプル音声（メガドライブのドラムチャンネル）を16bit・44.1kHz・ステレオの独立したステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-dac-midi`を追加可能
 - `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。`miditrack`のトラック別SoundFont／libvgm音源選択に使用する
@@ -84,8 +83,6 @@ Options:
   --loops <count>        Total loop-section playback count, including the logged pass
   --duration <seconds>   Target output duration in seconds
   -v, --verbose          Verbose output
-  --wav                  Also render the output MIDI to a .wav via midi2wav.sh
-  --soundfont <file>     SoundFont to use with --wav (default: midi2wav.sh's own resolution)
   --noise-wav <file>     Render SN76489/HuC6280 hardware noise to a separate WAV stem
   --keep-noise-midi      Keep GM percussion notes when --noise-wav is used
   --dac-wav <file>       Render YM2612 DAC/PCM sample audio to a separate WAV stem
@@ -141,7 +138,6 @@ vgm2midi song.vgz -o song.mid -v
 vgm2midi "01 Magical Sound Shower.vgm" --tempo 140
 vgm2midi song.vgz --loops 3
 vgm2midi song.vgz --duration 600
-vgm2midi song.vgz --wav
 vgm2midi song.vgz --noise-wav song.noise.wav
 vgm2midi song.vgz --dac-wav song.dac.wav
 vgm2midi song.vgz --ch3-special-percussion

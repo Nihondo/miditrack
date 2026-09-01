@@ -3,7 +3,6 @@ set -euo pipefail
 
 # MIDI → WAV レンダリングツール
 # fluidsynth + SoundFont を使って .mid ファイルを試聴用 WAV に変換する。
-# nsf2midi / spc2midi / vgm2midi の --wav オプションからも呼び出される。
 
 # === デフォルト設定 ===
 SAMPLE_RATE=44100
@@ -37,7 +36,7 @@ resolve_real_path() {
 }
 
 SCRIPT_PATH="$(resolve_real_path "${BASH_SOURCE[0]}")"
-PROJECT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" >/dev/null 2>&1 && pwd)"
+PROJECT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")/.." >/dev/null 2>&1 && pwd)"
 
 # === デフォルトの SoundFont 探索先（先に見つかったものを優先） ===
 DEFAULT_SOUNDFONT_DIRS=(

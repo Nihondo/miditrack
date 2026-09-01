@@ -1,10 +1,8 @@
-"""プロジェクトルートの midi2wav.sh を安全に呼び出し、.mid を .wav にレンダリングする。
+"""miditrack内の midi2wav.sh を安全に呼び出し、.mid を .wav にレンダリングする。
 
 このリポジトリのパス自体が "Chill & Relax GAME MUSIC" のようにスペースと '&' を
 含むため、シェル経由の実行（シェル文字列の組み立て、shell=True）は確実に壊れる。
 subprocess.run() に明示的なargvリストを shell=False で渡し、シェルを一切介さない。
-これは nsf2midi/spc2midi の src/midi2wav.cpp（posix_spawn）、vgm2midi の
-src/midi2wav.ts（spawnSync(..., {shell: false})）と同じ制約・同じ設計。
 """
 
 from __future__ import annotations
@@ -81,11 +79,11 @@ def _is_executable_file(path: str) -> bool:
 def resolve_midi2wav_bin() -> str:
     """midi2wav.sh の実行体を解決する。
 
-    解決順（nsf2midi/src/midi2wav.cpp の ResolveMidi2WavBin() と同じ）:
+    解決順:
       1. MIDI2WAV_BIN 環境変数 -- 設定されているのに実行できなければ致命的エラー
          （フォールバックしない）
-      2. このファイルから見たリポジトリルートの midi2wav.sh
-         （src/miditrack/render.py から3階層上がリポジトリルート）
+      2. このファイルから見たmiditrackディレクトリの midi2wav.sh
+         （src/miditrack/render.py から2階層上）
       3. PATH上の "midi2wav"（subprocessが自前でPATH解決するので、素のコマンド名を返す）
     """
     env_bin = os.environ.get("MIDI2WAV_BIN")
@@ -94,9 +92,9 @@ def resolve_midi2wav_bin() -> str:
             raise RenderError(f"MIDI2WAV_BIN が実行可能ファイルではありません: {env_bin}")
         return env_bin
 
-    # src/miditrack/render.py -> src/miditrack -> src -> miditrack -> <repo root>
-    repo_root = Path(__file__).resolve().parents[3]
-    sibling = repo_root / "midi2wav.sh"
+    # src/miditrack/render.py -> src/miditrack -> src -> miditrack
+    miditrack_root = Path(__file__).resolve().parents[2]
+    sibling = miditrack_root / "midi2wav.sh"
     if _is_executable_file(str(sibling)):
         return str(sibling)
 

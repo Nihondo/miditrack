@@ -29,7 +29,6 @@
 #include "SF2File.h"
 #include "VGMColl.h"
 #include "VGMSeq.h"
-#include "midi2wav.h"
 #include "paths.h"
 #include "spc2midi_root.h"
 
@@ -46,8 +45,6 @@ struct Options {
   bool all = false;
   bool want_sf2 = false;
   bool want_dls = false;
-  bool want_wav = false;
-  std::string soundfont_path;  // --soundfont; 空なら midi2wav.sh のデフォルト解決に任せる
   bool verbose = false;
   // 無限ループ区間を展開する回数。ConversionOptions のメンバ初期化子デフォルトは 0
   // (ループへ一度も入らない) だが、Qt 版 GUI が設定を読み込む際のデフォルトは 1 なので
@@ -71,8 +68,6 @@ void PrintUsage(const char* prog) {
       "      --loops <n>    number of times to unroll an infinite loop (default: 1)\n"
       "      --sf2          also write a SoundFont2 (.sf2) file\n"
       "      --dls          also write a DLS (.dls) file\n"
-      "      --wav          also render each output MIDI to a .wav via midi2wav.sh\n"
-      "      --soundfont <file>  SoundFont to use with --wav (default: midi2wav.sh's own resolution)\n"
       "  -v, --verbose      print VGMTrans log messages (info/debug) to stderr\n"
       "  -h, --help         show this help\n",
       prog);
@@ -115,10 +110,6 @@ ParseResult ParseArgs(int argc, char** argv, Options& opt) {
       opt.want_sf2 = true;
     } else if (arg == "--dls") {
       opt.want_dls = true;
-    } else if (arg == "--wav") {
-      opt.want_wav = true;
-    } else if (arg == "--soundfont") {
-      opt.soundfont_path = next_value(arg.c_str());
     } else if (arg == "-v" || arg == "--verbose") {
       opt.verbose = true;
     } else if (arg == "-h" || arg == "--help") {
@@ -152,10 +143,6 @@ ParseResult ParseArgs(int argc, char** argv, Options& opt) {
   }
   if (opt.loops < 0) {
     std::fprintf(stderr, "error: --loops must be >= 0\n");
-    return ParseResult::Error;
-  }
-  if (!opt.soundfont_path.empty() && !opt.want_wav) {
-    std::fprintf(stderr, "error: --soundfont requires --wav\n");
     return ParseResult::Error;
   }
   return ParseResult::Ok;
@@ -250,10 +237,6 @@ bool ConvertOne(VGMColl* coll, const fs::path& mid_path, const Options& opt) {
   }
   if (opt.want_dls) {
     ok = SaveDls(coll, spc2midi::ReplaceExtension(mid_path, "dls")) && ok;
-  }
-  if (opt.want_wav) {
-    ok = spc2midi::RenderWav(mid_path, spc2midi::ReplaceExtension(mid_path, "wav"),
-                              opt.soundfont_path) && ok;
   }
   return ok;
 }

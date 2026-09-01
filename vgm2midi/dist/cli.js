@@ -40,7 +40,6 @@ const fs = __importStar(require("fs"));
 const vgm_parser_1 = require("./vgm-parser");
 const midi_converter_1 = require("./midi-converter");
 const vgm_playback_1 = require("./vgm-playback");
-const midi2wav_1 = require("./midi2wav");
 const noise_renderer_1 = require("./noise-renderer");
 const dac_renderer_1 = require("./dac-renderer");
 const stems_1 = require("./stems");
@@ -74,8 +73,6 @@ program
     .option('--loops <count>', 'Total loop-section playback count, including the logged pass', parseLoopCount)
     .option('--duration <seconds>', 'Target output duration in seconds', parseDuration)
     .option('-v, --verbose', 'Verbose output')
-    .option('--wav', 'Also render the output MIDI to a .wav via midi2wav.sh')
-    .option('--soundfont <file>', 'SoundFont to use with --wav (default: midi2wav.sh\'s own resolution)')
     .option('--noise-wav <file>', 'Render SN76489/HuC6280 hardware noise to a separate WAV stem')
     .option('--keep-noise-midi', 'Keep GM percussion notes when --noise-wav is used')
     .option('--dac-wav <file>', 'Render YM2612 DAC/PCM sample audio to a separate WAV stem')
@@ -89,9 +86,6 @@ program
     try {
         if (options.loops !== undefined && options.duration !== undefined) {
             throw new Error('--loops and --duration cannot be used together');
-        }
-        if (options.soundfont !== undefined && !options.wav) {
-            throw new Error('--soundfont requires --wav');
         }
         if (options.keepNoiseMidi && options.noiseWav === undefined) {
             throw new Error('--keep-noise-midi requires --noise-wav');
@@ -117,10 +111,6 @@ program
                 reservedPaths.push(path.resolve(options.noiseWav));
             if (options.dacWav !== undefined)
                 reservedPaths.push(path.resolve(options.dacWav));
-            if (options.wav) {
-                const parsedOutput = path.parse(output);
-                reservedPaths.push(path.resolve(path.join(parsedOutput.dir, `${parsedOutput.name}.wav`)));
-            }
             if (reservedPaths.includes(metadataPath)) {
                 throw new Error('--track-metadata must not overwrite another output');
             }
@@ -130,25 +120,11 @@ program
             if (noisePath === path.resolve(output)) {
                 throw new Error('--noise-wav must not overwrite the MIDI output');
             }
-            if (options.wav) {
-                const parsedOutput = path.parse(output);
-                const wavOutput = path.join(parsedOutput.dir, `${parsedOutput.name}.wav`);
-                if (noisePath === path.resolve(wavOutput)) {
-                    throw new Error('--noise-wav must not overwrite the --wav output');
-                }
-            }
         }
         if (options.dacWav !== undefined) {
             const dacPath = path.resolve(options.dacWav);
             if (dacPath === path.resolve(output)) {
                 throw new Error('--dac-wav must not overwrite the MIDI output');
-            }
-            if (options.wav) {
-                const parsedOutput = path.parse(output);
-                const wavOutput = path.join(parsedOutput.dir, `${parsedOutput.name}.wav`);
-                if (dacPath === path.resolve(wavOutput)) {
-                    throw new Error('--dac-wav must not overwrite the --wav output');
-                }
             }
             if (options.noiseWav !== undefined && dacPath === path.resolve(options.noiseWav)) {
                 throw new Error('--dac-wav must not overwrite the --noise-wav output');
@@ -285,13 +261,6 @@ program
         if (options.stems !== undefined) {
             (0, stems_1.renderLibvgmStems)(input, options.stems, playback.totalSamples);
             console.log(`Rendered libvgm stems to ${options.stems}`);
-        }
-        if (options.wav) {
-            const parsedOutput = path.parse(output);
-            const wavOutput = path.join(parsedOutput.dir, `${parsedOutput.name}.wav`);
-            if (!(0, midi2wav_1.renderWav)(output, wavOutput, options.soundfont)) {
-                process.exit(1);
-            }
         }
     }
     catch (error) {

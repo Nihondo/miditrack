@@ -6,7 +6,6 @@ import * as fs from 'fs';
 import { VGMParser } from './vgm-parser';
 import { MidiConverter } from './midi-converter';
 import { prepareVGMPlayback } from './vgm-playback';
-import { renderWav } from './midi2wav';
 import { renderNoiseWav } from './noise-renderer';
 import { renderDacWav } from './dac-renderer';
 import { renderLibvgmStems } from './stems';
@@ -45,8 +44,6 @@ program
   .option('--loops <count>', 'Total loop-section playback count, including the logged pass', parseLoopCount)
   .option('--duration <seconds>', 'Target output duration in seconds', parseDuration)
   .option('-v, --verbose', 'Verbose output')
-  .option('--wav', 'Also render the output MIDI to a .wav via midi2wav.sh')
-  .option('--soundfont <file>', 'SoundFont to use with --wav (default: midi2wav.sh\'s own resolution)')
   .option('--noise-wav <file>', 'Render SN76489/HuC6280 hardware noise to a separate WAV stem')
   .option('--keep-noise-midi', 'Keep GM percussion notes when --noise-wav is used')
   .option('--dac-wav <file>', 'Render YM2612 DAC/PCM sample audio to a separate WAV stem')
@@ -60,9 +57,6 @@ program
     try {
       if (options.loops !== undefined && options.duration !== undefined) {
         throw new Error('--loops and --duration cannot be used together');
-      }
-      if (options.soundfont !== undefined && !options.wav) {
-        throw new Error('--soundfont requires --wav');
       }
       if (options.keepNoiseMidi && options.noiseWav === undefined) {
         throw new Error('--keep-noise-midi requires --noise-wav');
@@ -89,10 +83,6 @@ program
         const reservedPaths = [path.resolve(output)];
         if (options.noiseWav !== undefined) reservedPaths.push(path.resolve(options.noiseWav));
         if (options.dacWav !== undefined) reservedPaths.push(path.resolve(options.dacWav));
-        if (options.wav) {
-          const parsedOutput = path.parse(output);
-          reservedPaths.push(path.resolve(path.join(parsedOutput.dir, `${parsedOutput.name}.wav`)));
-        }
         if (reservedPaths.includes(metadataPath)) {
           throw new Error('--track-metadata must not overwrite another output');
         }
@@ -103,26 +93,12 @@ program
         if (noisePath === path.resolve(output)) {
           throw new Error('--noise-wav must not overwrite the MIDI output');
         }
-        if (options.wav) {
-          const parsedOutput = path.parse(output);
-          const wavOutput = path.join(parsedOutput.dir, `${parsedOutput.name}.wav`);
-          if (noisePath === path.resolve(wavOutput)) {
-            throw new Error('--noise-wav must not overwrite the --wav output');
-          }
-        }
       }
 
       if (options.dacWav !== undefined) {
         const dacPath = path.resolve(options.dacWav);
         if (dacPath === path.resolve(output)) {
           throw new Error('--dac-wav must not overwrite the MIDI output');
-        }
-        if (options.wav) {
-          const parsedOutput = path.parse(output);
-          const wavOutput = path.join(parsedOutput.dir, `${parsedOutput.name}.wav`);
-          if (dacPath === path.resolve(wavOutput)) {
-            throw new Error('--dac-wav must not overwrite the --wav output');
-          }
         }
         if (options.noiseWav !== undefined && dacPath === path.resolve(options.noiseWav)) {
           throw new Error('--dac-wav must not overwrite the --noise-wav output');
@@ -269,13 +245,6 @@ program
         console.log(`Rendered libvgm stems to ${options.stems}`);
       }
 
-      if (options.wav) {
-        const parsedOutput = path.parse(output);
-        const wavOutput = path.join(parsedOutput.dir, `${parsedOutput.name}.wav`);
-        if (!renderWav(output, wavOutput, options.soundfont)) {
-          process.exit(1);
-        }
-      }
     } catch (error) {
       console.error('Error:', error instanceof Error ? error.message : String(error));
       if (options.verbose && error instanceof Error && error.stack) {

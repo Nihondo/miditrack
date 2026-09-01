@@ -961,45 +961,6 @@ happen to sort the same way as the hex literals compared against them —
 but it was actively misleading while debugging (a real `v1.61` file
 reporting itself as `v1.38`), so it was fixed alongside the HuC6280 work.
 
-## Added: `--wav` — render the output MIDI via `midi2wav.sh`
-
-`--wav` (plus `--soundfont <file>`) renders the just-written `.mid` to a
-listenable `.wav` immediately after `exportToFile()` succeeds and the
-"Successfully converted" line prints (`src/cli.ts`'s `.action()` handler),
-via `renderWav()` in the new `src/midi2wav.ts`. The `.wav` path is derived
-with the same `path.parse()` pattern the output-path default already uses.
-Both `.mid` and `.wav` are kept — nothing is deleted. `--soundfont` without
-`--wav` throws at the same point the pre-existing `--loops`/`--duration`
-mutual-exclusion check does.
-
-`renderWav()` shells out to the project-root `midi2wav.sh` (a `fluidsynth`
-wrapper that resolves a General MIDI SoundFont and handles fluidsynth's
-option-ordering quirks) rather than calling `fluidsynth` directly, so that
-logic lives in exactly one place shared by `nsf2midi`/`spc2midi`/`vgm2midi`
-(the C++ tools carry their own near-identical `src/midi2wav.cpp`, matching
-this repo's existing no-shared-code convention between the three sibling
-converters). Its binary resolution order is: `MIDI2WAV_BIN` env var (fatal
-error if set but not executable — no silent fallback, matching
-`tools/make_videos_web.py`'s `REC2ASS_BIN` policy) → the project-root
-`midi2wav.sh` located relative to this module's own `__dirname` (two
-directories up from the built `dist/cli.js`) → a bare `midi2wav` on `PATH`.
-
-**Critically, this never goes through a shell.** This repository's own path
-— `.../Chill & Relax GAME MUSIC/...` — contains a space and an `&`, either
-of which would corrupt a shell-interpolated command (`exec()`/`execSync()`,
-or `spawn()` with `shell: true`). `renderWav()` therefore calls
-`child_process.spawnSync(bin, args, { stdio: 'inherit' })` — Node's default
-`shell: false`, so `args` is passed straight through as an argv array with
-no shell in between. When `bin` is the bare string `"midi2wav"` (the PATH
-fallback), Node resolves it against `PATH` itself, the same way
-`posix_spawnp()` does on the C++ side — no shell is needed for that lookup
-either.
-
-Verified end-to-end against a real `.vgz` file (`vgm2midi --wav -v
-song.vgz`): the existing YM2612 conversion path produced a normal `.mid`,
-and `--wav` then produced a real, audible multi-megabyte `.wav` alongside
-it via the sibling-repo-root resolution path (no `MIDI2WAV_BIN` needed).
-
 ## Relationship to the global `npm install -g vgm2midi`
 
 If `vgm2midi` was installed globally via `npm install -g vgm2midi`, that
@@ -1117,7 +1078,6 @@ For manual verification with a real source:
 
 ```
 node dist/cli.js "path/to/song.vgz" -v -o /tmp/out.mid
-node dist/cli.js "path/to/song.vgz" --wav -v -o /tmp/out.mid  # also renders /tmp/out.wav via midi2wav.sh
 ```
 
 Confirm the verbose output lists the expected chip, the command stream reaches

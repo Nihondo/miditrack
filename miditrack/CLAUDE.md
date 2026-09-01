@@ -296,9 +296,8 @@ user, was "pseudo-playback... at least the ability to change playback
 position" — not real-time interactivity.
 
 `miditrack` instead applies the chosen Program Changes to a working-copy
-`.mid`, renders it to a `.wav` via [midi2wav.sh](../midi2wav.sh) (the same
-`fluidsynth` wrapper `nsf2midi`/`spc2midi`/`vgm2midi`'s own `--wav` option
-already uses), and serves that WAV to an `<audio>` element with
+`.mid`, renders it to a `.wav` via [midi2wav.sh](midi2wav.sh), and serves
+that WAV to an `<audio>` element with
 `send_file(..., conditional=True)` — which gives real HTTP Range/seek
 support for free, the same technique `tools/make_videos_web.py` already
 uses for video/audio scrubbing. This is deliberately "boring": it reuses
@@ -587,13 +586,11 @@ this the same way it already did for `/api/download`.
 
 ## Why `midi2wav.sh`, and why the subprocess call never goes through a shell
 
-`render.py` shells out to the project-root `midi2wav.sh` rather than
-calling `fluidsynth` directly, for the same reason `nsf2midi`/`spc2midi`/
-`vgm2midi`'s own `--wav` option does: SoundFont discovery and fluidsynth's
+`render.py` shells out to the package-local `midi2wav.sh` rather than
+calling `fluidsynth` directly: SoundFont discovery and fluidsynth's
 option-ordering quirk (`fluidsynth`'s CLI requires
 `[options] [soundfonts] [midifiles]` — `-F`/`-T`/`-r` must precede the
-positional SoundFont/MIDI paths) live in exactly one place, reused by four
-callers now instead of three.
+positional SoundFont/MIDI paths) live in exactly one place for `miditrack`.
 
 This repository's own directory path —
 `.../Chill & Relax GAME MUSIC/...` — contains a space and an `&`. Any
@@ -601,14 +598,12 @@ shell-interpolated command (a manually built string, `shell=True`) breaks
 on that path; worse, an unescaped `&` backgrounds the command silently
 rather than raising an error. `render.render_wav()` therefore calls
 `subprocess.run(argv, shell=False, ...)` with an explicit `list[str]`
-argv, exactly mirroring `nsf2midi/src/midi2wav.cpp`'s `posix_spawn()` and
-`vgm2midi/src/midi2wav.ts`'s `spawnSync(bin, args, { stdio: 'inherit' })`
-(Node's default `shell: false`). `resolve_midi2wav_bin()` is the Python
-transcription of `nsf2midi/src/midi2wav.cpp`'s `ResolveMidi2WavBin()`:
+argv. `resolve_midi2wav_bin()` resolves the renderer in this order:
 `MIDI2WAV_BIN` env var (fatal if set but not executable — no silent
 fallback) → the `midi2wav.sh` found relative to this package's own
-resolved location (`Path(__file__).resolve().parents[3]`, i.e. three
-directories up from `src/miditrack/render.py` to the repo root) → a bare
+resolved location (`Path(__file__).resolve().parents[2]`, i.e. two
+directories up from `src/miditrack/render.py` to the `miditrack`
+directory) → a bare
 `"midi2wav"` on `PATH` (letting `subprocess.run()`'s own PATH search
 resolve it, still without invoking a shell).
 
@@ -617,7 +612,6 @@ resolve it, still without invoking a shell).
 `src/miditrack/rubberband.py` keeps a real-audio chip/DAC stem in sync with
 a non-default MIDI speed/transpose. Batch variations remain a MIDI-layer
 feature: they apply each transform to MIDI, then render each combination.
-No miditrack path invokes `pitch_shift.sh`.
 
 `transform_stem()` runs `rubberband` directly with an explicit argv list and
 `shell=False`, including an explicit output path. Its tempo ratio is
@@ -751,8 +745,8 @@ something exists that a client fetching `/api/download/variations` won't
 actually find there.
 
 **Why `variations_zip_path` shares `audio_path`'s invalidation
-lifecycle, but for a different reason than before**: the field (renamed
-from `pitch_shift_zip_path`) is still cleared at the same two points —
+lifecycle, but for a different reason than before**: the field is still
+cleared at the same two points —
 `invalidate_render()` and `reset_midi_state()` — but no longer because it
 is a derivative of `audio_path`; the batch never touches `audio_path` at
 all. It shares the lifecycle because it is a derivative of the *same
@@ -1039,10 +1033,9 @@ pattern `miditrack` already has. `miditrack` is also already the downstream
 consumer of their output, so folding "convert the source file" into the
 first step of the same page — rather than requiring a separate terminal
 command before ever opening the browser — was the smaller addition. This is
-the same "callers converge on one place" shape as `midi2wav.sh` itself: four
-different callers (the three converters' own `--wav` option, plus
-`miditrack`) share one script instead of reimplementing fluidsynth
-invocation four times.
+the same "callers converge on one place" shape as `midi2wav.sh` itself:
+`miditrack` has one renderer invocation path instead of reimplementing the
+fluidsynth command for each endpoint.
 
 `src/miditrack/convert.py` mirrors `render.py`'s own design exactly: no
 shell (`subprocess.run(argv, shell=False, ...)` with an explicit
@@ -1950,7 +1943,7 @@ rather than hardcoding two.
 on this project's Homebrew install (`fluid-synth` 2.6.0) does not link
 `libinstpatch` (`otool -L libfluidsynth.3.dylib | grep instpatch` returns
 nothing), so it cannot load DLS files at all regardless of what
-`spc2midi --dls` produces or what `midi2wav.sh` would pass through
+`spc2midi --dls` produces or what `midi2wav.sh` can pass through
 unchecked (its own `-s`/`--soundfont` argument has no extension
 allowlist). `.sf2` was never in question as the only usable format here.
 
@@ -1959,13 +1952,9 @@ to pass `--sf2` and derive the resulting path — `spc2midi::ReplaceExtension`
 (same repo, `src/paths.cpp`) already turns `converted.mid` into
 `converted.sf2` deterministically, exactly the pattern
 `chip_stem_path_for()` already uses for the NSF/VGM noise stem
-(`convert.game_soundfont_path_for()` mirrors it line for line). A
-CLI-level `spc2midi --wav` option that automatically renders through its
-own just-written `.sf2` was considered and explicitly deferred: miditrack
-never calls `spc2midi --wav` in the first place (it renders through
-`midi2wav.sh` itself, independently), so that option would have zero value
-for this feature and was not worth the C++ rebuild + prebuilt-binary
-recommit it would require.
+(`convert.game_soundfont_path_for()` mirrors it line for line). Rendering
+remains a `miditrack` responsibility after conversion, using the selected
+SoundFont and its package-local `midi2wav.sh` wrapper.
 
 **Why an empty/failed SF2 always degrades to the ordinary GM render,
 never an error**: `spc2midi --sf2` warns and skips writing the SoundFont
@@ -3476,16 +3465,13 @@ during implementation): `GET /api/soundfonts` correctly discovered all of
 them, selecting a non-default one and rendering confirmed the real
 `fluidsynth` invocation actually received `-s <that path>`.
 
-**Historical**: the original "速度・ピッチのバリエーション" feature (WAV
-post-processed through `pitch_shift.sh`, `POST /api/pitch-shift` /
-`GET /api/download/pitch-shift`) was verified end-to-end via
-`pitch_shift.run_pitch_shift()` called directly against a real WAV and a
-full browser round trip that downloaded a real ZIP of 10 `rubberband`-shifted
-`.wav` files. That endpoint pair no longer exists — see "Speed/pitch is a
-MIDI-layer edit" above for why it was replaced by `POST /api/variations`.
+**Historical**: the original "速度・ピッチのバリエーション" feature used a WAV
+post-processing endpoint. That endpoint pair no longer exists — see
+"Speed/pitch is a MIDI-layer edit" above for why it was replaced by
+`POST /api/variations`.
 The batch-variations replacement was verified end-to-end through a live,
-non-mocked `create_app()` (real `fluidsynth`; no `pitch_shift.sh` call at
-all, since this fixture carries no chip stem): a small real `.mid` fixture
+non-mocked `create_app()` (real `fluidsynth`; no audio-stem transform was
+needed because this fixture carries no chip stem): a small real `.mid` fixture
 was uploaded, `POST /api/variations` with the default lists produced a real
 `variations.zip` containing 20 files (10 `.wav` + 10 `.mid`, confirmed via
 `unzip -l`, back when the shipped default was still 2 speeds × 5

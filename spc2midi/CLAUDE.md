@@ -151,23 +151,6 @@ GUI's own export meaningful (see Testing).
   reproduces that GUI default rather than the raw class default. Bank-select
   style and channel-10 skip remain untouched, using VGMTrans's own
   in-process defaults (`BankSelectStyle::GS`, skip enabled).
-- **`--wav` shells out to the project-root `midi2wav.sh` rather than
-  calling fluidsynth directly, and does so via `posix_spawn`/`posix_spawnp`,
-  never `system()`/`popen()`.** `src/midi2wav.{h,cpp}` (new, mirrors
-  `nsf2midi/src/midi2wav.{h,cpp}` — the two are intentionally near-identical
-  copies rather than a shared library, matching this repo's existing
-  no-shared-code convention between `nsf2midi`/`spc2midi`/`vgm2midi`) is the
-  sole caller of `midi2wav.sh`, so SoundFont discovery, fluidsynth's
-  option-ordering quirks (options must precede `[soundfonts] [midifiles]` —
-  see the root `midi2wav.sh`'s own comment on this), and the
-  empty-output-detection safety net live in exactly one place, reused by
-  three converters. This repository's own path —
-  `.../Chill & Relax GAME MUSIC/...` — contains a space and an `&`, which
-  would corrupt any shell-interpolated command (`system()`, `popen()`, or
-  Node's `exec()`); `RenderWav()` therefore builds an explicit `argv[]` and
-  hands it to `posix_spawn()`/`posix_spawnp()` directly, with no shell in
-  between. `ConvertOne()` calls it exactly where `--sf2`/`--dls` are
-  called, deriving the `.wav` path via the same `ReplaceExtension()`.
 - **Why a PATH symlink was originally safe here, and why it once wasn't
   for `nsf2midi` either:** `nsf2midi/src/main.cpp`'s
   `DefaultMdfPathNextToExecutable()` derives the default `.mdf`'s path
@@ -183,16 +166,6 @@ GUI's own export meaningful (see Testing).
   with no sibling data files (its output paths were all derived from the
   *input* path, never from the executable's own location), so there was
   nothing here for a symlink to break.
-
-  **This changed with `--wav`** (see below): `src/midi2wav.cpp` now also
-  needs to locate the project-root `midi2wav.sh` relative to the running
-  executable, the same class of problem `nsf2midi`'s `gm.mdf` lookup had.
-  It reuses the exact same fix from day one — `_NSGetExecutablePath()`
-  (independent of `argv0`/PATH-symlink behavior) plus
-  `std::filesystem::canonical()` to resolve any symlink — so a PATH
-  symlink (e.g. `/opt/homebrew/bin/spc2midi -> .../spc2midi/spc2midi`)
-  still correctly finds `<repo>/midi2wav.sh` two directories up from the
-  *resolved* binary location, not from the symlink's own directory.
 
 ### Fixed: crash on bad numeric args, silent output-directory failure, and case-collision in `--all`
 
@@ -255,10 +228,7 @@ its `CLAUDE.md` for the rationale). Manual verification:
 ```
 ./spc2midi -l some.spc                          # sanity-check detected sequences
 ./spc2midi -s 0 --sf2 --dls some.spc out.mid -v  # convert + watch scanner trace on stderr
-./spc2midi -s 0 --wav some.spc out.mid           # also render out.wav via midi2wav.sh
 ```
-
-`--wav` was verified end-to-end against `smw.rsn` (Super Mario World): `spc2midi -s 0 --wav smw.rsn title.mid` produced both `title.mid` and a real, audible multi-megabyte `title.wav`, with `.mid` left untouched. The same funnel via `ConvertOne()` means this also covers `-a`/`--all` without a separate code path.
 
 **Byte-identical diff testing against the GUI app is the strongest
 available check**, and only works because `vgmtrans.pin` is kept in sync
@@ -299,10 +269,7 @@ titles.
   out to have large gaps against songs actually being used.
 - **`--export-samples`** (individual BRR sample export via
   `conversion::saveAllAsWav()`) — not wired up; would be a small addition
-  if needed. Not to be confused with `--wav`, which renders the *converted
-  MIDI* to a listenable stereo mix via `midi2wav.sh` (see Design notes
-  below) — a completely different feature that happens to share the "wav"
-  word.
+  if needed.
 - **Remaining `ConversionOptions` CLI flags** (`--bank-select`,
   `--no-skip-ch10`) — `--loops` is now wired up (see Design notes above);
   the other two are one-line API calls each but have no CLI surface yet.
