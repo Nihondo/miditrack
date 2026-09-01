@@ -341,22 +341,42 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("const pitchBounds = pianorollPitchBounds(note, layout)", draw_track_block)
         self.assertIn("pitchBounds.height * 0.8", draw_track_block)
 
-    def test_fullscreen_upload_panel_shows_conversion_action_without_inner_scroll(self) -> None:
-        """全画面で開いたファイルパネルは、変換操作までを内部スクロールせずに表示する。"""
+    def test_file_open_dialog_is_limited_to_fullscreen(self) -> None:
+        """通常表示はアップロードカード、全画面だけは同カードを開くダイアログへ移す。"""
+        html = self.client.get("/").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
 
-        upload_rule = css.split("body.is-fullscreen .app-shell > #upload-card {", 1)[1].split(
-            "}", 1
-        )[0]
-        self.assertIn("max-height: none", upload_rule)
-        self.assertIn("overflow: visible", upload_rule)
-        self.assertIn("box-shadow: 0 1px 2px rgba(23, 43, 77, 0.035)", upload_rule)
-
-        drop_zone_rule = css.split("body.is-fullscreen #upload-card .drop-zone {", 1)[1].split(
-            "}", 1
-        )[0]
-        self.assertIn("min-height: 96px", drop_zone_rule)
-        self.assertIn("padding: 12px", drop_zone_rule)
+        header_actions = html.split('class="header-actions"', 1)[1].split("</div>", 1)[0]
+        self.assertLess(
+            header_actions.index('id="open-dialog-button"'),
+            header_actions.index('id="fullscreen-toggle"'),
+        )
+        self.assertIn('id="open-dialog" closedby="any"', html)
+        self.assertIn('aria-labelledby="upload-card-title"', html)
+        self.assertIn('id="open-dialog-close"', html)
+        self.assertIn('id="midi-input"', html)
+        self.assertIn('id="open-project-button"', html)
+        self.assertIn('id="upload-card" open', html)
+        self.assertLess(html.index('id="upload-card"'), html.index('id="tracks-card"'))
+        self.assertIn("音源またはMIDIを選択", html)
+        self.assertIn('id="tracks-card-heading"', html)
+        self.assertIn("トラックごとの音源・楽器・音量", html)
+        self.assertIn("#open-dialog-button,\n#open-dialog-close { display: none; }", css)
+        self.assertIn("body.is-fullscreen #open-dialog-button { display: inline-flex; }", css)
+        self.assertIn("body.is-fullscreen #open-dialog > #upload-card {", css)
+        self.assertIn("body.is-fullscreen #tracks-card-heading { display: none; }", css)
+        self.assertIn("function setupOpenDialog()", javascript)
+        self.assertIn("function moveUploadCardToDialog()", javascript)
+        self.assertIn("function moveUploadCardToShell()", javascript)
+        self.assertIn('dialog.showModal()', javascript)
+        self.assertIn('if (!("closedBy" in HTMLDialogElement.prototype))', javascript)
+        self.assertIn('if (dialog.open) dialog.close();', javascript)
+        self.assertIn(
+            'body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 1 / 6; }',
+            css,
+        )
+        self.assertIn("border-top: 1px solid var(--neutral-30)", css)
 
     def test_pianoroll_draws_pitchwheel_paths(self) -> None:
         """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""
@@ -4284,6 +4304,10 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn('class="header-actions" aria-label="表示操作"', html)
         header_actions = html.split('class="header-actions"', 1)[1].split("</div>", 1)[0]
         self.assertLess(
+            header_actions.index('id="open-dialog-button"'),
+            header_actions.index('id="fullscreen-toggle"'),
+        )
+        self.assertLess(
             header_actions.index('id="fullscreen-toggle"'),
             header_actions.index('id="settings-open"'),
         )
@@ -4307,7 +4331,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertNotIn("MIDIはこのMacの中だけで処理されます。", html)
         self.assertIn('body.is-fullscreen #output-card { display: contents; }', css)
         self.assertIn(
-            'body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 2; grid-row: 5;',
+            'body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 2; grid-row: 4;',
             css,
         )
         self.assertIn('$("#output-card").classList.toggle("ready", ready);', javascript)
@@ -4340,9 +4364,10 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertNotIn("@media (prefers-color-scheme: dark)", css)
         self.assertIn('displayMode: state.displayMode', javascript)
         fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(
-            "\n}\n\nfunction setupSettingsDialog", 1
+            "\n}\n\n// 通常表示用のアップロードカード", 1
         )[0]
         self.assertIn('if (event.key !== "Escape") return;', fullscreen_setup_block)
+        self.assertIn('if (document.querySelector("dialog[open]")) return;', fullscreen_setup_block)
         self.assertIn(
             'setFullscreenLayout(!document.body.classList.contains("is-fullscreen"), { shouldPersist: true });',
             fullscreen_setup_block,

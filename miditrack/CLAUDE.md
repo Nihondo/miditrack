@@ -2190,22 +2190,18 @@ formats) — plus a fake `list_songs` injection that `TestWebAppLibvgmTrackSourc
 doesn't need, since NSF (`supports_song_list=True`) calls it from
 `POST /api/source` where VGM (`supports_song_list=False`) never does.
 
-## Added: full-screen DAW layout, CSS-only
+## Added: full-screen DAW layout
 
 `index.html`'s single `min(1000px, 100%)` column made it impossible to see
 the track list and the piano roll at the same time — exactly what editing
 instruments/volumes while watching the render's result actually needs. The
 `#fullscreen-toggle` button in `.header-inner` toggles `body.is-fullscreen`
-(`app.js`'s `setupFullscreenLayout()`); everything else is `app.css`. No
-DOM is added, removed, or reparented, and no rendering/playback/piano-roll
-drawing code is touched — this is deliberately scoped to a CSS relayout, the
-same "CSS/HTML switch only" boundary the user asked for. This describes the
-fullscreen toggle itself; the later zoom-performance fix added stable
+(`app.js`'s `setupFullscreenLayout()`). The later zoom-performance fix added stable
 `#pianoroll-timeline`/`#pianoroll-viewport` wrappers inside the existing scroll
 area, without making fullscreen entry/exit perform DOM surgery.
 
-The header groups `#fullscreen-toggle` followed immediately by `#settings-open`
-inside `.header-actions`, aligned to the right edge. Both use
+The header groups `#open-dialog-button`, `#fullscreen-toggle`, and
+`#settings-open` inside `.header-actions`, aligned to the right edge. All use
 `.header-action-button`, whose white text/icon and high-contrast border are
 intentional: the normal gray ghost-button treatment is not sufficiently legible
 against the blue header gradient. In the settings dialog,
@@ -2214,6 +2210,39 @@ visibility together; the two `.settings-field-row` grids pair background/grid
 colors and track palette/vertical-grid divisions. These rows become one column
 at `max-width: 640px`, while every input ID and its JavaScript event binding
 remain unchanged.
+
+### 2026-09 refinement: file-open modal and an uninterrupted track pane
+
+`#upload-card` remains the first, expandable card in the normal layout. On
+entry to fullscreen, `moveUploadCardToDialog()` reparents that exact element
+into `#open-dialog`, a native `<dialog closedby="any">` opened by the
+fullscreen-only `#open-dialog-button`; `moveUploadCardToShell()` returns it to
+the start of `.app-shell` when leaving fullscreen. Reusing the one element
+preserves its controls, IDs, open state, and event handlers without duplicate
+markup or mode-specific state. `setupOpenDialog()` uses `showModal()` so the
+browser handles focus containment and makes the background inert. The explicit
+close button, Escape, and supported-browser backdrop clicks close it; Safari's
+absence of `closedby` is covered by the narrowly scoped backdrop-coordinate
+fallback. `showUploadCard()`/`hideUploadCard()` retain the original normal-mode
+`<details>` behavior, while closing the modal after the equivalent fullscreen
+operation.
+
+Fullscreen no longer reserves a top-left grid row for a collapsed upload
+summary. `.app-shell` uses five rows: transport, flexible piano roll,
+piano-roll footer, download toolbar, and output panel. `#tracks-card` spans
+all five rows from the first row, keeps its normal-layout card heading hidden
+only in fullscreen, and overrides the base blue top border with the ordinary
+neutral card border. This gives the track
+controls the first visible pixel of the left workspace. The responsive fallback
+also starts with `#tracks-card`; the open dialog remains a top-layer modal at
+every viewport width. Escape's fullscreen shortcut explicitly returns when any
+native dialog is open, so closing the file dialog cannot change display mode.
+
+`tests/test_web.py` asserts the normal-layout upload card, fullscreen-only
+header/dialog ownership, the obsolete track heading's absence, the neutral
+fullscreen track-card border, and the new grid span. Browser verification must
+confirm that the header **Open** button appears only in fullscreen, displays
+the modal, and that Escape closes it without exiting fullscreen.
 
 **Why `#audition-card` and `#output-card` become `display: contents` instead
 of being restyled as boxes**: normal layout deliberately splits the download
@@ -2282,6 +2311,12 @@ can enter the DAW layout and leave it. Its dedicated guard only defers to
 `isContentEditable`/`INPUT`/`TEXTAREA`/`SELECT` — the actual text-entry and
 native-dropdown cases where Escape already has a browser-native meaning to
 protect.
+
+### Historical implementation notes (superseded by the 2026-09 refinement)
+
+The following rollout notes document the former collapsible `#upload-card`
+implementation. They are retained only to explain earlier measurements and
+regressions; do not restore its grid rules or treat them as current behavior.
 
 **Why entering fullscreen force-closes `#upload-card`'s `<details>` from
 JS instead of a CSS rule**: `<details open>` is native, per-element browser

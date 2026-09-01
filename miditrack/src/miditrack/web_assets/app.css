@@ -184,8 +184,7 @@ button { color: inherit; }
   box-shadow: var(--shadow-card);
 }
 
-/* ファイル選択は最初の操作を案内する面であり、重ねたシートのように強く
-   浮かせる必要はない。ほかのカードの階層を保ったまま影を控えめにする。 */
+/* ファイル選択は通常表示では最初の操作を案内する面として残す。 */
 #upload-card { box-shadow: 0 1px 2px rgba(23, 43, 77, 0.035); }
 
 .card-heading {
@@ -223,6 +222,9 @@ summary.card-heading:focus-visible { outline-offset: 4px; }
   transition: transform 0.15s ease;
 }
 details[open] > summary.card-heading .disclosure-chevron { transform: rotate(180deg); }
+
+#open-dialog-button,
+#open-dialog-close { display: none; }
 
 .step-number {
   width: 28px;
@@ -706,6 +708,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .dialog-heading { margin-bottom: 20px; }
 .dialog-heading h2 { margin: 0 0 4px; font-size: 18px; }
 .dialog-heading p { margin: 0; color: var(--neutral-60); font-size: 13px; }
+.upload-dialog { padding: 0; }
 
 .ensemble-preset-programs {
   margin: 20px 0 0;
@@ -1375,6 +1378,8 @@ body.is-fullscreen {
 
 body.is-fullscreen .app-header { flex: 0 0 auto; }
 body.is-fullscreen .header-inner { width: 100%; }
+body.is-fullscreen #open-dialog-button { display: inline-flex; }
+body.is-fullscreen #open-dialog-close { display: inline-flex; }
 
 body.is-fullscreen .app-shell {
   position: relative;
@@ -1384,66 +1389,27 @@ body.is-fullscreen .app-shell {
   padding: 12px;
   display: grid;
   grid-template-columns: minmax(0, clamp(360px, 36vw, 640px)) minmax(0, 1fr);
-  grid-template-rows: auto 12px minmax(0, 1fr) auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
   gap: 12px;
 }
 
-/* 左カラム: ファイル読み込み（上）だけを固定し、トラック一覧は
-   残り全行（r3〜r6、可変のr3を含む）へspanして画面下いっぱいまで広げる。
-   #upload-cardの<summary>をクリックして<details>を開くと、変換オプション
-   やドロップゾーンでコンテンツが数百px分伸びる。position: absoluteにすると、
-   そのgrid item（に指定したgrid-column/grid-row）が包含ブロックとして
-   使われる一方、box自体はgrid本来のトラックサイズ決定に一切寄与しなく
-   なるため、開閉状態に関係なくr1の高さ（＝右カラムの並びの開始位置）を
-   完全に一定へ固定できる。代わりに、開いた状態では#tracks-cardの上に
-   重なるオーバーレイになる（z-indexで前面へ）。
-   grid-column/grid-rowは終端を必ず明示する（"1"のように開始線だけを
-   指定するとgrid-column-end/grid-row-endが"auto"になる）。position:
-   absoluteな要素にとって"auto"な終端はグリッドコンテナの端そのものに
-   解決される仕様のため（自動配置の対象外になるabspos要素の特別ルール）、
-   "1"のままだと右カラムの右端まで包含ブロックが伸びてしまい、開いた
-   カードが右ペインの再生コントロールの上に覆いかぶさっていた（実測で
-   確認・再現済み）。"1 / 3"のように終端を明示し、1列分・r1+r2（下の
-   スペーサー行を参照）のgrid areaだけに正しく収める。 */
-body.is-fullscreen .app-shell > #upload-card {
-  position: absolute;
-  grid-column: 1 / 2;
-  grid-row: 1 / 3;
-  top: 0;
-  left: 0;
-  width: 100%;
-  z-index: 5;
-  /* 変換オプションとMIDI作成ボタンまでを一度に見せる。ここに高さ上限と
-     内部スクロールを置くと、特に短めの全画面で主操作が隠れてしまう。 */
-  max-height: none;
-  overflow: visible;
-  /* 全画面でもファイル選択だけは他の面より強く浮かせない。 */
-  box-shadow: 0 1px 2px rgba(23, 43, 77, 0.035);
-}
-body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 3 / 7; }
+/* 左カラムはトラック一覧だけが占める。ファイル選択はヘッダの「開く」から
+   独立したネイティブダイアログで扱うため、トラックは表示領域の先頭から
+   画面下まで連続して使える。 */
+body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 1 / 6; }
 
-/* 右カラム: トランスポート／ピアノロール（大、可変行）／出力。
-   SoundFont設定はトラック一覧の直下に置き、左カラムで扱う。
-   r1はトランスポート自身の高さ（auto、58px程度）で決まり、左カラムの
-   #upload-card折りたたみ高さ（80px）に引きずられて余白を持たない
-   （#upload-cardはposition:absoluteなのでr1のサイズ決定に寄与しない —
-   上のコメント参照）。#tracks-cardが折りたたみ時の#upload-cardと重ならない
-   よう、r1の直後に固定12pxのr2（スペーサー行）を1本挟んでいるが、これは
-   右カラムには余白として響かせたくない — .pianoroll-cardをr2/r4（スペーサー
-   +可変行）へspanさせ、1つの続いた箱として自分の内側に吸収させることで、
-   r1とr2の間のgapだけで済ませている（r2とr3の間に本来生じるはずの
-   もう1つのgapは、pianoroll-cardが単一アイテムとしてその境界をまたぐため
-   発生しない）。 */
+/* 右カラムはトランスポート、可変高のピアノロール、出力操作の順に並べる。
+   SoundFont設定はトラック一覧の直下に置き、左カラムで扱う。 */
 body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 2; grid-row: 1; align-self: center; }
-body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 2; grid-row: 2 / 4; }
-body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 2; grid-row: 4; align-self: start; }
-body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 2; grid-row: 5; align-self: start; }
-body.is-fullscreen .app-shell > #output-card > .output-panel { grid-column: 2; grid-row: 6; align-self: start; }
+body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 2; grid-row: 2; }
+body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 2; grid-row: 3; align-self: start; }
+body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 2; grid-row: 4; align-self: start; }
+body.is-fullscreen .app-shell > #output-card > .output-panel { grid-column: 2; grid-row: 5; align-self: start; }
 
 body.is-fullscreen #audition-card { display: contents; }
 body.is-fullscreen #audition-card > .card-heading { display: none; }
 /* 出力カードは通常表示でだけ独立した面として見せる。全画面では子要素を
-   従来どおりグリッドの5・6行目へ置くため、カード本体と見出しを消す。 */
+   グリッドの4・5行目へ置くため、カード本体と見出しを消す。 */
 body.is-fullscreen #output-card { display: contents; }
 body.is-fullscreen #output-card > .output-card-heading { display: none; }
 body.is-fullscreen #output-card > .download-toolbar { margin-top: 12px; }
@@ -1452,59 +1418,29 @@ body.is-fullscreen #output-card > .download-toolbar { margin-top: 12px; }
 body.is-fullscreen #audition-card:not(.ready) > * { opacity: 0.58; }
 body.is-fullscreen #output-card:not(.ready) > * { opacity: 0.58; }
 
-/* 左パネル上部: 手順番号・説明文を省き、パネル見出しとして圧縮する。
-   #upload-cardは<details>で、全画面へ入るとJS（setupFullscreenLayout()）
-   が閉じるため、通常時はsummary.card-headingだけが見える — そちらも
-   同じ規則で圧縮する。 */
-body.is-fullscreen #tracks-card .card-heading,
-body.is-fullscreen #upload-card > summary.card-heading {
-  margin-bottom: 8px;
-}
-body.is-fullscreen #tracks-card .step-number,
-body.is-fullscreen #upload-card .step-number {
-  display: none;
-}
-body.is-fullscreen #tracks-card .card-heading p,
-body.is-fullscreen #upload-card > summary.card-heading p {
-  display: none;
-}
-body.is-fullscreen #tracks-card .card-heading h2,
-body.is-fullscreen #upload-card > summary.card-heading h2 {
-  margin: 0;
-  color: var(--neutral-60);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-/* 全画面で開いたファイルパネルは、内部スクロールを使わずに変換ボタンまで
-   表示する。そのため通常表示より余白を圧縮し、短めの画面でも必要な操作を
-   1つのパネルに収める。 */
-body.is-fullscreen #upload-card { padding: 16px; }
-body.is-fullscreen #upload-card .drop-zone {
-  min-height: 96px;
-  padding: 12px;
-}
-body.is-fullscreen #upload-card .drop-zone svg { width: 24px; height: 24px; }
-body.is-fullscreen #upload-card .drop-zone strong { font-size: 14px; }
-body.is-fullscreen #upload-card .compact-toolbar { margin-top: 8px; }
-body.is-fullscreen #upload-card .convert-panel {
-  margin-top: 8px;
-  padding: 12px;
-}
-body.is-fullscreen #upload-card .convert-panel-title { margin-bottom: 8px; }
-body.is-fullscreen #upload-card .convert-options {
-  gap: 8px;
-  margin-bottom: 8px;
-}
-body.is-fullscreen #upload-card .field-group { margin-bottom: 8px; }
-
 body.is-fullscreen #tracks-card {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  border-top: 1px solid var(--neutral-30);
 }
+
+/* 全画面では通常表示のアップロードカードをダイアログへ移動する。カード内の
+   既存の操作・入力要素は再利用するため、通常表示と状態やIDを二重管理しない。 */
+body.is-fullscreen #open-dialog > #upload-card {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 通常表示では段階を案内する見出しを残す。全画面ではトラック一覧を最上端から
+   見せるため、このカード固有の見出しだけを隠す。 */
+body.is-fullscreen #tracks-card-heading { display: none; }
 
 body.is-fullscreen #tracks-card .table-scroll {
   flex: 1 1 auto;
@@ -1670,9 +1606,7 @@ body.is-fullscreen .pianoroll-card {
    （.track-rowのチャンネルストリップ表示自体は維持する）。display:blockに
    せずgrid-template-columns: 1frの1カラムgridのまま保つのは、display:contents
    の#audition-cardの子要素をDOM順に依存させず、各要素のgrid-rowを
-   明示し直す。SoundFont設定は#tracks-cardの内部にあるため、同じ並び順
-   （アップロード→トラック一覧＋SoundFont→トランスポート→ピアノロール→
-   状態行→ダウンロード→バリエーション）を維持する。 */
+   明示し直すため。 */
 @media (max-width: 900px) {
   body.is-fullscreen .app-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -1680,16 +1614,12 @@ body.is-fullscreen .pianoroll-card {
     grid-auto-rows: auto;
     overflow-y: auto;
   }
-  /* grid-column/rowは終端を明示する（"1"だけだとposition:absoluteな
-     #upload-cardの包含ブロックがグリッド全体の端まで広がってしまう —
-     ワイド表示側の同じ理由を参照）。 */
-  body.is-fullscreen .app-shell > #upload-card { grid-column: 1 / 2; grid-row: 1 / 2; }
-  body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 2; }
-  body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 1; grid-row: 3; }
-  body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 1; grid-row: 4; }
-  body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 1; grid-row: 5; }
-  body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 1; grid-row: 6; }
-  body.is-fullscreen .app-shell > #output-card > .output-panel { grid-column: 1; grid-row: 7; }
+  body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 1; }
+  body.is-fullscreen .app-shell > #audition-card > .audition-toolbar { grid-column: 1; grid-row: 2; }
+  body.is-fullscreen .app-shell > #audition-card > .pianoroll-card { grid-column: 1; grid-row: 3; }
+  body.is-fullscreen .app-shell > #audition-card > .pianoroll-footer { grid-column: 1; grid-row: 4; }
+  body.is-fullscreen .app-shell > #output-card > .download-toolbar { grid-column: 1; grid-row: 5; }
+  body.is-fullscreen .app-shell > #output-card > .output-panel { grid-column: 1; grid-row: 6; }
   body.is-fullscreen .pianoroll-card { height: 320px; }
   /* #tracks-cardはflex-column+overflow:hiddenで、内側の.table-scrollも
      overflow-y:auto/min-height:0 — grid-auto-rows: autoな行に

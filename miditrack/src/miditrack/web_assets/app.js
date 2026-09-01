@@ -2902,7 +2902,7 @@ async function uploadMidi(file) {
     const response = await apiFetch("/api/session", { method: "POST", body: formData });
     resetPlayer();
     await refreshFromSession(await response.json());
-    $("#upload-card").open = true;
+    showUploadCard();
     showStatus("MIDIを読み込みました。", "success");
   } catch (error) {
     showStatus(error.message, "error");
@@ -2919,7 +2919,7 @@ async function uploadSource(files) {
     const response = await apiFetch("/api/source", { method: "POST", body: formData });
     resetPlayer();
     await refreshFromSession(await response.json());
-    $("#upload-card").open = true;
+    showUploadCard();
     showStatus("音源を読み込みました。曲とオプションを選んで変換してください。", "success");
   } catch (error) {
     showStatus(error.message, "error");
@@ -3180,7 +3180,7 @@ async function handleConvert() {
     } else {
       showStatus("MIDIに変換しました。", "success");
     }
-    $("#upload-card").open = false;
+    hideUploadCard();
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -3800,7 +3800,7 @@ async function handleOpenProject(file) {
     await loadSoundfonts();
     if (payload.warnings?.length) showStatus(payload.warnings.join(" "));
     else showStatus("プロジェクトを読み込みました。", "success");
-    $("#upload-card").open = true;
+    showUploadCard();
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -3901,7 +3901,7 @@ async function handleReset() {
       source: null,
     });
     $("#midi-input").value = "";
-    $("#upload-card").open = true;
+    showUploadCard();
     showStatus("リセットしました。");
   } catch (error) {
     showStatus(error.message, "error");
@@ -3917,9 +3917,8 @@ function setFullscreenLayout(isFullscreen, { shouldPersist = false } = {}) {
   document.body.classList.toggle("is-fullscreen", isFullscreen);
   $("#fullscreen-toggle").setAttribute("aria-pressed", String(isFullscreen));
   state.displayMode = isFullscreen ? "fullscreen" : "normal";
-  // 読み込みカードは全画面では折りたたんで小さく表示するため、CSSでは開閉を
-  // 制御できない<details>のopenをここで明示的に閉じる。
-  if (isFullscreen) $("#upload-card").open = false;
+  if (isFullscreen) moveUploadCardToDialog();
+  else moveUploadCardToShell();
   if (shouldPersist) saveDisplayMode();
 }
 
@@ -3931,6 +3930,8 @@ function setupFullscreenLayout() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    // 開いているネイティブダイアログにはEscの標準の閉じる動作を優先する。
+    if (document.querySelector("dialog[open]")) return;
     // isPlaybackShortcutBlocked()はBUTTON/AUDIOも除外するが、それはSpaceが
     // それらの既定動作（クリック等）と衝突するため。EscapeにBUTTON上での
     // 既定動作は無く、キーボードでフォーカスしたボタン（例えばこの全画面
@@ -3942,6 +3943,65 @@ function setupFullscreenLayout() {
     if (["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName)) return;
     setFullscreenLayout(!document.body.classList.contains("is-fullscreen"), { shouldPersist: true });
   });
+}
+
+// 通常表示用のアップロードカードを全画面時のネイティブダイアログへ移動する。
+function moveUploadCardToDialog() {
+  const card = $("#upload-card");
+  const dialog = $("#open-dialog");
+  dialog.append(card);
+  card.open = true;
+}
+
+// 全画面を終了したらアップロードカードを通常のメイン領域へ戻す。
+function moveUploadCardToShell() {
+  const card = $("#upload-card");
+  const dialog = $("#open-dialog");
+  if (dialog.open) dialog.close();
+  $(".app-shell").prepend(card);
+  card.open = true;
+}
+
+// ファイル選択ダイアログを閉じる。未表示時に呼んでも副作用を持たない。
+function closeOpenDialog() {
+  const dialog = $("#open-dialog");
+  if (dialog.open) dialog.close();
+}
+
+// 表示モードに応じて、操作後にファイル選択UIを表示する。
+function showUploadCard() {
+  if (document.body.classList.contains("is-fullscreen")) closeOpenDialog();
+  else $("#upload-card").open = true;
+}
+
+// 表示モードに応じて、変換完了後にファイル選択UIを閉じる。
+function hideUploadCard() {
+  if (document.body.classList.contains("is-fullscreen")) closeOpenDialog();
+  else $("#upload-card").open = false;
+}
+
+// ダイアログ内容の外側を押したかを判定する。closedby非対応Safari用の補助。
+function isDialogBackdropClick(dialog, event) {
+  const rect = dialog.getBoundingClientRect();
+  return event.clientY < rect.top || event.clientY > rect.bottom
+    || event.clientX < rect.left || event.clientX > rect.right;
+}
+
+// ヘッダの「開く」からファイル選択ダイアログを開閉する。
+function setupOpenDialog() {
+  const dialog = $("#open-dialog");
+  $("#open-dialog-button").addEventListener("click", () => {
+    $("#upload-card").open = true;
+    dialog.showModal();
+  });
+  $("#open-dialog-close").addEventListener("click", () => dialog.close());
+
+  // closedby="any"が未対応のSafariでも背景クリックで閉じられるようにする。
+  if (!("closedBy" in HTMLDialogElement.prototype)) {
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog && isDialogBackdropClick(dialog, event)) dialog.close();
+    });
+  }
 }
 
 // 歯車ボタンから開く表示設定ダイアログの開閉と各コントロールを配線する。
@@ -4041,6 +4101,7 @@ async function init() {
     return;
   }
   setupDropZone();
+  setupOpenDialog();
   setupFullscreenLayout();
   setupEnsemblePresets();
   setupTrackSorting();

@@ -18,6 +18,9 @@
         <h1>miditrack GM Instrument Assigner</h1>
       </div>
       <div class="header-actions" aria-label="表示操作">
+        <button type="button" class="button small header-action-button" id="open-dialog-button" aria-haspopup="dialog">
+          開く
+        </button>
         <button type="button" class="button small header-action-button" id="fullscreen-toggle" aria-pressed="false">
           <span class="fullscreen-label-enter">全画面</span>
           <span class="fullscreen-label-exit">全画面を終了</span>
@@ -36,13 +39,13 @@
       <summary class="card-heading">
         <span class="step-number">1</span>
         <div>
-          <h2>音源またはMIDIを選択</h2>
+          <h2 id="upload-card-title">音源またはMIDIを選択</h2>
           <p>.mid / .midi、または .nsf / .spc / .rsn / .vgm 等の音源ファイル（.zipアーカイブ可、.m3uプレイリスト同梱可）を読み込みます。</p>
         </div>
         <svg class="disclosure-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
       </summary>
       <label class="drop-zone" id="drop-zone" for="midi-input">
-        <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
+        <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
         <strong>ファイルをドロップ</strong>
         <span>またはクリックして選択（.mid / .midi / .nsf / .nsfe / .spc / .spc2 / .rsn / .vgm / .vgz / .zip / .m3u）</span>
         <span>音源ファイルとm3uプレイリストは同時に選択・ドロップできます</span>
@@ -53,6 +56,7 @@
         <button type="button" class="button ghost small" id="save-project-button" disabled>プロジェクトを保存</button>
         <input type="file" id="project-input" accept=".miditrack,application/vnd.miditrack.project+zip" hidden>
         <button type="button" class="button ghost small reset-action" id="reset-button">すべてリセット</button>
+        <button type="button" class="button ghost small" id="open-dialog-close">閉じる</button>
       </div>
 
       <div class="convert-panel" id="convert-panel" hidden>
@@ -74,7 +78,7 @@
     </details>
 
     <article class="card disabled-section" id="tracks-card">
-      <div class="card-heading">
+      <div class="card-heading" id="tracks-card-heading">
         <span class="step-number">2</span>
         <div>
           <h2>トラックごとの音源・楽器・音量</h2>
@@ -324,9 +328,10 @@
             <p class="field-help">トラック名をファイル名にした個別WAVをZIPにまとめます。ファイル名の末尾で、SoundFontでレンダリングした音（_midi）か原曲の音源（_orig）かを区別します。ノイズ/DPCM・DACなど分離できない実機音は1本のWAVにまとまります。原曲の音源のチャンネルごとの分離は、その数だけ全曲を再エミュレーションするため時間がかかります。</p>
           </section>
         </div>
-      </details>
     </section>
   </main>
+
+  <dialog class="app-dialog upload-dialog" id="open-dialog" closedby="any" aria-labelledby="upload-card-title"></dialog>
 
   <dialog class="app-dialog ensemble-preset-dialog" id="ensemble-preset-dialog" aria-labelledby="ensemble-preset-dialog-title">
     <form method="dialog" id="ensemble-preset-form">
