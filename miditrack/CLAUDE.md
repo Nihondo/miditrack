@@ -15,6 +15,16 @@ how any of the three converters themselves work, and it does not know
 anything about the YouTube publishing pipeline the rest of this repository
 serves.
 
+## Documentation ownership
+
+The repository-root `README.md` is the English end-user manual and
+`README_ja.md` is its Japanese counterpart; keep their user-visible
+behaviour, examples, and section structure aligned. This package's
+`README.md`/`README_ja.md` are contributor guides for setup, architecture,
+runtime contracts, and verification. Keep detailed implementation history
+and invariants in this file, and keep converter-specific option references
+in each converter's own documentation.
+
 ## Architecture
 
 ```

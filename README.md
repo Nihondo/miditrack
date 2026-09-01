@@ -1,192 +1,207 @@
 # miditrack
 
-Turn chiptune music — NES (`.nsf`), SNES (`.spc`/`.rsn`), or VGM (`.vgm`/`.vgz`) — into a MIDI file you can re-instrument, remix, and export, entirely from your browser. No terminal required for everyday use.
+Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or VGM (`.vgm`/`.vgz`) — into editable MIDI and listen to the result in your browser. Everyday use needs no terminal after the one-time setup.
 
-`miditrack` is a local web app that converts a chiptune source file to MIDI, lets you reassign a General MIDI instrument and volume to every track, and plays back the result immediately — including an option to keep the original chip/game sound instead of a generic synth. Under the hood it's backed by three bundled command-line converters (`nsf2midi`, `spc2midi`, `vgm2midi`) and `miditrack/midi2wav.sh`.
+`miditrack` runs only on your Mac. Your source files, MIDI, and rendered audio stay local.
 
 ## Quick Start
 
-1. **Install the requirements** (macOS only):
+1. Install FluidSynth:
+
    ```bash
    brew install fluid-synth
    ```
-   You'll also need a General MIDI SoundFont (`.sf2`/`.sf3`) somewhere `miditrack` can find it — see [Requirements](#requirements) below.
-2. **Set up `miditrack`** (one-time):
+
+2. Set up the app once:
+
    ```bash
    cd miditrack
    python3 -m venv .venv
    .venv/bin/python -m pip install --upgrade pip
    .venv/bin/python -m pip install -e .
    ```
-3. **Launch it**:
+
+3. Start the app:
+
    ```bash
    ./miditrack.sh
    ```
-   This opens a browser tab automatically. Optionally, symlink it onto your `PATH` once (`ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack`) so you can just type `miditrack` from anywhere afterward.
-4. **Drop a file** onto the upload area — a `.nsf`, `.spc`, `.rsn`, `.vgm`/`.vgz`, or an already-converted `.mid`.
-5. **Convert, listen, and download** — pick a song (if the file has more than one), click "MIDIに変換" (Convert to MIDI) if you started from a source file, then choose fast or quality auditioning. The audition audio prepares automatically; download the `.mid` or final-quality `.wav` when you're happy.
+
+4. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
+
+Optionally add `miditrack` to your PATH once:
+
+```bash
+ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
+```
 
 ## What You Can Do
 
-- **Convert chiptune files straight to MIDI** — drop a `.nsf`/`.spc`/`.rsn`/`.vgm` (or its variants) onto the same upload zone as a `.mid`. Multi-song files (NSF, SPC) let you pick which song to convert.
-- **Upload a whole rip pack at once** — a `.zip` containing several source files, or several files selected together, works without unzipping first. A `.m3u` playlist bundled alongside is read automatically and used to show real song titles instead of bare track numbers.
-- **Reassign each track's instrument** — every track gets a General MIDI instrument dropdown, grouped into the 16 standard families (Piano, Guitar, Strings, Brass, and so on) for easy browsing. Any instrument the converter already picked is pre-selected.
-- **Try and tailor complete ensemble presets** — choose Game Leads, Acoustic, or Jazz Quartet from one dropdown. While a preset is active, assign each track a musical role (melody, counter-melody, bass, accompaniment, or percussion); miditrack suggests the initial roles from the track data and maps them to the preset's instruments. Use the adjacent New, Edit, and Delete buttons to keep your own reusable combinations; they are saved locally. Choose "プリセット解除" (Clear preset) to restore the instrument choices you had before applying it.
-- **Adjust volume per track** — a 0–200% slider per track, independent of every other track even when several share a MIDI channel. If the source MIDI already carries a volume setting (CC7) for that track alone, the slider starts there automatically.
-- **Hear the original chip/game sound instead of a generic SoundFont** — for tracks where it's available, use the compact **SF | 原曲** segmented choice to hear the actual NES/SNES/chip hardware output instead of a synthesized approximation.
-- **Change the whole song's speed and pitch** — use the compact −/＋ controls on the right side of the audition toolbar to adjust the global speed multiplier and semitone transpose. The change is applied directly to the MIDI (no audio time-stretch artifacts) and reflected in every play, WAV download, and MIDI download until you change it back.
-- **Export a batch of speed/pitch variations** — expand the normally collapsed "バリエーションをまとめて生成" (Generate variations in bulk) disclosure to generate every combination of a few speed factors and semitone shifts as a single downloadable ZIP of WAV files, named `{name}_p{+/-semitones}_x{speed}.wav` (for example, `song_p+0_x1.0.wav`), handy for game-development or remix use.
-- **Choose fast or final-quality auditioning** — Fast mode renders the full song at 22.05kHz for quick checks; Quality mode renders at 44.1kHz with the same processing used by the final WAV download. Completed renders are cached for the current session, so revisiting the same settings and mode is immediate.
-- **Play, loop, inspect, and download the result** — compact controls provide play/pause, one-second seeking, return-to-start, volume, and mute. Drag horizontally across the piano roll to define and enable a loop, or enter its start and end times below the roll; the range remains visible and is saved with a project. Press and hold a track name or its color bar to keep that track's notes prominent while the other notes dim, without changing playback audio. A digital timer beside the controls shows elapsed/total time to one-tenth of a second. MIDI preparation starts an audition render immediately; edits refresh it after 500ms of inactivity. Playback waits for the latest audio rather than using an older setting, while an in-progress playback change keeps its relative position with a crossfade. Selection controls clicked with a pointer release focus afterward, so Space immediately returns to play/pause; keyboard-focused controls keep their normal native behavior. The zoomable piano roll follows playback after the playhead reaches the middle of its viewport; scrolling it yourself stops that follow mode. Download buttons save both the edited `.mid` and rendered `.wav`, and your original upload is never modified.
-- **Pick your own SoundFont** — choose which `.sf2`/`.sf3` bank to render with, right from the browser.
+- Convert NES, SNES, and VGM/VGZ source files to MIDI. NSF/SPC files with multiple songs offer a song picker.
+- Upload several source files, a `.zip` rip pack, or a source file with its `.m3u` playlist. A playlist can supply song titles.
+- Reassign General MIDI instruments, set per-track volume or mute, sort the track list, and save favourite instruments and ensemble presets locally.
+- Choose **SoundFont** or **Original game sound** for supported tracks. Original sound uses the relevant game SoundFont or chip renderer; SoundFont uses the GM bank you selected.
+- Inspect notes in a zoomable piano roll, seek and loop playback, choose a colour/theme/layout preference, and switch to the full-screen editing layout.
+- Change the complete song's speed and pitch, save and reopen a `.miditrack` project, and download an edited MIDI or final-quality WAV.
+- Generate a ZIP of speed/pitch variations, or export a ZIP containing one WAV per track.
 
-Everything runs locally on your machine; no file is ever uploaded anywhere else.
+## The Toolkit
 
-## The Toolkit at a Glance
-
-| Tool | What it does | How you use it |
+| Tool | Purpose | Typical use |
 |---|---|---|
-| **miditrack** | The web app described above — the recommended way to use this toolkit | Browser, via `miditrack.sh`/`miditrack` |
-| **nsf2midi** | Converts NES/Famicom `.nsf`/`.nsfe` files to MIDI | Bundled inside miditrack, or the terminal directly |
-| **spc2midi** | Converts SNES `.spc`/`.spc2`/`.rsn` files to MIDI (plus a matching SoundFont) | Bundled inside miditrack, or the terminal directly |
-| **vgm2midi** | Converts VGM/VGZ command-log files (Genesis, arcade, PC-88, and more) to MIDI | Bundled inside miditrack, or the terminal directly |
-| **miditrack/midi2wav.sh** | Renders any `.mid` file to a listenable `.wav` using fluidsynth | Called automatically by miditrack, or run directly |
-
-Most people only ever need `miditrack`. The three converters and `miditrack/midi2wav.sh` are its building blocks, and each also works from the terminal if you'd rather script a conversion pipeline than click through a browser.
+| **miditrack** | Browser-based conversion, editing, auditioning, and export | Recommended for everyday work |
+| **nsf2midi** | NES/Famicom `.nsf`/`.nsfe` to MIDI | Direct CLI or bundled conversion |
+| **spc2midi** | SNES `.spc`/`.spc2`/`.rsn` to MIDI and optional game SoundFont | Direct CLI or bundled conversion |
+| **vgm2midi** | VGM/VGZ command logs to MIDI | Direct CLI or bundled conversion |
+| **miditrack/midi2wav.sh** | MIDI to WAV through FluidSynth | Used by miditrack or directly from a terminal |
 
 ## Requirements
 
-- macOS
-- Python 3.10+ (for `miditrack` itself)
-- [fluidsynth](https://www.fluidsynth.org/) — `brew install fluid-synth`
-- A General MIDI SoundFont (`.sf2`/`.sf3`). Set the `MIDI2WAV_SOUNDFONT` environment variable to its path, or place one in any of these locations and it will be found automatically:
-  - `<this repo>/soundfonts`
+- macOS and Python 3.10+
+- [FluidSynth](https://www.fluidsynth.org/): `brew install fluid-synth`
+- A General MIDI SoundFont (`.sf2`/`.sf3`). Set `MIDI2WAV_SOUNDFONT` to its path, or place one in one of these directories:
+  - `<repository>/soundfonts`
   - `~/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/fluid-synth/sf2`
-- The three converters (`nsf2midi`, `spc2midi`, `vgm2midi`) ship prebuilt inside this repository — no separate build step needed for ordinary use.
-- To hear a VGM track's original game sound: build the bundled native helper once with `cd vgm2midi && ./scripts/build-native.sh`. NSF's original game sound needs no separate build step.
-- For real chip-noise mixing or per-track export: [ffmpeg](https://ffmpeg.org/). To sync a real-audio stem to a non-default speed/pitch, miditrack directly invokes [rubberband-cli](https://breakfastquay.com/rubberband/) — `brew install ffmpeg rubberband`.
+
+The converter binaries are bundled, so ordinary source conversion needs no build step. Original VGM sound needs the native helper built once:
+
+```bash
+cd vgm2midi
+./scripts/build-native.sh
+```
+
+For real-audio stem mixing or per-track export, install [ffmpeg](https://ffmpeg.org/). A non-default speed or pitch applied to a real-audio stem also needs [rubberband-cli](https://breakfastquay.com/rubberband/):
+
+```bash
+brew install ffmpeg rubberband
+```
 
 ## Using miditrack
 
-### Starting from a MIDI file
+### Start from MIDI
 
-1. Select or drag a `.mid`/`.midi` file onto the upload area.
-2. The track list appears. Each editable track shows an instrument dropdown (pre-selected to whatever the file already specifies) and, for tracks with notes, a 0–200% volume slider. Long track names and non-editable reasons are shortened with an ellipsis to keep every row the same height; focus or point at a ⚠ button to read an instrument-change warning.
-3. Optionally pick a different **SoundFont** directly below the track list, then choose **高速** (Fast, 22.05kHz) or **品質** (Quality, 44.1kHz). Quality mode matches the final WAV download.
-4. Optionally adjust the speed multiplier and/or semitone transpose with the compact −/＋ controls on the right side of the audition toolbar. You can also type a value directly into either control.
-5. The selected mode starts rendering as soon as MIDI preparation finishes, and edits refresh it after 500ms of inactivity. Use the segmented playback controls or keyboard shortcuts to play, pause, and seek; if the newest audio is still preparing, playback waits for it instead of using an older setting. Pointer-used selection controls release focus after the operation, so Space can immediately control playback; controls reached by keyboard keep their native key behavior. The adjacent digital timer shows elapsed/total time to one-tenth of a second, followed by volume and mute controls. At zoom levels wider than the viewport, playback from the beginning starts auto-scrolling after the playhead reaches the midpoint. A manual horizontal scroll stops following.
-6. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) to save your work. WAV download always uses the 44.1kHz quality render and reuses it when Quality mode has already prepared the same state.
-7. Optionally expand "バリエーションをまとめて生成" (Generate variations in bulk), enter comma-separated speed factors and semitone values, and click "バリエーションをZIPでダウンロード" (Download variations as ZIP) to get every combination as one ZIP. ZIP entries use `{name}_p{+/-semitones}_x{speed}` (for example, `song_p+0_x1.0.wav`).
+1. Upload or drag a `.mid`/`.midi` file.
+2. Select an instrument, volume, mute state, and (when offered) SoundFont or Original game sound for each track.
+3. Pick a SoundFont and **Fast** (22.05 kHz) or **Quality** (44.1 kHz) auditioning. Quality matches WAV download.
+4. Use the speed and transpose controls when needed. They affect every subsequent render and download.
+5. Use the piano roll to inspect, seek, and define a playback loop. Display settings change only the view and are remembered.
+6. Download MIDI or WAV. The WAV download always uses the 44.1 kHz quality render.
 
-### Starting from a source file (`.nsf`/`.spc`/`.rsn`/`.vgm`, a `.zip`, or several files at once)
+Use **Save project** to download a `.miditrack` archive containing the editable MIDI, the source and conversion settings when available, and the saved editing state (track choices, speed/pitch, filename, loop, and preset). **Open project** restores that state without reconverting the source. Rendered audio and generated ZIPs are deliberately not stored in a project.
 
-1. Drop the file(s) onto the upload area — one source file, a source file plus its `.m3u` playlist, or a `.zip` archive containing one or more source files. miditrack detects the format automatically and, for multi-song formats (NSF, SPC), lists every song so you can pick one.
-2. If more than one convertible file was found, pick which one from the **ファイル** (File) dropdown.
-3. Pick a song (if the format supports multiple) and adjust the format's own options — duration/PAL timing for NSF, loop count for SPC, tempo/loop/duration for VGM. NSF and VGM also offer a "chip noise" option to preserve the real hardware percussion sound instead of a generic drum kit.
-4. Click "MIDIに変換" (Convert to MIDI). The track list then appears exactly as if you'd uploaded a `.mid` directly — continue with the steps above.
-5. Converting again (a different song, a different file, or different options) discards the current track edits and any rendered audio, just like uploading a new `.mid` would.
+### Start from a source file
 
-### Original game sound vs. SoundFont
+1. Upload one source file, several files, a source file plus `.m3u`, or a `.zip` archive. ZIP uploads allow up to 200 files and 512 MiB after extraction.
+2. Choose a file when the upload contains several convertible sources, then choose a song when the format provides several.
+3. Choose conversion settings:
+   - NSF: duration and optional PAL timing
+   - SPC: loop count
+   - VGM: loop count or duration, plus optional OPN Ch3 Special percussion conversion
+4. **Original game sound by default** is only an initial selection. You can still change any supported track after conversion.
+5. Select **Convert to MIDI**, then edit and export as for an uploaded MIDI file.
 
-Whenever a track can be played with the real chip/game hardware sound, its compact Source segmented control offers two choices:
+### SoundFont and Original game sound
 
-- **原曲 (Original game sound)** — the track plays through the actual chip emulation (NSF, VGM) or a SoundFont built from the game's own samples (SPC), instead of a generic synth.
-- **SF (SoundFont)** — the track plays through your selected General MIDI SoundFont, with the instrument dropdown you can freely change.
+- **SoundFont** plays the MIDI through your selected General MIDI SoundFont, so instrument changes apply.
+- **Original game sound** uses a game-derived SoundFont for SPC or hardware/chip rendering for NSF and VGM. Instrument selection is unavailable for these tracks, but volume remains adjustable.
+- VGM routing follows physical chip channels. Rows which share a hardware channel can change together; ambiguous shared channels are not selected as Original automatically.
 
-Switching to Original game sound disables the instrument dropdown for VGM/NSF tracks (that audio never passes through the SoundFont at all); for SPC it only disables the instrument control, since volume adjustments still apply.
+### Output options
+
+- **Generate variations in bulk** produces every specified speed × transpose combination as a ZIP. It can include the corresponding MIDI files.
+- **Export per track** produces one WAV per audible track. Original-game-sound channels can be combined into one file to avoid a full re-render for each hardware channel.
+- Variation generation accepts up to 6 speeds, 8 transposes, and 15 total combinations. Speed is limited to 0.1×–10× and transpose to −24–+24 semitones. MIDI notes outside 0–127 are omitted; percussion is never transposed.
+
+### Limits and behaviour
+
+- MIDI channel 10 is not available for instrument remapping, and tracks spanning multiple channels (including format-0 MIDI) are not editable.
+- Auditioning renders then plays audio; it is not a live software synthesizer. Completed renders are cached for the current session and edits refresh the preview after a short delay.
+- `.m3u` title matching is best-effort. A stale or mismatched playlist leaves song titles unchanged instead of failing.
+- Changing a SoundFont, track edit, or output filename invalidates generated variation and per-track ZIPs; generate them again after the change.
 
 ### Command-line options
 
-```
+```text
 miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
 ```
 
 | Option | Description |
 |---|---|
-| `MIDI_FILE` | A `.mid`/`.midi` file to preload when the browser opens (optional). Source files must be uploaded from the browser. |
-| `-s, --soundfont FILE` | Default SoundFont at startup. Can be changed anytime from the browser. |
-| `--no-browser` | Don't open a browser tab automatically. |
+| `MIDI_FILE` | Optional `.mid`/`.midi` file to preload. Upload source files in the browser. |
+| `-s, --soundfont FILE` | Default SoundFont at startup. The browser can replace it at any time. |
+| `--no-browser` | Do not open a browser tab automatically. |
 | `--version` | Show the version and exit. |
 
-## Using the converters directly
+## Using the Command-line Tools
 
-If you'd rather script a conversion than use the browser, each converter also works as a standalone command. See each tool's own README for the full option reference and examples — the summaries below cover the everyday case.
+Each converter has its own complete reference. These examples cover the usual case.
 
-### nsf2midi (NES)
+### nsf2midi
 
 ```bash
-nsf2midi song.nsf song.mid          # convert
-nsf2midi -l song.nsf                # list songs/tracks in the file
+nsf2midi song.nsf song.mid
+nsf2midi -l song.nsf
 ```
 
-See [nsf2midi/README.md](nsf2midi/README.md) for instrument customization (`.mdf` files), PAL timing, and real chip-audio rendering.
+See [nsf2midi/README.md](nsf2midi/README.md) for MDF instrument definitions, PAL timing, and chip-audio rendering.
 
-### spc2midi (SNES)
+### spc2midi
 
 ```bash
-spc2midi song.rsn song.mid              # convert (auto-detects .spc/.spc2/.rsn)
-spc2midi -l song.rsn                    # list sequences in the file
-spc2midi -s 12 --sf2 song.rsn song.mid  # convert one song, with a matching SoundFont
+spc2midi song.rsn song.mid
+spc2midi -s 12 --sf2 song.rsn song.mid
 ```
 
-See [spc2midi/README.md](spc2midi/README.md) for multi-song `.rsn` archives, SoundFont/DLS export, and loop unrolling.
+See [spc2midi/README.md](spc2midi/README.md) for SoundFont/DLS export and loop handling.
 
-### vgm2midi (Genesis, arcade, PC-88, and more)
+### vgm2midi
 
 ```bash
-vgm2midi song.vgz                       # convert (creates song.mid)
-vgm2midi song.vgz -v                    # verbose: show detected chips
-vgm2midi song.vgz --loops 3             # play the loop section 3 times total
+vgm2midi song.vgz
+vgm2midi song.vgz --loops 3
 ```
 
-See [vgm2midi/README.md](vgm2midi/README.md) for the full list of supported sound chips and advanced options.
+See [vgm2midi/README.md](vgm2midi/README.md) for supported chips and advanced options.
 
-### miditrack/midi2wav.sh (render any MIDI to WAV)
+### midi2wav.sh
 
 ```bash
-./miditrack/midi2wav.sh song.mid                  # render with the default SoundFont
-./miditrack/midi2wav.sh -S song.mid               # pick a SoundFont interactively
-./miditrack/midi2wav.sh -s MySound.sf2 -f song.mid  # use a specific SoundFont, overwrite existing output
+./miditrack/midi2wav.sh song.mid
+./miditrack/midi2wav.sh -S song.mid
+./miditrack/midi2wav.sh -s MySound.sf2 -f song.mid
 ```
 
 ## Troubleshooting
 
-- **"SoundFont not found"** — pass `--soundfont` explicitly, set the `MIDI2WAV_SOUNDFONT` environment variable, or place a `.sf2` in one of the directories listed under [Requirements](#requirements).
-- **"midi2wav not found"** — confirm `fluidsynth` is installed (`brew install fluid-synth`).
-- **"nsf2midi/spc2midi/vgm2midi not found"** — these ship prebuilt inside this repository, so this shouldn't normally happen. If you moved or rebuilt one, restore it at its usual path or set the corresponding `NSF2MIDI_BIN`/`SPC2MIDI_BIN`/`VGM2MIDI_BIN` environment variable.
-- **"対応するSNESサウンドドライバが見つかりませんでした" (no supported SNES driver found)** — the `.spc` file's music driver isn't one of the ~20 families `spc2midi` recognizes; this file can't be converted.
-- **"対応する音源ファイルが見つかりません" (no convertible source file found)** — none of the uploaded files matched a supported extension.
-- **"有効なZIPファイルではありません" (not a valid ZIP file)** — the uploaded `.zip` is corrupted or not actually a ZIP.
-- **"miditrack requires Flask"** — recreate the `.venv` following the [Quick Start](#quick-start) steps above.
-- **"rubberband が見つかりません" (rubberband not found)** — install `rubberband-cli` (`brew install rubberband`) before using a non-default speed/pitch with a real-audio stem in miditrack.
-- **"速度×ピッチの組み合わせ数が多すぎます" (too many speed×pitch combinations)** — reduce how many speeds/pitches you specify in the ZIP-export feature (the cap is 40 combinations).
+- **SoundFont not found**: pass `--soundfont`, set `MIDI2WAV_SOUNDFONT`, or place a `.sf2`/`.sf3` in one of the directories listed above.
+- **midi2wav not found**: install FluidSynth with `brew install fluid-synth`.
+- **A bundled converter was not found**: restore it to its repository location or set `NSF2MIDI_BIN`, `SPC2MIDI_BIN`, or `VGM2MIDI_BIN`.
+- **No supported SNES driver found**: the SPC driver is not one of the supported VGMTrans families, so it cannot be converted.
+- **No convertible source file found**: the upload or ZIP contains no supported source file.
+- **Invalid ZIP file**: the archive is damaged or is not a ZIP file.
+- **miditrack requires Flask**: recreate `.venv` using Quick Start.
+- **rubberband not found**: install it with `brew install rubberband` before applying non-default speed/pitch to a real-audio stem.
 
 ## Acknowledgments
 
-This toolkit stands on several excellent open-source projects:
-
-- **[NotSoFatso](https://github.com/BleuBleu/FamiStudio)** by Disch — the NES/Famicom playback core `nsf2midi` vendors to emulate the APU and expansion audio chips, sourced from the FamiStudio project's modernized build.
-- **The original `nsf2midi.exe` 0.14** — a Windows GUI tool with no available source or command-line interface. This repository's `nsf2midi` is a from-scratch macOS/arm64 reimplementation that reads the same `.mdf` instrument-definition format.
-- **[VGMTrans](https://github.com/vgmtrans/vgmtrans)** — `spc2midi` is built directly on top of VGMTrans's per-driver SNES sequence parsers, rather than reimplementing note detection from scratch.
-- **[jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi)** — `vgm2midi` began as a fork of this project, extended here with several additional sound chips and fixes.
-- **[FluidSynth](https://www.fluidsynth.org/)** — the SoundFont synthesizer `miditrack/midi2wav.sh` renders every WAV preview and download through.
-- **[Rubber Band Library](https://breakfastquay.com/rubberband/)** (via `rubberband-cli`) — the time-stretching/pitch-shifting engine miditrack uses directly to synchronize real-audio stems.
-- **[DSEG](https://github.com/keshikan/DSEG)** by keshikan — the locally bundled DSEG7 Classic web font used by the playback timer, distributed under the SIL Open Font License 1.1.
-
-See each subproject's own `README.md`/`NOTICE.md` for full attribution and license details.
+- [NotSoFatso](https://github.com/BleuBleu/FamiStudio) powers the vendored NES/Famicom playback core.
+- The original `nsf2midi.exe` 0.14 inspired this macOS reimplementation and its MDF format compatibility.
+- [VGMTrans](https://github.com/vgmtrans/vgmtrans) provides the SNES sequence parsers used by `spc2midi`.
+- [jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi) is the upstream fork for `vgm2midi`.
+- [FluidSynth](https://www.fluidsynth.org/) renders SoundFont audio.
+- [Rubber Band Library](https://breakfastquay.com/rubberband/) synchronizes real-audio stems after speed/pitch changes.
+- [DSEG](https://github.com/keshikan/DSEG) provides the bundled playback-timer web font.
 
 ## License
-
-Each tool carries its own license:
 
 | Tool | License |
 |---|---|
 | miditrack | MIT |
-| nsf2midi | GPL-2.0-or-later (links the vendored NotSoFatso NSF core) |
-| spc2midi | zlib (statically links VGMTrans, also zlib, with one LGPL-3.0 component) |
-| vgm2midi | MIT (fork of jkarenko/vgm2midi) |
+| nsf2midi | GPL-2.0-or-later |
+| spc2midi | zlib, with an LGPL-3.0 component in VGMTrans |
+| vgm2midi | MIT |
 
-See each subproject's own `README.md`/`LICENSE`/`NOTICE.md` for full details.
+See each subproject's `README.md`, `LICENSE`, or `NOTICE.md` for full licensing and attribution.

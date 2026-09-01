@@ -1,45 +1,17 @@
-# miditrack
+# miditrack development guide
 
-`miditrack` is a local Web tool that lets you convert a chiptune source file straight to MIDI, assign a General MIDI instrument (Program Change) to each track, and audition the result immediately. It can read a `.nsf`/`.nsfe`, `.spc`/`.spc2`/`.rsn`, or `.vgm`/`.vgz` file directly (converting it via the bundled `nsf2midi`/`spc2midi`/`vgm2midi` CLIs), or a `.mid`/`.midi` file produced elsewhere.
+This document is for contributors and maintainers of the `miditrack` package. For installation, browser workflows, supported formats, and command-line examples, use the repository's [user manual](../README.md) ([Japanese](../README_ja.md)).
 
-`nsf2midi`/`spc2midi`/`vgm2midi` only ever *write* MIDI — none of them offer a way to go back and pick a different instrument afterward, and none has its own Web UI. `miditrack` covers the whole downstream workflow in one page: converting the source file, re-picking each track's instrument, and rendering the result through [midi2wav.sh](midi2wav.sh) for in-browser playback and download — without a separate trip to the terminal.
+## Scope and documentation ownership
 
-## Features
+`miditrack` is a local Flask application that converts supported chiptune files through bundled converter CLIs, lets users edit the resulting MIDI, and renders audio locally.
 
-- **Convert a source file directly**: drop a `.nsf`/`.spc`/`.rsn`/`.vgm` file (or its variants) onto the same upload zone as a `.mid`. For formats with multiple songs/sequences (NSF, SPC), miditrack lists them via each tool's own `-l`; it shows a song picker only when two or more candidates are found. All three formats show the same "ループ回数"/"秒数" (loop count / duration) row, with whichever one that format can't actually use shown disabled with a reason (NSF: duration only; SPC: loop count only; VGM: either, mutually exclusive) — plus NSF's PAL option
-- **Upload a `.zip` archive, or several files at once**: a ZIP containing one or more source files (real rip packs are often distributed this way) is extracted automatically; if it holds more than one convertible file, a "ファイル" (File) dropdown lets you pick which one, without a second upload. Dropping/selecting a source file together with its `.m3u` playlist works the same way — no ZIP required
-- **Song titles from a bundled `.m3u` playlist**: when a `.m3u` naming each track ships alongside the source file (loose, or inside the ZIP), miditrack reads it (the same extended-M3U format `foo_input_gme`/Game_Music_Emu players use) and shows the real song titles in the "曲" (Song) dropdown instead of a bare track number
-- Automatic track analysis: track name, channel(s) used, note count, and **detection of any existing Program Change** (`vgm2midi` sends GM 81 "Lead 1 (square)" to every track, and `nsf2midi`'s `gm.mdf` preset also sends a per-channel instrument, so this detection is required, not optional). Track rows stay a fixed height: long names and lock reasons use an ellipsis, while tracks that change instruments mid-song show a keyboard-accessible ⚠ tooltip instead of an extra warning row
-- **Piano-roll overview, looping, and track inspection before rendering**: the audition card visualizes every MIDI note by track as soon as a MIDI file is ready. Each track name carries the same color marker as its notes. Like a DAW piano roll, note blocks are rounded by default and carry a slightly darker outline in their track color, while pitch-bend messages appear as stepped automation in a dedicated PITCH lane. A fixed vertical keyboard at the roll's left aligns with every note row, draws white and black keys, and labels each C using the MIDI convention where note 60 is C4. Open **表示設定** (Display settings, the gear icon in the header) to toggle rounded notes, note outlines, and the keyboard for especially dense MIDI — see the dedicated bullet below for the full list of remembered display preferences, none of which ever affect MIDI or audio. Use the compact −/＋ controls to zoom the time axis, then scroll horizontally through dense passages. The roll reserves enough vertical space to keep adjacent MIDI pitches visually separate, including in the full-screen layout. After rendering, click to seek or drag horizontally to define and enable a loop; the numeric start/end inputs below the roll provide the keyboard-accessible alternative. Hover the roll and use the mouse wheel/trackpad (vertical scroll) to scrub forward/backward without clicking first; keyboard users can focus it and use Arrow keys, Page Up/Down, Home, and End. Press and hold a track name or color bar (or Enter/Space while it is focused) to dim every other track's notes without changing the audio. Muted tracks remain visible at reduced opacity
-- **Header dialogs and display settings**: in full-screen mode, the header keeps **開く** (Open), **全画面** (Full screen), and the gear control together at the right edge. **開く** opens the existing file picker as a modal for MIDI/source files, project restore, conversion options, and project saving; press Escape, click outside, or choose **閉じる** to dismiss it. In the normal layout, that same picker remains the first expandable card. Click the gear to open **表示設定** (Display settings). Every display choice applies immediately and is remembered server-side across restarts, independent of whatever MIDI is currently loaded. Related choices are arranged side by side on wider screens: rounded notes/note outlines/grid visibility; background/grid-line colors; and track palette/vertical grid divisions (they stack on narrow screens). Pick the overall theme — **システム追従** (Follow system), **ライト** (Light), or **ダーク** (Dark) — regardless of the OS setting; the piano roll's **高さ** (Height: 小/標準/大 — Compact/Standard/Tall); whether **グリッド線を表示** (Grid lines) are drawn and how many vertical divisions they use (4/8/16); the **トラック配色** (Track color palette: 虹色/Rainbow, 彩度強め/Vivid, 彩度控えめ/Muted, or 色覚配慮/Colorblind-safe), which also recolors every track's name marker in the track list; and custom **背景色**/**グリッド線の色** (Background/Grid line color) pickers, each with its own "テーマ既定に戻す" (Reset to theme default) button. The roll's rounded-note, note-outline, and keyboard toggles, plus **ノート数が0のトラックを非表示にする** (Hide tracks with zero notes), live in this same dialog
-- **Sortable track list**: click any column header (Track, Channel, Note Count, Source, Instrument, or Volume) to sort the on-screen rows; click it again to reverse the order. Sorting never changes track order in downloaded MIDI/WAV output
-- **Per-track volume from 0–200%**: every track with notes, including percussion and multi-channel tracks, gets an accessible volume slider. Volume is applied to that track's Note On velocities, so tracks that share a MIDI channel do not change each other
-- **Per-track "Original game sound"/SoundFont selection, unified across all three formats**: SPC, VGM, and NSF each expose the same compact **SF | 原曲** Source segment whenever a track can be routed away from the selected GM SoundFont. It uses the same accessible radio-based design as the **高速 | 品質** audition-mode segment. The underlying mechanism differs per format (SPC: a SoundFont generated from the SPC's own BRR samples; VGM: libvgm physical-chip-channel rendering; NSF: `nsf2midi`'s own per-channel chip rendering), but the values and per-track behavior are identical. Original game sound always disables the instrument control (SPC swaps SoundFont banks; VGM/NSF is real hardware/chip audio), but volume stays adjustable on every format — for VGM/NSF, any channel whose volume is changed from the 100% default gets individually re-rendered through the real hardware/emulation with that gain applied, while channels left at the default are still rendered together in one pass. Switching a track to SoundFont for the first time selects GM 81 "Lead 1 (square)" as a safe starting instrument
-- **One shared "原曲の音源（実機）を初期選択" checkbox across all three formats**: it is a pure default-selection hint, never a gate — the Original game sound option is always available on every note-bearing track regardless of whether it's checked (SPC always generates its BRR-derived SoundFont, same as NSF/VGM always generating their chip-render metadata). Checking it just decides which tracks start on Original instead of SoundFont: NSF and SPC preselect every note-bearing track (NES channels never share one physical channel, and SPC's SoundFont bank swap works uniformly, so there's no ambiguous case to leave out), while VGM preselects only the safely-identifiable subset (SN76489/Game Boy noise, YM2612 DAC, supported OPL/OPNA rhythm/PCM) — ambiguous shared channels (AY/SSG, HuC6280, YM2151 noise) stay on SoundFont either way
-- **Optional OPN Ch3 Special percussion conversion for VGM**: enable "OPN Ch3 SpecialをGMドラムに変換" to pass `--ch3-special-percussion` to `vgm2midi`, replacing the four operator-pitch tracks from YM2203, YM2608, or YM2612 with heuristic GM kick/snare/hi-hat/cymbal/tom hits
-- GM instruments are grouped into the 16 standard families (Piano, Chromatic Percussion, Organ, Guitar, Bass, Strings, Ensemble, Brass, Reed, Pipe, Synth Lead, Synth Pad, Synth Effects, Ethnic, Percussive, Sound Effects) for easy selection
-- **Role-based, editable ensemble presets**: the main UI exposes one preset dropdown with Clear preset, Game Leads, Acoustic, and Jazz Quartet at the same level. Selecting a preset changes each instrument cell into a role selector (melody, counter-melody, bass, accompaniment, or percussion), automatically suggests initial roles from channel, pitch, density, and track-name evidence, and applies the preset's GM mapping. New, Edit, and Delete beside the dropdown open a dialog for the preset name and the GM sound for every role; presets are stored in `~/Library/Application Support/miditrack/preferences.json`. The defaults are Game Leads (Lead 1 square, Lead 2 sawtooth, Synth Bass 1, Pad 1 new age, Electronic Kit), Acoustic (Nylon Guitar, Violin, Acoustic Bass, Acoustic Grand Piano, Standard Kit), and Jazz Quartet (Alto Sax, Trumpet, Acoustic Bass, Acoustic Grand Piano, Jazz Kit), in melody/counter-melody/bass/accompaniment/percussion order. Switching presets keeps the roles; clearing restores the source and instrument choices captured before the first preset was applied
-- **Favorite instruments float to the top**: pin a program with the ☆ button on any instrument dropdown, or just use it — every selection is tallied automatically and the most-used programs fill out a "よく使う" (Favorites) group above the 16 families (pinned first, capped at 8). This is saved server-side to `~/Library/Application Support/miditrack/preferences.json`, so it survives across restarts even though the local web server picks a new random port every launch
-- **Pick a SoundFont right in the browser**: directly below the track list, choose from whatever `.sf2`/`.sf3` files `midi2wav.sh`'s own search directories find (`../soundfonts`, `~/Library/Audio/Sounds/Banks`, etc. — see [midi2wav.sh](midi2wav.sh)'s own `--help` for the full list). The choice is saved server-side and restored on the next launch unless `--soundfont` explicitly overrides it. In full-screen mode, this setting stays at the bottom of the left track-list column
-- **Save and reopen an editing session**: after MIDI is ready, use **プロジェクトを保存** (Save project) to download a self-contained `.miditrack` archive with the canonical MIDI, source files and conversion settings when applicable, selected song, per-track source/instrument/volume edits, whole-song speed/pitch, download filename, audition mode, piano-roll loop range, and active ensemble preset/roles and definition. **プロジェクトを開く** (Open project) restores that editable state without reconverting, even when that preset is not in the current local list. The selected SoundFont is stored only as a path; when it is no longer available, miditrack warns and falls back to the normal default SoundFont
-- **Fast/quality audition modes with session caching**: "高速" (Fast, the default) renders the full song as 16-bit stereo at 22.05kHz for quick checks, while "品質" (Quality) renders at 44.1kHz with the exact processing used by the final WAV download. Completed state/mode combinations are kept in a session-local 16-entry/256MiB cache, including states you later return to. MIDI preparation starts the selected-mode render immediately; an instrument, volume, source, SoundFont, speed, or transpose edit refreshes it after 500ms of inactivity. If you're playing, the new result crossfades over the current audio; if you're paused, it loads silently. Starting playback while a new render is pending waits for that latest result rather than playing an older setting. Two segmented controls above the piano roll group back/forward and return-to-start/play-pause; they stay synchronized with Arrow Left/Right, Home or Command+Left, and Space respectively. Selection controls release focus after pointer use so Space immediately returns to playback, while keyboard-focused controls retain their native behavior
-- **Full-screen DAW layout**: click "全画面" (Full screen) in the header to switch to a two-column, DAW-style view — a scrollable instrument list on the left starts at the top of the available area and fills the full height (each track shown as a compact two-row channel strip: name/channel/source, then instrument/volume), with the SoundFont setting fixed at that column's bottom; the transport controls, a large piano roll, and the download/variations controls stack on the right. Only in this mode, file selection moves from the normal layout's first expandable card into the header's **開く** (Open) modal, and the normal-layout track-card heading is hidden so the list can begin at the top. This is a pure layout switch: playback, rendering, and the piano roll keep working exactly as before, and nothing is hidden or lost — just rearranged. Click the full-screen button or press Escape to switch between the normal single-column and full-screen layouts; Escape closes an open modal first and remains available for native text editing and dropdown controls. The last selected normal or full-screen mode is restored at the next launch. Below 900px wide it automatically falls back to a single scrolling column
-- **Dedicated Output section**: below the piano roll, the separate **出力** (Output) card collects the edited MIDI/WAV download buttons, shared filename field, and advanced batch-output options. WAV download always uses 44.1kHz Quality mode, never the lower-rate Fast preview, and reuses a matching Quality audition when available. The uploaded/converted original is never modified. Changing only the filename does not invalidate audition audio. The bulk variations ZIP also uses this name for the ZIP itself and every file inside it. In full-screen mode these controls retain their existing compact right-column layout
-- **Whole-song speed and pitch, applied directly to the MIDI**: use the compact −/＋ steppers at the right of the playback-control row to set a speed multiplier and semitone transpose; the middle values remain directly editable. Every render, WAV download, and MIDI download reflects the setting — no time-stretch artifacts, since it's a tempo-meta scale and a note-number shift, not audio processing. Any `chipNoise` real-audio stem is kept in sync automatically by miditrack's direct `rubberband` invocation whenever this is set to something other than the default. The normally collapsed "出力オプション" (Output options) disclosure in the dedicated Output section collects two batch-generation features, described next
-- **Generate variations in bulk**: the "バリエーションをまとめて生成" section applies that same MIDI-layer speed/pitch edit to every combination of a comma-separated speed list × transpose list, then bundles each combination's WAV (and, if "ZIPにMIDIも含める" is checked, its MIDI too) into one ZIP download — no time-stretch DSP here either, and the audition setting is left untouched. Each entry uses `{name}_p{+/-semitones}_x{speed}.wav` (for example, `song_p+0_x1.0.wav`); included MIDI uses the same stem. Defaults are 1.2x/1.0x/0.8x speed, -2 to +2 semitones = 15 combinations
-- **Export one WAV per track**: the "トラックごとに出力" section renders each track to its own WAV, named `{name}_{trackName}_{midi|orig}.wav` — `_midi` for a track rendered through a SoundFont, `_orig` for a track using the original game's own sound (a game-derived SoundFont, real hardware/chip re-emulation, or a real noise/DPCM/DAC stem). Summing every file in the ZIP reproduces the final mixed WAV download exactly. A muted track, or one with no notes, is left out of the ZIP. On VGM/NSF, "原曲の音源トラックを1つにまとめる" combines every Original-game-sound channel into one file instead of separating each — separating them costs one full re-emulation pass per channel, so leave it unchecked only when you actually want individual stems
-- Everything (source files, images, audio, MIDI) is processed locally — same local-only security design as `tools/pixelart_web.py`
+- `../README.md` and `../README_ja.md` are the end-user manuals. Keep their structure and practical behaviour in sync.
+- This README records contributor setup, architecture, runtime contracts, and verification commands.
+- `CLAUDE.md` records detailed implementation history, invariants, and design rationale. Update it when a developer-facing contract changes.
+- Each converter owns its own README and CLAUDE.md. Do not duplicate its option reference here.
 
-## Requirements
-
-- macOS
-- Python 3.10+
-- [fluidsynth](https://www.fluidsynth.org/) (`brew install fluid-synth`) and a General MIDI SoundFont (see [midi2wav.sh](midi2wav.sh)'s resolution order)
-- To audition a VGM track's Original game sound (libvgm), build the pinned native helper once with `cd ../vgm2midi && ./scripts/build-native.sh`. Set `VGM2MIDI_STEMS_HELPER` only when using a non-default helper location. NSF's Original game sound needs no separate build step — it uses the bundled `nsf2midi` binary directly
-- To convert source files: the bundled [`nsf2midi`](../nsf2midi/), [`spc2midi`](../spc2midi/), and [`vgm2midi`](../vgm2midi/) — all three ship a prebuilt binary/`dist/`, so no separate build step is normally needed. `.mid`/`.midi` files never need any of these.
-- For `chipNoise` stem mixing: [ffmpeg](https://ffmpeg.org/). If a real-audio stem is present and the whole-song speed/pitch (or one bulk-variation combination) is non-default, miditrack directly invokes [rubberband-cli](https://breakfastquay.com/rubberband/) to keep that stem in sync (`brew install ffmpeg rubberband`). Neither speed/pitch feature needs either dependency when no real-audio stem is present — both only edit the MIDI. Exporting per track needs `ffmpeg` too, whenever the session has any real-audio contribution (a `chipNoise` stem or a VGM/NSF Original-game-sound channel) — a plain MIDI-only session's per-track export needs neither dependency
-
-## Installation
+## Development setup
 
 ```bash
 cd miditrack
@@ -48,79 +20,107 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-To invoke `miditrack` from any working directory, create a PATH symlink once:
+Run the application through the wrapper:
 
 ```bash
-ln -s "$PWD/miditrack.sh" /opt/homebrew/bin/miditrack
+./miditrack.sh --no-browser
 ```
 
-The `miditrack.sh` wrapper always selects this `.venv` (same design as `note_ext.sh`). It resolves relative or absolute symlinks, preserves the caller's working directory, and passes all arguments through unchanged. Without a `.venv`, it stops with a setup hint instead of silently falling back to another Python.
+The wrapper resolves its own location, always uses this package's `.venv`, preserves the caller's working directory, and forwards all arguments. Do not replace it with an implicit system-Python fallback.
 
-## Usage
+### External tools for local development
 
-```bash
-miditrack [MIDI_FILE] [--soundfont FILE] [--no-browser]
-```
-
-Passing `MIDI_FILE` preloads it when the browser opens. Without it, use the "音源またはMIDIを選択" (Select source or MIDI) upload card in the normal layout, or **開く** (Open) in full-screen mode. `MIDI_FILE` only accepts `.mid`/`.midi` — source files (`.nsf`, `.spc`, `.vgm`, ...) are always uploaded from the browser.
-
-**Starting from a `.mid`/`.midi` file:**
-
-1. Select the file (drag-and-drop supported)
-2. The track list appears. The color marker before each track name matches that track's notes in the piano roll. Click a column header to sort its displayed rows without changing the MIDI's track order. Long track names and lock reasons are ellipsized so every row stays the same height; point at or focus a ⚠ button to read the full mid-song instrument-change warning. Editable tracks have an instrument dropdown pre-selected with any instrument already detected in the file; every track with notes also has a 0–200% volume slider and mute button (100% leaves the original velocities unchanged). When a converted source provides an alternate playback source, compatible SPC/VGM/NSF rows offer the **SF | 原曲** Source segment. Original game sound disables the instrument control, but volume stays adjustable on every format
-3. Optionally switch the **SoundFont** dropdown directly below the track list and choose **高速** (Fast, 22.05kHz) or **品質** (Quality, 44.1kHz). Fast is the default; Quality is identical to the final WAV download. MIDI preparation renders the selected mode automatically, and edits refresh it after 500ms of inactivity. Completed settings/mode combinations are reused from the session cache; a paused player loads the newest result silently, while a playing player fades to it without interruption
-4. Optionally adjust the speed multiplier and/or semitone transpose with the compact −/＋ steppers at the right of the playback-control row; the middle values can also be typed directly. This changes the MIDI itself (tempo and note numbers), so it carries through to every render, WAV download, and MIDI download until changed back
-5. Inspect the piano roll at any time after the MIDI is ready. A fixed keyboard on its left shows the matching white and black keys, with MIDI note 60 labelled C4. Notes have rounded corners and a slightly darker track-color outline by default; open **表示設定** using the gear immediately to the right of **全画面** in the header to toggle rounded notes, note outlines, and the keyboard, and to adjust the roll's height, grid lines, background/grid colors, and track color palette. Every choice there is remembered between launches and changes only the display. Use its separate −/＋ controls at the lower-right corner to zoom the time axis and scroll horizontally when zoomed in. After rendering, use the two segmented controls above the roll: back/forward and return-to-start/play-pause. These actions match Arrow Left/Right, Home or Command+Left, and Space. An audition-setting change preserves the same relative song position when the automatic update crossfades during playback. Pointer-used selection controls release focus after the operation so Space can immediately control playback; keyboard-focused controls retain their native key behavior. You can also seek by clicking/dragging the piano roll or dragging the standard `<audio>` scrubber
-6. Optionally edit the filename field next to the download buttons (pre-filled with the currently loaded file's name) to set the base filename used by every download below
-7. Click "MIDIをダウンロード" (Download MIDI) or "WAVをダウンロード" (Download WAV) immediately below the standard audio player to save the result. WAV download always prepares/reuses the 44.1kHz Quality render without replacing the currently playing Fast preview
-8. To resume the same edit later, use **プロジェクトを保存** (Save project) in the upload card and keep the downloaded `.miditrack` archive. Choose **プロジェクトを開く** (Open project) in that card to restore the MIDI and saved editing state. In full-screen mode, both controls are in the header's **開く** (Open) dialog. Opening a project replaces the current session after confirmation; it never reruns conversion. Rendered audio and variation ZIPs are deliberately not included
-9. Optionally expand "出力オプション" (Output options) in the dedicated Output section for two batch-generation features, neither of which needs an audition render first or touches the whole-song speed/pitch setting in the toolbar:
-   - **バリエーションをまとめて生成** (Generate variations in bulk): enter comma-separated speed factors and pitch (semitone) values, choose whether "ZIPにMIDIも含める" (Include MIDI in ZIP) is checked, and click "バリエーションをZIPでダウンロード" (Download variations as ZIP) to get every combination's WAV (and MIDI) bundled in one ZIP, named from the same filename field as `{name}_p{+/-semitones}_x{speed}` (for example, `song_p+0_x1.0.wav`)
-   - **トラックごとに出力** (Export per track): on VGM/NSF, optionally check "原曲の音源トラックを1つにまとめる" (Combine Original-game-sound tracks into one) if you don't need each hardware channel separated — leaving it unchecked re-emulates the whole song once per channel. Click "トラックごとにZIPでダウンロード" (Download tracks as ZIP) to get one WAV per track, named `{name}_{trackName}_midi.wav` (rendered through a SoundFont) or `{name}_{trackName}_orig.wav` (the original game's own sound); a real noise/DPCM/DAC stem that can't be split by track becomes its own `{name}_noise_orig.wav`/`{name}_dac_orig.wav`. Muted or note-less tracks are left out
-
-**Starting from a source file (`.nsf`/`.spc`/`.rsn`/`.vgm`/..., a `.zip` of several, or a source file plus its `.m3u`):**
-
-1. Drop the file(s) onto the same upload zone — a single source file, a source file together with its `.m3u` playlist, or a `.zip` archive. miditrack detects each convertible file's format and, for NSF/SPC, lists its songs/sequences (calling the tool's own `-l`/`--list`); if a `.m3u` is present (loose or inside the ZIP) and names the file's tracks, those titles replace the bare track numbers automatically
-2. If more than one convertible file was found (a ZIP with several, or several files selected at once), pick which one with the **ファイル** (File) dropdown — the first is selected by default
-3. When two or more candidates are listed, pick a song, then adjust the format's options. A single candidate is selected automatically and has no song picker. All three formats share the same "ループ回数"/"秒数" (loop count / duration) row — on wider screens the two sit side by side — but only the field each format's converter can actually use is editable: NSF only accepts duration (`nsf2midi` emulates hardware register state frame-by-frame and has no way to detect a loop point), SPC only accepts loop count (`spc2midi` parses the SNES driver's real sequence data, which has no "total seconds," only an unrolled-loop count), and VGM accepts either one, mutually exclusive (a VGM register-write log has both a sample-accurate real duration and an explicit loop offset in its header). The field that doesn't apply is shown disabled with a short reason rather than hidden, so the layout stays identical across formats. NSF also offers its own PAL-timing checkbox. All three formats offer the same "原曲の音源（実機）を初期選択" checkbox (`chipNoise` for NSF/VGM, `gameSoundfont` for SPC, off by default): checking it preselects Original game sound on the rows it applies to (NSF and SPC preselect every note-bearing row; VGM preselects only the safely identifiable noise/DAC/rhythm rows, leaving ambiguous shared channels on SoundFont). Leaving it unchecked never removes the option — every note-bearing row's **SF | 原曲** Source segment still offers both choices, and you can revise any row after conversion regardless of the checkbox. For percussion-driven YM2203/YM2608/YM2612 sources, VGM additionally offers "OPN Ch3 SpecialをGMドラムに変換" to enable `vgm2midi --ch3-special-percussion`. Switching a track back to Original keeps its chosen GM program for later but does not apply it; track volume remains effective for either source on SPC. If SPC can't produce usable instrument data for a song, its tracks simply stay on SoundFont, the same fallback NSF/VGM use when their own chip-render metadata isn't available
-4. Click "MIDIに変換" (Convert to MIDI). The track list then appears exactly as if you'd uploaded a `.mid` directly, and steps 2–5 above apply the same way
-5. Re-converting (a different song, a different file, or different options) discards the current track assignments and any render, the same way re-uploading a `.mid` does
-
-### Options
-
-| Option | Description |
+| Need | Command or dependency |
 |---|---|
-| `MIDI_FILE` | `.mid`/`.midi` file to preload at startup (optional; source files are not accepted here — upload them from the browser) |
-| `-s, --soundfont FILE` | Default SoundFont at startup. Without it, the last SoundFont picked in the browser is restored automatically; if none was ever picked, `midi2wav.sh`'s own resolution applies (`MIDI2WAV_SOUNDFONT` env var, `../soundfonts`, etc.). Can be changed anytime from the browser's "SoundFont" dropdown, which is saved server-side for next time |
-| `--no-browser` | Don't open a browser tab automatically |
-| `--version` | Show version |
+| SoundFont rendering | `brew install fluid-synth` and an `.sf2`/`.sf3` SoundFont |
+| Real-audio stem mixing and per-track export | `brew install ffmpeg` |
+| Speed/pitch changes for real-audio stems | `brew install rubberband` |
+| Original VGM sound | `cd ../vgm2midi && ./scripts/build-native.sh` |
 
-## Limitations
+Set `MIDI2WAV_SOUNDFONT` to override SoundFont discovery. The optional `VGM2MIDI_STEMS_HELPER` override points to a non-default VGM native helper. The user manual documents normal SoundFont locations; preserve that list when changing discovery behaviour.
 
-- **The percussion channel (MIDI channel 10) is out of scope for instrument remapping.** Tracks using it are listed but show no dropdown. GM drum-kit switching (via Bank Select) is not supported.
-- **Tracks spanning multiple channels are not editable** (in practice this rarely matters — `nsf2midi`/`spc2midi`/`vgm2midi` output is normally one channel per track).
-- **Audition is still "render then play,"** not a live softsynth. MIDI preparation begins a cached render immediately and edits refresh it after 500ms of inactivity. The player always uses the newest prepared audio: it loads silently while paused and crossfades while playing.
-- **VGM's Original game sound routing follows physical chip channels, not MIDI-track independence.** When several MIDI rows represent one physical channel (for example multiple sample IDs), changing one row changes the whole group. AY/SSG, HuC6280, and YM2151 noise can share a channel with a tonal voice, so those ambiguous mappings are never auto-selected even when the checkbox is enabled. NSF has no such sharing — every NES channel maps to exactly one MIDI row, so its Original game sound rows are always independent and always safe to auto-select.
-- Track volume scales Note On velocity. Values above 100% can clip individual velocities at MIDI's maximum 127; 0% converts Note On events to velocity 0 (mute).
-- `vgm2midi` can wrap MIDI-channel assignment past channel 10 when many chip families are active in one VGM (see `vgm2midi/CLAUDE.md`), which can put an otherwise-melodic track on the percussion channel. This is a known `vgm2midi` limitation; `miditrack` judges editability purely by channel number, so it inherits that collision as-is.
-- A format-0 SMF (all channels in one track) is treated as "multi-channel" and is effectively not editable.
-- **`.m3u` title matching is best-effort.** It only applies to NSF/SPC (formats with a song list); it matches the playlist's filename field against the uploaded file's own name, and maps titles to songs by track number when the playlist provides one (falling back to line order otherwise). A stale or mismatched playlist won't error — it just won't relabel anything.
-- **ZIP uploads have simple caps** (at most 200 member files, 512MB uncompressed total) to avoid choking on an oversized or malformed archive; this isn't hardened against a maliciously crafted ZIP, matching this tool's overall "local, single-user, launch-scoped token" trust model.
-- **The bulk variations generator has a combination-count cap** (up to 6 speeds and 8 transposes, 15 combinations total — sized to fit the shipped default of 3 speeds × 5 transposes) — since each combination is now a full MIDI apply + render (not just a `rubberband` pass), this is lower than the old WAV-only feature's cap. Re-rendering (changing the SoundFont or a track assignment), or editing the download filename field, invalidates any already-generated ZIP; click "バリエーションをZIPでダウンロード" again to regenerate it. Per-track export is invalidated the same way, regenerated with "トラックごとにZIPでダウンロード".
-- **Per-track export's channel-by-channel VGM/NSF separation re-emulates the whole song once per hardware channel.** Leave "原曲の音源トラックを1つにまとめる" checked when you only need the combined Original-game-sound audio as one file; individual channels are worth the extra time only when you actually plan to use them as separate stems.
-- **The whole-song speed/pitch — and the bulk variations generator — are capped at 0.1x–10x speed and ±24 semitones**, and only accept whole-semitone transpose (no pitch bend). A note pushed outside MIDI's 0–127 range by the transpose is simply dropped, not clamped, so extreme transpositions can silently drop very high or very low notes rather than folding them into an unrelated octave. The percussion channel (MIDI channel 10) is never transposed, matching the instrument-remapping limitation above. If a `chipNoise` real-audio stem is attached, syncing it to a non-default speed/pitch needs `ffmpeg`/`rubberband-cli`.
+## Architecture
 
-## Troubleshooting
+```text
+miditrack/
+  miditrack.sh             stable launcher for the package virtual environment
+  midi2wav.sh              FluidSynth wrapper used by the renderer
+  src/miditrack/
+    cli.py                 CLI parsing and server startup
+    web.py                 Flask routes, sessions, request validation
+    convert.py             bundled converter resolution and source conversion
+    render.py              MIDI-to-WAV rendering and SoundFont discovery
+    rubberband.py          direct real-audio stem speed/pitch synchronization
+    midi.py                MIDI analysis and editing
+    pianoroll.py           read-only piano-roll data extraction
+    project.py             .miditrack archive serialization
+    preferences.py         persisted local preferences
+    static/                browser client assets
+  tests/                   Python test suite
+```
 
-- **"SoundFont not found"**: pass `--soundfont` explicitly, set `MIDI2WAV_SOUNDFONT`, or place a `.sf2` in one of the search directories `midi2wav.sh --help` lists.
-- **"midi2wav not found"**: confirm `fluidsynth` is installed (`brew install fluid-synth`).
-- **"nsf2midi/spc2midi/vgm2midi not found"**: these three ship a prebuilt binary/`dist/` in this repository, so this normally shouldn't happen. If you moved or rebuilt one, either restore it at its usual repo-relative path or set `NSF2MIDI_BIN`/`SPC2MIDI_BIN`/`VGM2MIDI_BIN` to its executable.
-- **"対応するSNESサウンドドライバが見つかりませんでした" (no supported SNES driver found)**: the SPC file's music driver isn't one of the ~20 families `spc2midi`/VGMTrans recognizes — this file can't be converted by miditrack.
-- **"対応する音源ファイルが見つかりません" (no convertible source file found)**: none of the uploaded files (or ZIP members) matched a supported extension — a ZIP or `.m3u` alone, with nothing else, also triggers this.
-- **"有効なZIPファイルではありません" (not a valid ZIP file)**: the uploaded `.zip` is corrupted or not actually a ZIP.
-- **"miditrack requires Flask"**: recreate `.venv` following the install steps above.
-- **"rubberband が見つかりません" (rubberband not found)**: happens when a real-audio stem is present and speed/pitch is set to something other than the default. Install `rubberband-cli` (`brew install rubberband`).
-- **"速度×ピッチの組み合わせ数が多すぎます" (too many speed×pitch combinations)**: reduce how many speeds/transposes you specify in the bulk variations generator (the combination-count cap is 15).
+The browser client is intentionally a thin local front end. MIDI edits and render decisions remain server-side, and rendered assets are session-scoped temporary files.
+
+## Runtime contracts
+
+### Converter boundary
+
+`convert.py` invokes the bundled `nsf2midi`, `spc2midi`, and `vgm2midi` executables with explicit argv lists. The converters produce MIDI (and their format-specific sidecars); they must not be asked to render generic SoundFont WAV files. `miditrack` owns the subsequent render through `midi2wav.sh`.
+
+Converter lookup accepts these explicit executable overrides:
+
+- `NSF2MIDI_BIN`
+- `SPC2MIDI_BIN`
+- `VGM2MIDI_BIN`
+
+An override that is set but unusable must fail clearly rather than silently falling back to another executable.
+
+### Audio rendering boundary
+
+`render.resolve_midi2wav_bin()` resolves the renderer in this order:
+
+1. `MIDI2WAV_BIN`, if executable.
+2. Package-local `miditrack/midi2wav.sh`.
+3. `midi2wav` on `PATH`.
+
+`render.py`, `convert.py`, and `rubberband.py` must pass argv arrays to subprocesses with no shell. Repository paths may contain spaces or shell metacharacters.
+
+`midi2wav.sh` derives the repository root from its own path so its bundled SoundFont directory remains `<repository>/soundfonts` after the script's move into `miditrack/`.
+
+### Local security model
+
+The server binds locally and uses a launch-scoped token for API requests. Treat uploads as local-user inputs, but keep ZIP extraction limits and path validation intact. Do not expose a route that allows arbitrary filesystem reads or a shell command string.
+
+## Verification
+
+Run the Python suite from the repository root:
+
+```bash
+miditrack/.venv/bin/python -m pytest -q miditrack/tests
+```
+
+Before submitting a renderer or wrapper change, also check:
+
+```bash
+bash -n miditrack/midi2wav.sh
+miditrack/midi2wav.sh --help
+```
+
+When a change crosses a converter boundary, build and test the affected converter as well:
+
+```bash
+make -C nsf2midi test
+./build.sh                 # from spc2midi/
+npm test                   # from vgm2midi/
+```
+
+Run `git diff --check` before handoff. When changing user-visible behaviour, update the root English and Japanese manuals together, then verify their headings, examples, and option tables remain aligned.
+
+## Useful implementation references
+
+- [CLAUDE.md](CLAUDE.md): detailed design history and implementation invariants.
+- [../README.md](../README.md): user-facing workflow and troubleshooting.
+- [../nsf2midi/README.md](../nsf2midi/README.md), [../spc2midi/README.md](../spc2midi/README.md), and [../vgm2midi/README.md](../vgm2midi/README.md): converter-specific manuals.
 
 ## License
 
