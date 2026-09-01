@@ -28,6 +28,8 @@ export interface VGMHeader {
   ym2608AyFlags: number;
   huc6280Clock: number;
   c140Clock: number;
+  /** VGM header 0x96: 0=System 2, 1=System 21, 2=ASIC 219. */
+  c140Type: number;
   gbDmgClock: number;
   /** MSM6258 の VGM header clock。bit 30/31 を除いた値は diagnostics が報告する。 */
   msm6258Clock: number;

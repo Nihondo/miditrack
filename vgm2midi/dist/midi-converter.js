@@ -4292,6 +4292,10 @@ class MidiConverter {
         if (this.options.splitChips)
             this.exportSplitChipFiles(outputPath);
     }
+    /** convert()後に、C140のsample IDと出力GMドラムノートの対応を返す。 */
+    c140SampleNotes() {
+        return new Map([...this.pcmSampleNotes].filter(([key]) => key.startsWith('c140_sample_')));
+    }
     /** 出力MIDIのトラック順とlibvgmのmute対象を結ぶJSON sidecarを書き出す。 */
     exportTrackMetadata(outputPath, totalSamples) {
         const tracks = Array.from(this.tracks.values()).map((state, trackIndex) => ({

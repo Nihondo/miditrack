@@ -240,6 +240,7 @@ export class VGMParser {
     const ym2608AyFlags = version >= 0x0151 ? this.readHeaderUInt8(0x7B, vgmDataOffset) : 0;
     const huc6280Clock = readChipClock(0xA4, 0x0161);
     const c140Clock = readChipClock(0xA8, 0x0161);
+    const c140Type = version >= 0x0161 ? this.readHeaderUInt8(0x96, vgmDataOffset) : 0;
     const gbDmgClock = readChipClock(0x80, 0x0161);
     const msm6258Clock = readChipClock(0x90, 0x0161);
     const chipClocks: Record<string, number> = {
@@ -296,6 +297,7 @@ export class VGMParser {
       ym2608AyFlags,
       huc6280Clock,
       c140Clock,
+      c140Type,
       gbDmgClock,
       msm6258Clock,
       chipClocks,

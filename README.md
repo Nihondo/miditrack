@@ -41,7 +41,7 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
 - Convert NES, SNES, and VGM/VGZ source files to MIDI. NSF/SPC files with multiple songs offer a song picker.
 - Upload several source files, a `.zip` rip pack, or a source file with its `.m3u` playlist. A playlist can supply song titles.
 - Reassign General MIDI instruments, set per-track volume or mute, sort the track list, and save favourite instruments and ensemble presets locally.
-- Choose **SoundFont** or **Original game sound** for supported tracks. Original sound uses the relevant game SoundFont or chip renderer; SoundFont uses the GM bank you selected.
+- Choose **SoundFont** or **Original game sound** for supported tracks. Original sound uses the relevant game SoundFont or chip renderer; SoundFont uses the GM bank you selected. For System 2 C140 VGM files, miditrack uses accurate chip rendering for unedited C140 Sample rows while the other tracks use your GM SoundFont; a dedicated C140 SoundFont remains available when you adjust C140-track volume.
 - Inspect notes in a zoomable piano roll, seek and loop playback, choose a colour/theme/layout preference, and switch to the full-screen editing layout.
 - Change the complete song's speed and pitch, save and reopen a `.miditrack` project, and download an edited MIDI or final-quality WAV.
 - Generate a ZIP of speed/pitch variations, or export a ZIP containing one WAV per track.
@@ -97,7 +97,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Track list** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
 
-**SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically. **Cmd-click** (Ctrl-click on Windows/Linux) applies the same choice to every other track that offers the same option.
+**SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. System 2 C140 VGM samples can change pitch at every trigger, so unedited C140 Sample rows use accurate chip rendering even in SF mode, while other rows keep the selected GM SoundFont. Adjusting a C140 Sample row's volume switches those rows to the automatically generated C140 SoundFont so that their individual volume controls remain available. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically. **Cmd-click** (Ctrl-click on Windows/Linux) applies the same choice to every other track that offers the same option.
 
 **Instrument selector** — Choose any GM instrument. The star icon saves it as a favourite for quick access. **Cmd-click** (Ctrl-click) applies that selector's current value to every other editable track (a track left on "Keep unchanged" is unaffected).
 

@@ -798,6 +798,10 @@ def _build_argv(
         # MIDIのtempoメタごと調整できるため、変換時は常に120固定でよい。
         argv = [*argv0, "-o", str(output_path), "-t", "120"]
         argv += ["--track-metadata", str(libvgm_metadata_path_for(output_path))]
+        # C140を含むVGMならconverter側で何も書かず、該当しない場合はSF2を
+        # 生成しない。SPCと同じ固定副産物パスを使うことで、変換ごとに前曲の
+        # サンプルを取り違えることなくweb.pyへ渡せる。
+        argv += ["--c140-sf2", str(game_soundfont_path_for(output_path))]
         if options.get("loops") is not None:
             argv += ["--loops", str(options["loops"])]
         elif options.get("durationSeconds") is not None:

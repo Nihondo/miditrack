@@ -9,6 +9,7 @@ import { prepareVGMPlayback } from './vgm-playback';
 import { renderNoiseWav } from './noise-renderer';
 import { renderDacWav } from './dac-renderer';
 import { renderLibvgmStems } from './stems';
+import { writeC140SoundFont } from './c140-soundfont';
 
 function parseLoopCount(value: string): number {
   const parsedValue = Number(value);
@@ -53,6 +54,7 @@ program
   .option('--split-chips', 'Also write collision-free chip/instance MIDI sidecars')
   .option('--stems <directory>', 'Render sample-exact libvgm mix/chip WAV stems and manifest')
   .option('--track-metadata <file>', 'Write MIDI-track to libvgm channel mapping JSON')
+  .option('--c140-sf2 <file>', 'Write a SoundFont2 containing used C140 PCM samples')
   .action((input, options) => {
     try {
       if (options.loops !== undefined && options.duration !== undefined) {
@@ -87,7 +89,6 @@ program
           throw new Error('--track-metadata must not overwrite another output');
         }
       }
-
       if (options.noiseWav !== undefined) {
         const noisePath = path.resolve(options.noiseWav);
         if (noisePath === path.resolve(output)) {
@@ -218,6 +219,11 @@ program
       converter.exportToFile(output);
       if (options.trackMetadata !== undefined) {
         converter.exportTrackMetadata(options.trackMetadata, playback.totalSamples);
+      }
+      if (options.c140Sf2 !== undefined) {
+        const count = writeC140SoundFont(playback.data, converter.c140SampleNotes(), options.c140Sf2);
+        if (count > 0) console.log(`Wrote ${count} C140 PCM sample(s) to ${options.c140Sf2}`);
+        else if (options.verbose) console.log('No usable C140 PCM samples were found; no C140 SoundFont was written');
       }
 
       console.log(`Successfully converted ${input} to ${output}`);

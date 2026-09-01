@@ -470,6 +470,13 @@ class TestBuildArgv(unittest.TestCase):
             str(self.output_path.with_name(self.output_path.stem + ".libvgm.json")),
         )
 
+    def test_vgm_argv_always_requests_c140_soundfont(self) -> None:
+        output = Path("/tmp/converted.mid")
+        argv = convert._build_argv(
+            convert.format_by_key("vgm"), Path("/tmp/source.vgz"), output, {}
+        )
+        self.assertEqual(argv[argv.index("--c140-sf2") + 1], str(output.with_suffix(".sf2")))
+
     def test_vgm_argv_omits_noise_and_dac_wav_when_chip_noise_disabled(self) -> None:
         argv = convert._build_argv(
             convert.format_by_key("vgm"),

@@ -43,6 +43,7 @@ const vgm_playback_1 = require("./vgm-playback");
 const noise_renderer_1 = require("./noise-renderer");
 const dac_renderer_1 = require("./dac-renderer");
 const stems_1 = require("./stems");
+const c140_soundfont_1 = require("./c140-soundfont");
 function parseLoopCount(value) {
     const parsedValue = Number(value);
     if (!Number.isInteger(parsedValue) || parsedValue < 1) {
@@ -82,6 +83,7 @@ program
     .option('--split-chips', 'Also write collision-free chip/instance MIDI sidecars')
     .option('--stems <directory>', 'Render sample-exact libvgm mix/chip WAV stems and manifest')
     .option('--track-metadata <file>', 'Write MIDI-track to libvgm channel mapping JSON')
+    .option('--c140-sf2 <file>', 'Write a SoundFont2 containing used C140 PCM samples')
     .action((input, options) => {
     try {
         if (options.loops !== undefined && options.duration !== undefined) {
@@ -238,6 +240,13 @@ program
         converter.exportToFile(output);
         if (options.trackMetadata !== undefined) {
             converter.exportTrackMetadata(options.trackMetadata, playback.totalSamples);
+        }
+        if (options.c140Sf2 !== undefined) {
+            const count = (0, c140_soundfont_1.writeC140SoundFont)(playback.data, converter.c140SampleNotes(), options.c140Sf2);
+            if (count > 0)
+                console.log(`Wrote ${count} C140 PCM sample(s) to ${options.c140Sf2}`);
+            else if (options.verbose)
+                console.log('No usable C140 PCM samples were found; no C140 SoundFont was written');
         }
         console.log(`Successfully converted ${input} to ${output}`);
         if (options.noiseWav !== undefined) {

@@ -86,6 +86,25 @@ def build_fixture_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def build_c140_fixture_bytes() -> bytes:
+    """C140 PCMとGMリードを1トラックずつ含むVGM用MIDIフィクスチャ。"""
+    mf = mido.MidiFile(ticks_per_beat=480)
+    c140 = mido.MidiTrack()
+    c140.append(mido.MetaMessage("track_name", name="C140 Sample 0x350500 (GM 53)", time=0))
+    c140.append(mido.Message("note_on", note=53, velocity=100, channel=9, time=0))
+    c140.append(mido.Message("note_off", note=53, velocity=0, channel=9, time=480))
+    mf.tracks.append(c140)
+    lead = mido.MidiTrack()
+    lead.append(mido.MetaMessage("track_name", name="Lead", time=0))
+    lead.append(mido.Message("program_change", program=80, channel=0, time=0))
+    lead.append(mido.Message("note_on", note=60, velocity=100, channel=0, time=0))
+    lead.append(mido.Message("note_off", note=60, velocity=0, channel=0, time=480))
+    mf.tracks.append(lead)
+    buffer = io.BytesIO()
+    mf.save(file=buffer)
+    return buffer.getvalue()
+
+
 def build_cc7_fixture_bytes(cc7_value: int = 64) -> bytes:
     """変換元CC7音量を持つ単一トラックのMIDIフィクスチャ。
 
@@ -3540,6 +3559,78 @@ class TestWebAppLibvgmTrackSource(unittest.TestCase):
         # 実機チップチャンネルのレンダリング自体は_plan_chip_hardware()の
         # 通常挙動どおり発生する（音量0ゲインで計画されるだけ）が、ZIPからは
         # 除外される。
+
+
+class TestWebAppC140HybridRendering(unittest.TestCase):
+    """未編集のC140はSF選択中でも正確なlibvgm音声で混ぜる。"""
+
+    def setUp(self) -> None:
+        self.libvgm_calls: list[tuple[Path, Path, int, list]] = []
+        self.render_note_counts: list[int] = []
+        self.mix_calls: list[list[tuple[Path, float]]] = []
+
+        def fake_converter(_fmt, _source, output_path, _options):
+            output_path.write_bytes(build_c140_fixture_bytes())
+            libvgm.metadata_path_for(output_path).write_text(json.dumps({
+                "version": 1,
+                "sampleCount": 44100,
+                "tracks": [{"trackIndex": 0, "libvgm": {
+                    "deviceType": 28, "instance": 0, "mainMask": 0xFFFFFF,
+                    "linkedMask": 0, "groupId": "c140-all",
+                    "suggestedForHardwareMix": False,
+                }}],
+            }), encoding="utf-8")
+            return None, None
+
+        def fake_libvgm(source, output, sample_count, targets):
+            self.libvgm_calls.append((source, output, sample_count, targets))
+            output.write_bytes(b"L" * 200)
+
+        def fake_renderer(mid_path, wav_path, _soundfont):
+            midi_file = mido.MidiFile(mid_path)
+            self.render_note_counts.append(sum(
+                message.type == "note_on" and message.velocity > 0
+                for track in midi_file.tracks for message in track
+            ))
+            wav_path.write_bytes(b"D" * 200)
+
+        def fake_mixer(inputs, output):
+            self.mix_calls.append(inputs)
+            output.write_bytes(b"M" * 200)
+
+        self.app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            converter=fake_converter,
+            renderer=fake_renderer,
+            mixer=fake_mixer,
+            libvgm_renderer=fake_libvgm,
+        )
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
+        self.client = self.app.test_client()
+        self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
+
+    def test_unedited_c140_soundfont_row_uses_libvgm_and_leaves_only_gm_notes(self) -> None:
+        self.client.post(
+            "/api/source",
+            headers=AUTH_HEADERS,
+            data={"source": (io.BytesIO(b"fake-vgm"), "song.vgm")},
+            content_type="multipart/form-data",
+        )
+        converted = self.client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"chipNoise": False}),
+        )
+        self.assertEqual(converted.status_code, 200)
+
+        rendered = self.client.post("/api/render", headers=AUTH_HEADERS)
+
+        self.assertEqual(rendered.status_code, 200)
+        self.assertEqual(len(self.libvgm_calls), 1)
+        self.assertEqual(self.libvgm_calls[0][3][0].device_type, 28)
+        self.assertEqual(self.render_note_counts, [1])
+        self.assertEqual(len(self.mix_calls), 1)
 
 
 class TestWebAppChipHardwareVolumeBaseline(unittest.TestCase):

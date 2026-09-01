@@ -299,6 +299,8 @@ export declare class MidiConverter {
     private libvgmTargetForDescriptor;
     /** MIDIファイルを書き出し、音符が生成されなかった場合は空ファイルを作らず失敗させる。 */
     exportToFile(outputPath: string): void;
+    /** convert()後に、C140のsample IDと出力GMドラムノートの対応を返す。 */
+    c140SampleNotes(): ReadonlyMap<string, number>;
     /** 出力MIDIのトラック順とlibvgmのmute対象を結ぶJSON sidecarを書き出す。 */
     exportTrackMetadata(outputPath: string, totalSamples: number): void;
     /** MIDI writer の固定divisionを 960 PPQ へ置換する。 */

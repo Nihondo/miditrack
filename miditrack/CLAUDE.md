@@ -2067,6 +2067,32 @@ treats that exactly like `gameSoundfont` never having been requested at
 all, so a song without usable instrument data still converts and plays
 normally.
 
+## C140 VGM SoundFont extraction
+
+`vgm2midi --c140-sf2 <path>` is always requested for VGM conversion.  It is a
+best-effort side product: only VGM C140 type 0 (Namco System 2) is currently
+written, and no output file is an ordinary successful result for a VGM without
+usable C140 PCM.  The converter reconstructs the sparse VGM `0x8D` ROM blocks,
+applies the System 2 external-bank formula (`((address & 0x200000) >> 2) |
+(address & 0x7ffff)`), decodes its signed 8-bit PCM, then writes only the
+sample identities that became C140 MIDI tracks.  The SoundFont sample rates use
+the System 2 C140's 21.333 kHz base clock (the 12.288 MHz VGM clock divided by
+576), rather than the raw header clock.  It preserves the sample loop and the
+first observed C140 playback frequency; a sample whose frequency changes
+continuously after its first trigger still needs a later pitch-automation
+extension.
+
+`convert.game_soundfont_path_for()` is deliberately shared with SPC because
+both formats produce `converted.sf2`, but their render paths must remain
+separate.  `_c140_hardware_indices()` sends unedited `C140 Sample 0x...` rows
+to libvgm even when their selected source is `soundfont`: pitch changes at each
+C140 trigger cannot be represented by a fixed-SF2 sample.  `_plan_render_jobs()`
+removes those rows from the GM MIDI job and mixes the libvgm result back in.
+If any C140 row has an explicit volume edit, the entire C140 group falls back to
+the generated SF2 so the existing per-row volume workflow remains available.
+Never route all remaining VGM tracks through that sample-only SF2.  Selecting
+`game` for a VGM row otherwise continues to mean libvgm hardware rendering.
+
 ## Added: NSF per-track hardware selection, and unifying the three formats' vocabulary onto `"game"`
 
 Before this feature, "use the original sound source" meant three genuinely

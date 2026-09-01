@@ -1682,11 +1682,10 @@ def create_app(
         """(MIDIパス, SoundFont) のレンダリングジョブを決める。
 
         VGM/NSFの実機チャンネルレンダリング選択行をMIDI側から除外した後、SPCの
-        原曲音色とGM SoundFontの明示選択に従ってトラックを分割する。片側だけに
-        音が残る場合は1ジョブ、両側に残る場合だけ2ジョブとしてensure_render()が
-        後で加算する。"game"はSPCではSoundFontバンク切替（このMIDI分割に残る）、
-        VGM/NSFでは実機チャンネルレンダリング（このMIDI分割から除外される）と
-        意味が異なるため、CHIP_HARDWARE_SOURCE_FORMATSで判定する。
+        原曲音色とGM SoundFontの明示選択に従ってトラックを分割する。System 2
+        C140はキーオンごとにピッチを変えるため、音量が未変更のC140 Sample行は
+        SF選択時にもlibvgmの実機レンダーへ送り、残りを通常のGM SoundFontへ送る。
+        個別音量を編集した場合だけ、C140専用SF2へフォールバックする。
         """
         all_indices = set(range(len(web_session.tracks)))
         chip_render_indices = (
@@ -1697,6 +1696,7 @@ def create_app(
             if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
             else set()
         )
+        chip_render_indices |= _c140_hardware_indices()
         audible_indices = all_indices - chip_render_indices
         dry_path = applied_path
         if audible_indices != all_indices:
@@ -1707,6 +1707,28 @@ def create_app(
         game_sf = web_session.game_soundfont_path
         if game_sf is None or not game_sf.exists():
             return [(dry_path, gm_soundfont)]
+
+        if web_session.source_format == "vgm":
+            c140_indices = {
+                track.index
+                for track in web_session.tracks
+                if track.note_count > 0
+                and track.index in audible_indices
+                and track.name.startswith("C140 Sample 0x")
+            }
+            if not c140_indices:
+                return [(dry_path, gm_soundfont)]
+            c140_mid = web_session.root / f"render-{render_id:04d}.c140.mid"
+            gm_mid = web_session.root / f"render-{render_id:04d}.gm.mid"
+            c140_has_notes = midi.write_track_subset(applied_path, c140_indices, c140_mid)
+            gm_has_notes = midi.write_track_subset(
+                applied_path, audible_indices - c140_indices, gm_mid, strip_bank_select=True
+            )
+            if c140_has_notes and gm_has_notes:
+                return [(c140_mid, game_sf), (gm_mid, gm_soundfont)]
+            if c140_has_notes:
+                return [(c140_mid, game_sf)]
+            return [(gm_mid, gm_soundfont)]
 
         gm_indices = {
             track.index for track in web_session.tracks
@@ -1736,6 +1758,26 @@ def create_app(
 
     def _has_transform(speed: float, transpose: int) -> bool:
         return speed != midi.DEFAULT_SPEED_RATIO or transpose != midi.DEFAULT_TRANSPOSE_SEMITONES
+
+    def _c140_hardware_indices() -> set[int]:
+        """未編集のSystem 2 C140行を、SF選択時にも実機レンダーへ送る。
+
+        C140は同一PCMでもキーオンごとに再生周波数を変えられる。固定SoundFontは
+        その変化を完全には表せないため、通常プレビューではlibvgmを優先する。
+        C140の個別音量を変更した場合は、従来どおりトラック単位で操作できるSF2
+        フォールバックを残す。
+        """
+        if web_session.source_format != "vgm" or web_session.chip_metadata is None:
+            return set()
+        indices = {
+            track.index for track in web_session.tracks
+            if track.note_count > 0
+            and track.name.startswith("C140 Sample 0x")
+            and _selected_track_source(web_session, track) == "soundfont"
+        }
+        if any(index in web_session.volumes for index in indices):
+            return set()
+        return indices
 
     def _synced_stem(
         stem_path: Path, label: str, work_dir: Path, speed: float, transpose: int
@@ -1825,6 +1867,7 @@ def create_app(
             if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
             else []
         )
+        selected_chip_indices = sorted(set(selected_chip_indices) | _c140_hardware_indices())
         if not selected_chip_indices or not web_session.chip_metadata:
             return ChipHardwarePlan(inputs=[], misses=[])
         if web_session.source_path is None:

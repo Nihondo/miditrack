@@ -16,6 +16,7 @@ const { renderDacWav } = require('../dist/dac-renderer');
 const { VGMParser } = require('../dist/vgm-parser');
 const { prepareVGMPlayback } = require('../dist/vgm-playback');
 const { COMMAND_CHIPS, STREAM_DEVICE_CHIPS } = require('../dist/vgm-chip-metadata');
+const { writeC140SoundFont } = require('../dist/c140-soundfont');
 
 function createHeader(overrides = {}) {
   return {
@@ -47,6 +48,7 @@ function createHeader(overrides = {}) {
     ym2608AyFlags: 0,
     huc6280Clock: 0,
     c140Clock: 0,
+    c140Type: 0,
     gbDmgClock: 0,
     ...overrides,
   };
@@ -2345,6 +2347,38 @@ test('C140 pan follows register 0=right / register 1=left, per MAME c140.cpp', (
   const pan = tracks[0].events.find(e => e.name === 'ControllerChangeEvent');
   assert.equal(pan.controllerNumber, 10);
   assert.equal(pan.controllerValue, 127); // Full right.
+});
+
+test('C140 System 2 ROM blocks become a percussion SoundFont with the converted sample key', () => {
+  const rom = Buffer.alloc(0x100000);
+  // System 2 bank 0x20/start 0 maps to ROM byte address 0x80000.
+  rom.writeInt8(0x20, 0x80000);
+  rom.writeInt8(-0x20, 0x80001);
+  const payload = Buffer.concat([Buffer.alloc(8), rom]);
+  payload.writeUInt32LE(rom.length, 0);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-c140-sf2-'));
+  const outputPath = path.join(directory, 'c140.sf2');
+  try {
+    const count = writeC140SoundFont({
+      header: createHeader({ ym2151Clock: 0, c140Clock: 12288000, c140Type: 0 }),
+      dataBlocks: [{ type: 0x8D, blockId: 0, size: payload.length, payload }],
+      commands: [
+        { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x20 },
+        { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x08, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x09, data: 0x02 },
+        { type: 'chip_write', chip: 'C140', register: 0x05, data: 0x80 },
+      ],
+    }, new Map([['c140_sample_200000', 39]]), outputPath);
+    assert.equal(count, 1);
+    const sf2 = fs.readFileSync(outputPath);
+    assert.equal(sf2.subarray(0, 4).toString('ascii'), 'RIFF');
+    assert.equal(sf2.subarray(8, 12).toString('ascii'), 'sfbk');
+    assert.notEqual(sf2.indexOf(Buffer.from('C140 PCM')), -1);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('export refuses to create a 14-byte MIDI when no notes were generated', () => {
