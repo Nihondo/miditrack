@@ -152,6 +152,67 @@ def apply_gain(
         raise MixError("ゲイン適用結果のWAV書き出しに失敗しました（出力が空です）")
 
 
+def trim_wav(
+    input_wav: Path,
+    out_wav: Path,
+    start_seconds: float,
+    duration_seconds: float,
+    *,
+    sample_rate: int = 44100,
+) -> None:
+    """input_wavの指定区間をWAVとして書き出す。失敗時は MixError。
+
+    原曲チップ音源の全尺ステムを短区間プレビューへ混ぜる前に使う。入力が1本だけの
+    処理でもシェルを介さず、apply_gain()と同じ明示argv・PCM WAV出力の契約を守る。
+    """
+    if start_seconds < 0 or duration_seconds <= 0:
+        raise MixError("切り出し範囲は開始0秒以上・長さ0秒超で指定してください")
+
+    bin_path = resolve_ffmpeg_bin()
+    argv = [
+        bin_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-ss",
+        str(start_seconds),
+        "-t",
+        str(duration_seconds),
+        "-i",
+        str(input_wav),
+        "-c:a",
+        "pcm_s16le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "2",
+        str(out_wav),
+    ]
+    try:
+        result = subprocess.run(
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=MIX_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise MixError(
+            f"ffmpeg が見つかりません（{bin_path}）。FFMPEG_BIN 環境変数か PATH を確認してください"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise MixError(f"ffmpeg の区間切り出しが {MIX_TIMEOUT_SECONDS} 秒でタイムアウトしました") from error
+
+    if result.returncode != 0:
+        stderr_lines = result.stderr.strip().splitlines()
+        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
+        raise MixError(f"ffmpeg の実行に失敗しました（exit={result.returncode}）:\n{tail}")
+    if not out_wav.exists() or out_wav.stat().st_size <= 44:
+        raise MixError("区間切り出し結果のWAV書き出しに失敗しました（出力が空です）")
+
+
 def mix_wav(
     inputs: Sequence[tuple[Path, float]],
     out_wav: Path,

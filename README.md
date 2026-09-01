@@ -123,7 +123,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Pitch bend lane** — Shows pitch bend data for each track below the note area.
 
-Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview.
+Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview. If you begin playback while a fresh render is still needed, miditrack can first play a short segment around the current position, then crossfade to the exact full-length WAV when it is ready. Original chip-audio tracks are prepared in the background after conversion so they can join that short preview once ready; the spinner remains visible while the full WAV is still being finished.
 
 ### Screen 4 · Output
 

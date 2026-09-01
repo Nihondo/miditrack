@@ -329,6 +329,54 @@ class TestApplyGain(unittest.TestCase):
         self.assertIn(str(self.out_path), argv)
 
 
+class TestTrimWav(unittest.TestCase):
+    """trim_wav(): 短区間プレビュー用の単一ステム切り出し。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.in_path = Path(self.tmp.name) / "a & b.in.wav"
+        self.in_path.write_bytes(b"fake-in-wav")
+        self.out_path = Path(self.tmp.name) / "a & b.out.wav"
+        self._env_backup = os.environ.get("FFMPEG_BIN")
+        os.environ["FFMPEG_BIN"] = "/usr/bin/ffmpeg"
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self) -> None:
+        if self._env_backup is None:
+            os.environ.pop("FFMPEG_BIN", None)
+        else:
+            os.environ["FFMPEG_BIN"] = self._env_backup
+
+    def _fake_success_run(self):
+        def fake_run(argv, **_kwargs):
+            Path(argv[-1]).write_bytes(b"0" * 100)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        return fake_run
+
+    def _patch_executable(self):
+        return mock.patch("miditrack.mix._is_executable_file", return_value=True)
+
+    def test_argv_uses_explicit_range_and_shell_false(self) -> None:
+        with self._patch_executable(), mock.patch(
+            "miditrack.mix.subprocess.run", side_effect=self._fake_success_run()
+        ) as mocked:
+            mix.trim_wav(self.in_path, self.out_path, 2.5, 12.0, sample_rate=22050)
+        (argv,), kwargs = mocked.call_args
+        self.assertEqual(kwargs.get("shell"), False)
+        self.assertEqual(argv[argv.index("-ss") + 1], "2.5")
+        self.assertEqual(argv[argv.index("-t") + 1], "12.0")
+        self.assertEqual(argv[argv.index("-ar") + 1], "22050")
+        self.assertEqual(argv[argv.index("-i") + 1], str(self.in_path))
+
+    def test_rejects_invalid_range_before_starting_ffmpeg(self) -> None:
+        with self.assertRaises(MixError):
+            mix.trim_wav(self.in_path, self.out_path, -0.1, 1.0)
+        with self.assertRaises(MixError):
+            mix.trim_wav(self.in_path, self.out_path, 0.0, 0.0)
+
+
 class TestBuildFilterComplex(unittest.TestCase):
     def test_raises_for_fewer_than_two_gains(self) -> None:
         with self.assertRaises(MixError):
