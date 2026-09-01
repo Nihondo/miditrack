@@ -374,6 +374,9 @@ class TestWebApp(unittest.TestCase):
         self.assertIn('dialog.showModal()', javascript)
         self.assertIn('if (!("closedBy" in HTMLDialogElement.prototype))', javascript)
         self.assertIn('if (dialog.open) dialog.close();', javascript)
+        self.assertIn('if (!document.body.classList.contains("is-fullscreen")) $("#upload-card").open = true;', javascript)
+        self.assertIn('uploadSummary.addEventListener("click", (event) => {', javascript)
+        self.assertIn('if (document.body.classList.contains("is-fullscreen")) event.preventDefault();', javascript)
         self.assertIn(
             'body.is-fullscreen .app-shell > #tracks-card { grid-column: 1; grid-row: 1 / 6; }',
             css,
@@ -382,6 +385,10 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("body.is-fullscreen #tracks-card {", css)
         fullscreen_tracks_rule = css.split("body.is-fullscreen #tracks-card {", 1)[1].split("}", 1)[0]
         self.assertIn("padding: 8px", fullscreen_tracks_rule)
+        self.assertIn("body.is-fullscreen .upload-dialog {", css)
+        self.assertIn("max-height: calc(100dvh - 24px)", css)
+        self.assertIn("body.is-fullscreen #open-dialog > #upload-card > summary .step-number { display: none; }", css)
+        self.assertIn("body.is-fullscreen #open-dialog > #upload-card > summary .disclosure-chevron { display: none; }", css)
 
     def test_pianoroll_draws_pitchwheel_paths(self) -> None:
         """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""

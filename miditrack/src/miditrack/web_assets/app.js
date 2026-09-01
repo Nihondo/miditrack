@@ -3951,6 +3951,7 @@ function moveUploadCardToDialog() {
   const dialog = $("#open-dialog");
   dialog.append(card);
   card.open = true;
+  $("#upload-card > summary").setAttribute("aria-disabled", "true");
 }
 
 // 全画面を終了したらアップロードカードを通常のメイン領域へ戻す。
@@ -3960,6 +3961,7 @@ function moveUploadCardToShell() {
   if (dialog.open) dialog.close();
   $(".app-shell").prepend(card);
   card.open = true;
+  $("#upload-card > summary").removeAttribute("aria-disabled");
 }
 
 // ファイル選択ダイアログを閉じる。未表示時に呼んでも副作用を持たない。
@@ -3970,8 +3972,9 @@ function closeOpenDialog() {
 
 // 表示モードに応じて、操作後にファイル選択UIを表示する。
 function showUploadCard() {
-  if (document.body.classList.contains("is-fullscreen")) closeOpenDialog();
-  else $("#upload-card").open = true;
+  // 全画面では選択中の内容（変換オプションを含む）を確認できるよう、
+  // 開いているファイル選択ダイアログをそのまま維持する。
+  if (!document.body.classList.contains("is-fullscreen")) $("#upload-card").open = true;
 }
 
 // 表示モードに応じて、変換完了後にファイル選択UIを閉じる。
@@ -3990,11 +3993,17 @@ function isDialogBackdropClick(dialog, event) {
 // ヘッダの「開く」からファイル選択ダイアログを開閉する。
 function setupOpenDialog() {
   const dialog = $("#open-dialog");
+  const uploadSummary = $("#upload-card > summary");
   $("#open-dialog-button").addEventListener("click", () => {
     $("#upload-card").open = true;
     dialog.showModal();
   });
   $("#open-dialog-close").addEventListener("click", () => dialog.close());
+
+  // 通常表示ではdetailsの開閉を維持し、全画面のモーダル内だけは常時展開する。
+  uploadSummary.addEventListener("click", (event) => {
+    if (document.body.classList.contains("is-fullscreen")) event.preventDefault();
+  });
 
   // closedby="any"が未対応のSafariでも背景クリックで閉じられるようにする。
   if (!("closedBy" in HTMLDialogElement.prototype)) {

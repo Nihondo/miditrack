@@ -1439,13 +1439,27 @@ body.is-fullscreen #tracks-card {
    既存の操作・入力要素は再利用するため、通常表示と状態やIDを二重管理しない。 */
 body.is-fullscreen #open-dialog > #upload-card {
   width: min(680px, calc(100vw - 32px));
-  max-height: min(760px, calc(100dvh - 32px));
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
   margin: 0;
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
+
+/* 全画面ではダイアログだけをスクロール領域にする。内側カードにも同じ上限を
+   かけると高さの丸めで末尾の操作が欠けるため、ビューポートから余白を引いた
+   最大高を外枠へ適用する。 */
+body.is-fullscreen .upload-dialog {
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+
+/* モーダル内ではファイル選択カードを常時展開する。通常表示のsummaryはそのまま
+   ディスクロージャとして使うため、見た目と操作の無効化は全画面に限定する。 */
+body.is-fullscreen #open-dialog > #upload-card > summary { cursor: default; }
+body.is-fullscreen #open-dialog > #upload-card > summary .step-number { display: none; }
+body.is-fullscreen #open-dialog > #upload-card > summary .disclosure-chevron { display: none; }
 
 /* 通常表示では段階を案内する見出しを残す。全画面ではトラック一覧を最上端から
    見せるため、このカード固有の見出しだけを隠す。 */

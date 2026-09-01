@@ -2224,8 +2224,13 @@ browser handles focus containment and makes the background inert. The explicit
 close button, Escape, and supported-browser backdrop clicks close it; Safari's
 absence of `closedby` is covered by the narrowly scoped backdrop-coordinate
 fallback. `showUploadCard()`/`hideUploadCard()` retain the original normal-mode
-`<details>` behavior, while closing the modal after the equivalent fullscreen
-operation.
+`<details>` behavior. In fullscreen, file/source/project selection preserves
+the open modal so its new conversion controls remain visible; conversion
+completion alone closes it. The fullscreen dialog owns the single scroll area
+and uses `max-height: calc(100dvh - 24px)`, while its nested upload card has no
+height cap. Its summary is permanently expanded, has `aria-disabled`, and hides
+its step number and disclosure chevron only in fullscreen; normal-mode
+disclosure behavior is unchanged.
 
 Fullscreen no longer reserves a top-left grid row for a collapsed upload
 summary. `.app-shell` uses five rows: transport, flexible piano roll,
@@ -2243,10 +2248,11 @@ The header keeps `miditrack` as the `h1`'s primary label and wraps the smaller
 single accessible heading while reducing the descriptor's visual prominence.
 
 `tests/test_web.py` asserts the normal-layout upload card, fullscreen-only
-header/dialog ownership, the obsolete track heading's absence, the neutral
+header/dialog ownership, the fullscreen-only hidden track heading, the neutral
 fullscreen track-card border, and the new grid span. Browser verification must
-confirm that the header **Open** button appears only in fullscreen, displays
-the modal, and that Escape closes it without exiting fullscreen.
+confirm that the header **Open** button appears only in fullscreen, file
+selection keeps its modal open without a disclosure chevron, and Escape closes
+the modal without exiting fullscreen.
 
 **Why `#audition-card` and `#output-card` become `display: contents` instead
 of being restyled as boxes**: normal layout deliberately splits the download
