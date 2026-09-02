@@ -31,6 +31,10 @@ const DEFAULT_GM_PROGRAM = "80";
 const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
 const MAX_FAVORITE_PROGRAMS = 8;
 const PIANOROLL_ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
+// Cmd+ホイール1段階ズームに必要な累積deltaY。マウスホイール1クリック分
+// （多くの環境で±100前後）でだいたい1段階変わり、トラックパッドの連続した
+// 小さなdeltaYは蓄積されてから1段階ずつ変わる（暴走ズームを防ぐ）。
+const PIANOROLL_ZOOM_WHEEL_THRESHOLD = 100;
 const PLAYBACK_SEEK_SECONDS = 1;
 const SHIFT_PLAYBACK_SEEK_SECONDS = 5;
 const LOOP_DRAG_THRESHOLD_PX = 6;
@@ -137,6 +141,7 @@ const state = {
   pianorollPointerAnchorSeconds: null,
   isPianorollLoopDragging: false,
   pianorollZoom: 1,
+  pianorollZoomWheelDelta: 0,
   isPianorollAutoFollowing: false,
   pianorollAutoScrollTarget: null,
   loopStartSeconds: null,
@@ -2642,7 +2647,19 @@ function handleSeekKeydown(event) {
 // トラックパッドの連続した小さなdeltaYでもなめらかにスクラブできるよう
 // 固定ステップではなく比例スケールにする。
 function handlePianorollWheel(event) {
-  if (!state.session?.hasRender || !state.pianoroll) return;
+  if (!state.pianoroll) return;
+  // Cmdキーを押しながらのホイール操作はズーム専用にする（シークとは排他）。
+  if (event.metaKey) {
+    event.preventDefault();
+    state.pianorollZoomWheelDelta -= event.deltaY;
+    while (Math.abs(state.pianorollZoomWheelDelta) >= PIANOROLL_ZOOM_WHEEL_THRESHOLD) {
+      const direction = state.pianorollZoomWheelDelta > 0 ? 1 : -1;
+      changePianorollZoom(direction);
+      state.pianorollZoomWheelDelta -= direction * PIANOROLL_ZOOM_WHEEL_THRESHOLD;
+    }
+    return;
+  }
+  if (!state.session?.hasRender) return;
   if (!activePlayer().getAttribute("src")) return;
   if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
   event.preventDefault();
