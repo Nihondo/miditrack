@@ -837,7 +837,7 @@ function formatCurrentProgram(track) {
   if (track.currentProgram === null || track.currentProgram === undefined) {
     return "未設定";
   }
-  return `${track.currentProgram + 1}番`;
+  return state.programNames[track.currentProgram] || `${track.currentProgram + 1}番`;
 }
 
 // "game"（原曲の音源）が実機チップレンダリング（libvgm/nsf2midi）を意味する
@@ -1133,6 +1133,14 @@ async function buildTrackRow(track, rowState = state) {
     const keepOption = document.createElement("option");
     keepOption.value = KEEP_ORIGINAL;
     const hasGameSource = track.availableSources.includes("game");
+    // VGM/NSFの実機チップ経路（vgm2midi/nsf2midi）はGM準拠のProgram Changeを
+    // 書き込むため、currentProgramをそのままGM音色として案内できる。SPCの
+    // "game"はBRRサンプル由来のバンク切替で、Program Changeはゲーム固有の
+    // インデックス（GM名と無関係）なので、この扱いには含めない。
+    const hasKnownGmProgram =
+      isChipHardwareFormat() &&
+      track.currentProgram !== null &&
+      track.currentProgram !== undefined;
     keepOption.textContent = hasGameSource
       ? "GM音色を選択してください"
       : `変更しない（現在: ${formatCurrentProgram(track)}）`;
@@ -1145,7 +1153,9 @@ async function buildTrackRow(track, rowState = state) {
     select.value =
       track.assignedProgram !== null && track.assignedProgram !== undefined
         ? String(track.assignedProgram)
-        : KEEP_ORIGINAL;
+        : hasKnownGmProgram
+          ? String(track.currentProgram)
+          : KEEP_ORIGINAL;
     select.disabled = track.source !== "soundfont";
 
     const pinButton = document.createElement("button");
@@ -1158,7 +1168,7 @@ async function buildTrackRow(track, rowState = state) {
       pinButton.textContent = pinned ? "★" : "☆";
       pinButton.title = pinned ? "ピン留めを解除" : "よく使う楽器としてピン留め";
       pinButton.classList.toggle("is-pinned", pinned);
-      pinButton.disabled = program === null;
+      pinButton.disabled = program === null || select.disabled;
     };
     updatePinButton();
 
