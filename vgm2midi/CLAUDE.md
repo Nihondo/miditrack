@@ -891,6 +891,13 @@ descriptive signal features, not an instrument classifier, and must not alter
 the assigned GM percussion note or MIDI events. Other PCM and ADPCM codecs need
 their own verified decoders before joining this path.
 
+PCM analysis now decodes YM2608 ADPCM-B ROM data with the Yamaha predictor,
+C140 big-endian 12-bit and compressed words, and C219 raw/μ-law bytes. Emit
+only when the requested range is entirely inside one ROM data block. The
+`timbre` object is deliberately limited to `quiet`, `tonal`, or `noise-like`
+from amplitude and zero-crossing statistics; never use it to alter GM notes or
+claim kick/snare-style semantic recognition.
+
 `c219PCMAnalysisForVoice()` reuses this signed-8-bit analysis only when C140
 type is C219 (`2`) and its mode has none of bit 0 (μ-law), bit 1 (unverified),
 bit 2 (noise), or bit 6 (sign inversion). C219 address registers are words, so

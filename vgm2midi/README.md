@@ -81,6 +81,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   record an estimated `durationSamples`; ROM/8-bit RAM uses 32-byte address
   units and 1-bit RAM uses 4-byte units. Repeat mode is retained as `isLoop`.
   These fields are sidecar-only and never schedule a MIDI Note Off
+- Fully resolved YM2608 ADPCM-B ROM ranges, C140 12-bit/compressed ranges, and
+  C219 raw/μ-law ranges expose decoded waveform statistics and a descriptive
+  `timbre` label (`quiet`, `tonal`, or `noise-like`). This never changes MIDI
+  events or claims a semantic instrument name
 - Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
   an explicitly written, unambiguous power-of-two operator multiplier, including
   `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch

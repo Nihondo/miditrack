@@ -327,12 +327,30 @@ export declare class MidiConverter {
     private pcmROMDataBlockForAddress;
     /** 単一ROM blockへ完全に収まるSegaPCMの生8-bit PCMを解析する。 */
     private segaPCMAnalysisForTrack;
-    /** C219の生8-bit PCMモードだけを、物理ROM範囲から解析する。 */
-    private c219PCMAnalysisForVoice;
+    /** C140/C219の確認済みPCMモードを、物理ROM範囲から解析する。 */
+    private c140PCMAnalysisForVoice;
     /** 単一ROM blockに完全に収まる符号付き8-bit PCMの基本波形特徴量を返す。 */
     private signed8BitPCMAnalysisForROMRange;
     /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
     private analyzeSigned8BitPCM;
+    /** C219 μ-law tableをMAMEと同じ手順で作り、復号後の波形を解析する。 */
+    private c219MuLawAnalysisForROMRange;
+    /** C140のbig-endian 12-bit word PCMを解析する。 */
+    private c14012BitPCMAnalysisForROMRange;
+    /** C140圧縮PCMのMAME互換テーブル復号を解析に用いる。 */
+    private c140CompressedPCMAnalysisForROMRange;
+    /** YM2608 ADPCM-BをYamahaの予測式で復号し、全nibbleを解析する。 */
+    private ym2608ADPCMBAnalysis;
+    /** ROM block内のbyteアドレス範囲を安全に取得する。 */
+    private romBytesForRange;
+    /** C140のwordアドレス範囲を、ROM block上のbig-endian byte列へ変換する。 */
+    private c140ROMBytesForRange;
+    /** sidecarのdata block参照から実ROM blockを探す。 */
+    private romDataBlockForMetadata;
+    /** 数値sample列を均等に間引き、正規化された波形特徴量へ変換する。 */
+    private analyzePCMValues;
+    /** 波形統計から、楽器種別を断定しない説明的な音色ラベルを作る。 */
+    private pcmTimbreForAnalysis;
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
     private streamBankSize;
     /** setup先のVGM command/data幅から、stream一回のwriteに必要なbyte数を得る。 */

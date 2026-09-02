@@ -1,5 +1,5 @@
 import MidiWriter from 'midi-writer-js';
-import { VGMData, VGMCommand, ConversionOptions } from './types';
+import { VGMData, VGMDataBlock, VGMCommand, ConversionOptions } from './types';
 import { CLOCK_MASK } from './vgm-chip-metadata';
 
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
@@ -399,11 +399,12 @@ interface PCMTrackMetadata {
   events: PCMTrackEvent[];
   dataBlock?: PCMDataBlockMetadata;
   analysis?: PCMAnalysisMetadata;
+  timbre?: PCMTimbreMetadata;
 }
 
 /** sidecarへ出力する、形式が確定した生PCMの基本波形特徴量。 */
 interface PCMAnalysisMetadata {
-  format: 'signed-8bit-pcm';
+  format: 'signed-8bit-pcm' | 'yamaha-adpcm-b' | 'signed-12bit-be-pcm' | 'c140-compressed-pcm' | 'c219-mulaw';
   sourceByteLength: number;
   analyzedSampleCount: number;
   isDownsampled?: true;
@@ -411,6 +412,12 @@ interface PCMAnalysisMetadata {
   mean: number;
   rms: number;
   zeroCrossingCount: number;
+}
+
+/** 波形特徴量だけから決める、楽器種別を主張しない説明的な音色ラベル。 */
+interface PCMTimbreMetadata {
+  name: 'quiet' | 'tonal' | 'noise-like';
+  confidence: number;
 }
 
 /** PCMトリガーに付随するチップ固有の再生範囲。 */
@@ -1220,18 +1227,27 @@ export class MidiConverter {
       return { source: 'ym2612-dac-direct', sampleId: 'direct-stream', gmNote, events, ...dataBlock };
     }
     const adpcmMatch = /^ym2608_\d+_adpcmb_sample_(.+)$/.exec(sourceKey);
-    if (adpcmMatch) return { source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events, ...dataBlock };
+    if (adpcmMatch) {
+      return {
+        source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events, ...dataBlock,
+        ...(state.pcmAnalysis === undefined
+          ? {}
+          : { analysis: state.pcmAnalysis, timbre: this.pcmTimbreForAnalysis(state.pcmAnalysis) }),
+      };
+    }
     if (sourceKey.startsWith('segapcm_sample_')) {
       const analysis = this.segaPCMAnalysisForTrack(pcmDataBlock, events);
       return {
         source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events, ...dataBlock,
-        ...(analysis === undefined ? {} : { analysis }),
+        ...(analysis === undefined ? {} : { analysis, timbre: this.pcmTimbreForAnalysis(analysis) }),
       };
     }
     if (sourceKey.startsWith('c140_sample_')) {
       return {
         source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events, ...dataBlock,
-        ...(state.pcmAnalysis === undefined ? {} : { analysis: state.pcmAnalysis }),
+        ...(state.pcmAnalysis === undefined
+          ? {}
+          : { analysis: state.pcmAnalysis, timbre: this.pcmTimbreForAnalysis(state.pcmAnalysis) }),
       };
     }
     if (sourceKey.startsWith('msm6258_sample_')) {
@@ -3252,7 +3268,15 @@ export class MidiConverter {
       ? undefined
       : this.ym2608ADPCMDurationSamples(address, endAddress, deltaN, addressUnitBytes);
     const descriptorId = this.noteOnPCMPercussion(
-      trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples
+      trackKey,
+      note,
+      velocity,
+      currentTime,
+      isLoop,
+      dataBlock,
+      durationSamples,
+      undefined,
+      isROMMode ? this.ym2608ADPCMBAnalysis(dataBlock, dataLengthBytes) : undefined
     );
     this.ym2608ADPCMActiveVoices[instance] = { descriptorId, note };
   }
@@ -3950,7 +3974,12 @@ export class MidiConverter {
         endAddressExclusive: this.c140ROMAddress(channel, bank, end),
         ...(isLoop ? { loopAddress: this.c140ROMAddress(channel, bank, loop) } : {}),
       },
-      this.c219PCMAnalysisForVoice(dataBlock, startAddress, this.c140ROMAddress(channel, bank, end), this.c140Registers[base + 5])
+      this.c140PCMAnalysisForVoice(
+        dataBlock,
+        startAddress,
+        this.c140ROMAddress(channel, bank, end),
+        this.c140Registers[base + 5]
+      )
     );
     this.c140ActiveVoices[channel] = { descriptorId, note };
   }
@@ -5065,60 +5094,194 @@ export class MidiConverter {
     return this.signed8BitPCMAnalysisForROMRange(dataBlock, startEvent.endAddressExclusive);
   }
 
-  /** C219の生8-bit PCMモードだけを、物理ROM範囲から解析する。 */
-  private c219PCMAnalysisForVoice(
+  /** C140/C219の確認済みPCMモードを、物理ROM範囲から解析する。 */
+  private c140PCMAnalysisForVoice(
     dataBlock: PCMDataBlockMetadata | undefined,
     startAddress: number,
     endAddress: number,
     mode: number
   ): PCMAnalysisMetadata | undefined {
-    // C219 bit 0 is μ-law, bit 2 is noise, bit 6 inverts the sample sign, and
-    // bit 1 remains unverified. Do not label any of those modes as raw PCM.
-    if (this.vgmData.header.c140Type !== 2 || (mode & 0x47) !== 0 || startAddress !== dataBlock?.bankOffset) {
-      return undefined;
+    if (startAddress !== dataBlock?.bankOffset) return undefined;
+    if (this.vgmData.header.c140Type === 2) {
+      // C219 bit 1 remains unverified and bit 2 is LFSR noise. Bit 0 selects
+      // μ-law, and bit 6 inverses the decoded sample sign.
+      if ((mode & 0x06) !== 0) return undefined;
+      const sign = (mode & 0x40) === 0 ? 1 : -1;
+      return (mode & 0x01) === 0
+        ? this.signed8BitPCMAnalysisForROMRange(dataBlock, endAddress, sign)
+        : this.c219MuLawAnalysisForROMRange(dataBlock, endAddress, sign);
     }
-    return this.signed8BitPCMAnalysisForROMRange(dataBlock, endAddress);
+    return (mode & 0x08) === 0
+      ? this.c14012BitPCMAnalysisForROMRange(dataBlock, endAddress)
+      : this.c140CompressedPCMAnalysisForROMRange(dataBlock, endAddress);
   }
 
   /** 単一ROM blockに完全に収まる符号付き8-bit PCMの基本波形特徴量を返す。 */
   private signed8BitPCMAnalysisForROMRange(
     dataBlock: PCMDataBlockMetadata,
+    endAddress: number,
+    sign = 1
+  ): PCMAnalysisMetadata | undefined {
+    const samples = this.romBytesForRange(dataBlock, endAddress);
+    return samples === undefined ? undefined : this.analyzeSigned8BitPCM(samples, sign);
+  }
+
+  /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
+  private analyzeSigned8BitPCM(samples: Buffer, sign = 1): PCMAnalysisMetadata | undefined {
+    return this.analyzePCMValues(
+      'signed-8bit-pcm',
+      samples.length,
+      samples.length,
+      128,
+      index => sign * (samples[index] - 0x80)
+    );
+  }
+
+  /** C219 μ-law tableをMAMEと同じ手順で作り、復号後の波形を解析する。 */
+  private c219MuLawAnalysisForROMRange(
+    dataBlock: PCMDataBlockMetadata,
+    endAddress: number,
+    sign: number
+  ): PCMAnalysisMetadata | undefined {
+    const samples = this.romBytesForRange(dataBlock, endAddress);
+    if (samples === undefined) return undefined;
+    return this.analyzePCMValues('c219-mulaw', samples.length, samples.length, 2048, index => {
+      const value = samples[index];
+      let magnitude = 0;
+      for (let level = 0; level < 128; level++) {
+        if (level < 16) magnitude += 1;
+        else if (level < 24) magnitude += 2;
+        else if (level < 48) magnitude += 4;
+        else if (level < 100) magnitude += 8;
+        else magnitude += 16;
+        if (level === (value & 0x7F)) break;
+      }
+      const decoded = (value & 0x80) === 0 ? magnitude : (~magnitude & 0xFFE0);
+      return sign * (decoded >> 5);
+    });
+  }
+
+  /** C140のbig-endian 12-bit word PCMを解析する。 */
+  private c14012BitPCMAnalysisForROMRange(
+    dataBlock: PCMDataBlockMetadata,
     endAddress: number
   ): PCMAnalysisMetadata | undefined {
+    const samples = this.c140ROMBytesForRange(dataBlock, endAddress);
+    if (samples === undefined) return undefined;
+    const sampleCount = Math.floor(samples.length / 2);
+    return this.analyzePCMValues(
+      'signed-12bit-be-pcm', samples.length, sampleCount, 2048,
+      index => samples.readInt16BE(index * 2) >> 4
+    );
+  }
+
+  /** C140圧縮PCMのMAME互換テーブル復号を解析に用いる。 */
+  private c140CompressedPCMAnalysisForROMRange(
+    dataBlock: PCMDataBlockMetadata,
+    endAddress: number
+  ): PCMAnalysisMetadata | undefined {
+    const samples = this.c140ROMBytesForRange(dataBlock, endAddress);
+    if (samples === undefined) return undefined;
+    const sampleCount = Math.floor(samples.length / 2);
+    return this.analyzePCMValues('c140-compressed-pcm', samples.length, sampleCount, 2048, index => {
+      const byte = samples[index * 2];
+      const signed = byte < 0x80 ? byte : byte - 0x100;
+      const shift = signed & 7;
+      const magnitude = Math.abs(signed >> 3) & 31;
+      let decoded = ((0x80 << shift) & 0xFF00) + (magnitude << (shift === 0 ? 4 : shift + 3));
+      if (signed < 0) decoded = -decoded;
+      return decoded >> 4;
+    });
+  }
+
+  /** YM2608 ADPCM-BをYamahaの予測式で復号し、全nibbleを解析する。 */
+  private ym2608ADPCMBAnalysis(
+    dataBlock: PCMDataBlockMetadata | undefined,
+    sourceByteLength: number | undefined
+  ): PCMAnalysisMetadata | undefined {
+    if (dataBlock === undefined || sourceByteLength === undefined) return undefined;
+    const endAddress = dataBlock.bankOffset + sourceByteLength;
+    const encoded = this.romBytesForRange(dataBlock, endAddress);
+    if (encoded === undefined || encoded.length === 0) return undefined;
+    const values: number[] = [];
+    let accumulator = 0;
+    let step = 127;
+    for (const byte of encoded) {
+      for (const nibble of [byte >> 4, byte & 0x0F]) {
+        const magnitude = (2 * (nibble & 7) + 1) * step / 8;
+        accumulator = Math.max(-32768, Math.min(32767, accumulator + ((nibble & 8) === 0 ? magnitude : -magnitude)));
+        step = Math.max(127, Math.min(24576, Math.floor(step * [57, 57, 57, 57, 77, 102, 128, 153][nibble & 7] / 64)));
+        values.push(accumulator);
+      }
+    }
+    // The chip suppresses the final three buffered nibbles at EOS.
+    return this.analyzePCMValues('yamaha-adpcm-b', encoded.length, Math.max(0, values.length - 3), 32768, index => values[index]);
+  }
+
+  /** ROM block内のbyteアドレス範囲を安全に取得する。 */
+  private romBytesForRange(dataBlock: PCMDataBlockMetadata, endAddress: number): Buffer | undefined {
     if (endAddress <= dataBlock.bankOffset || dataBlock.romStartAddress === undefined) return undefined;
-    const block = (this.vgmData.dataBlocks ?? []).find(candidate =>
+    const block = this.romDataBlockForMetadata(dataBlock);
+    if (block === undefined) return undefined;
+    const sourceByteLength = endAddress - dataBlock.bankOffset;
+    if (dataBlock.blockOffset + sourceByteLength > block.payload.length - 8) return undefined;
+    return block.payload.subarray(8 + dataBlock.blockOffset, 8 + dataBlock.blockOffset + sourceByteLength);
+  }
+
+  /** C140のwordアドレス範囲を、ROM block上のbig-endian byte列へ変換する。 */
+  private c140ROMBytesForRange(dataBlock: PCMDataBlockMetadata, endAddress: number): Buffer | undefined {
+    if (endAddress <= dataBlock.bankOffset) return undefined;
+    const block = this.romDataBlockForMetadata(dataBlock);
+    if (block === undefined) return undefined;
+    const sourceByteLength = (endAddress - dataBlock.bankOffset) * 2;
+    const sourceStart = 8 + dataBlock.blockOffset * 2;
+    if (sourceStart + sourceByteLength > block.payload.length) return undefined;
+    return block.payload.subarray(sourceStart, sourceStart + sourceByteLength);
+  }
+
+  /** sidecarのdata block参照から実ROM blockを探す。 */
+  private romDataBlockForMetadata(dataBlock: PCMDataBlockMetadata): VGMDataBlock | undefined {
+    return (this.vgmData.dataBlocks ?? []).find(candidate =>
       candidate.type === dataBlock.bankType
       && (candidate.instance ?? 0) === dataBlock.bankInstance
       && candidate.blockId === dataBlock.blockId
     );
-    if (!block || block.payload.length < 8) return undefined;
-    const sourceByteLength = endAddress - dataBlock.bankOffset;
-    const blockEndAddress = dataBlock.romStartAddress + block.payload.length - 8;
-    if (endAddress > blockEndAddress) return undefined;
-    const sourceStart = 8 + dataBlock.blockOffset;
-    return this.analyzeSigned8BitPCM(block.payload.subarray(sourceStart, sourceStart + sourceByteLength));
   }
 
-  /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
-  private analyzeSigned8BitPCM(samples: Buffer): PCMAnalysisMetadata | undefined {
-    if (samples.length === 0) return undefined;
-    const analyzedSampleCount = Math.min(samples.length, MAX_PCM_ANALYSIS_SAMPLES);
+  /** 数値sample列を均等に間引き、正規化された波形特徴量へ変換する。 */
+  private analyzePCMValues(
+    format: PCMAnalysisMetadata['format'],
+    sourceByteLength: number,
+    sampleCount: number,
+    maximumAmplitude: number,
+    sampleAt: (index: number) => number
+  ): PCMAnalysisMetadata | undefined {
+    if (sampleCount === 0) return undefined;
+    const analyzedSampleCount = Math.min(sampleCount, MAX_PCM_ANALYSIS_SAMPLES);
     let peak = 0; let sum = 0; let sumSquares = 0; let zeroCrossingCount = 0; let previousSign = 0;
     for (let index = 0; index < analyzedSampleCount; index++) {
-      const sourceIndex = Math.floor((index * samples.length) / analyzedSampleCount);
-      const sample = samples[sourceIndex] - 0x80;
+      const sourceIndex = Math.floor((index * sampleCount) / analyzedSampleCount);
+      const sample = sampleAt(sourceIndex);
       peak = Math.max(peak, Math.abs(sample)); sum += sample; sumSquares += sample * sample;
       const sign = Math.sign(sample);
       if (sign !== 0 && previousSign !== 0 && sign !== previousSign) zeroCrossingCount++;
       if (sign !== 0) previousSign = sign;
     }
-    const normalize = (value: number) => Math.round((value / 128) * 1_000_000) / 1_000_000;
+    const normalize = (value: number) => Math.round((value / maximumAmplitude) * 1_000_000) / 1_000_000;
     return {
-      format: 'signed-8bit-pcm', sourceByteLength: samples.length, analyzedSampleCount,
-      ...(samples.length > analyzedSampleCount ? { isDownsampled: true as const } : {}),
+      format, sourceByteLength, analyzedSampleCount,
+      ...(sampleCount > analyzedSampleCount ? { isDownsampled: true as const } : {}),
       peak: normalize(peak), mean: normalize(sum / analyzedSampleCount),
       rms: normalize(Math.sqrt(sumSquares / analyzedSampleCount)), zeroCrossingCount,
     };
+  }
+
+  /** 波形統計から、楽器種別を断定しない説明的な音色ラベルを作る。 */
+  private pcmTimbreForAnalysis(analysis: PCMAnalysisMetadata): PCMTimbreMetadata {
+    const crossingRate = analysis.zeroCrossingCount / Math.max(1, analysis.analyzedSampleCount - 1);
+    const name = analysis.peak < 0.04 ? 'quiet' : crossingRate > 0.25 ? 'noise-like' : 'tonal';
+    const confidence = Math.round(Math.min(1, 0.5 + Math.min(analysis.analyzedSampleCount, 4096) / 8192) * 100) / 100;
+    return { name, confidence };
   }
 
   /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */

@@ -4078,7 +4078,62 @@ test('C219 sidecars analyze only verified complete signed 8-bit PCM ranges', () 
     peak: 1, mean: -0.003906, rms: expectedRms, zeroCrossingCount: 1,
   });
   assert.equal(convertWaveform(0x80, 0x80, 'raw-partial').analysis, undefined);
-  assert.equal(convertWaveform(0x100, 0x81, 'mulaw').analysis, undefined);
+  const mulaw = convertWaveform(0x100, 0x81, 'mulaw');
+  assert.equal(mulaw.analysis.format, 'c219-mulaw');
+  assert.ok(['quiet', 'tonal', 'noise-like'].includes(mulaw.timbre.name));
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
+test('PCM sidecars decode YM2608 ADPCM-B and C140 PCM formats before timbre labeling', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-pcm-codec-analysis-test-'));
+  const exportPCM = (name, header, commands, dataBlocks) => {
+    const metadataPath = path.join(tempDirectory, `${name}.libvgm.json`);
+    const converter = new MidiConverter({ header, commands: [...commands, { type: 'end' }], dataBlocks });
+    converter.convert();
+    converter.exportTrackMetadata(metadataPath, 0);
+    return JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm;
+  };
+  const ymPayload = Buffer.alloc(40, 0x11);
+  ymPayload.writeUInt32LE(0x20, 0);
+  ymPayload.writeUInt32LE(0, 4);
+  const ym2608 = exportPCM('ym2608', createHeader({ ym2608Clock: 7987200, ym2151Clock: 0 }), [
+    { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x01, data: 0x01 },
+    { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x02, data: 0x00 },
+    { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x03, data: 0x00 },
+    { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x04, data: 0x00 },
+    { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x05, data: 0x00 },
+    { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x00, data: 0x80 },
+  ], [{ type: 0x81, blockId: 0, size: ymPayload.length, payload: ymPayload }]);
+  assert.equal(ym2608.analysis.format, 'yamaha-adpcm-b');
+  assert.equal(ym2608.analysis.analyzedSampleCount, 61);
+  assert.ok(['quiet', 'tonal', 'noise-like'].includes(ym2608.timbre.name));
+
+  const createC140Payload = () => {
+    const payload = Buffer.alloc(16);
+    payload.writeUInt32LE(0x10008, 0);
+    payload.writeUInt32LE(0x10000, 4);
+    payload.writeInt16BE(0x7FF0, 8);
+    payload.writeInt16BE(-0x8000, 10);
+    payload.writeInt16BE(0x0100, 12);
+    payload.writeInt16BE(-0x0100, 14);
+    return payload;
+  };
+  const c140Commands = mode => [
+    { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x01 },
+    { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
+    { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x00 },
+    { type: 'chip_write', chip: 'C140', register: 0x08, data: 0x00 },
+    { type: 'chip_write', chip: 'C140', register: 0x09, data: 0x04 },
+    { type: 'chip_write', chip: 'C140', register: 0x05, data: mode },
+  ];
+  const c140Raw = exportPCM('c140-raw', createHeader({ c140Clock: 2139000, c140Type: 0, ym2151Clock: 0 }),
+    c140Commands(0x80), [{ type: 0x8D, blockId: 0, size: 16, payload: createC140Payload() }]);
+  const c140Compressed = exportPCM('c140-compressed', createHeader({ c140Clock: 2139000, c140Type: 0, ym2151Clock: 0 }),
+    c140Commands(0x88), [{ type: 0x8D, blockId: 0, size: 16, payload: createC140Payload() }]);
+  assert.equal(c140Raw.analysis.format, 'signed-12bit-be-pcm');
+  assert.equal(c140Compressed.analysis.format, 'c140-compressed-pcm');
+  assert.ok(c140Raw.timbre);
+  assert.ok(c140Compressed.timbre);
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
