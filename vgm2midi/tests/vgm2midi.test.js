@@ -47,6 +47,7 @@ function createHeader(overrides = {}) {
     ym2608AyFlags: 0,
     huc6280Clock: 0,
     c140Clock: 0,
+    c140Type: 0,
     gbDmgClock: 0,
     ...overrides,
   };
@@ -466,12 +467,14 @@ test('header exposes SegaPCM and C140 clocks when their fields precede VGM data'
   const buffer = createVgmBuffer([0x66], 0x0161, 0xC0);
   buffer.writeUInt32LE(4000000, 0x38);
   buffer.writeUInt32LE(12, 0x3C);
+  buffer.writeUInt8(1, 0x96);
   buffer.writeUInt32LE(12288000, 0xA8);
 
   const header = new VGMParser(buffer).parseHeader();
   assert.equal(header.segaPCMClock, 4000000);
   assert.equal(header.segaPCMInterface, 12);
   assert.equal(header.c140Clock, 12288000);
+  assert.equal(header.c140Type, 1);
 });
 
 test('header exposes SN76489 flags and discriminates the legacy VGM 1.01 FM clock', () => {
@@ -3842,6 +3845,85 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
     type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x10060, loopAddress: 0x10030,
   });
   assert.equal(unmatchedC140.pcm.dataBlock, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
+test('C140 System 21 and C219 convert ROM addresses before resolving data blocks', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-c140-board-address-test-'));
+  const createROMBlock = (romStartAddress) => {
+    const payload = Buffer.alloc(0x108);
+    payload.writeUInt32LE(0x200000, 0);
+    payload.writeUInt32LE(romStartAddress, 4);
+    return { type: 0x8D, blockId: 0, size: payload.length, payload };
+  };
+  const convertC140Board = (c140Type, boardWrites, romStartAddress, expectedEvent) => {
+    const metadataPath = path.join(tempDirectory, `c140-${c140Type}.libvgm.json`);
+    const converter = new MidiConverter({
+      header: createHeader({ c140Clock: 2139000, c140Type, ym2151Clock: 0 }),
+      commands: [
+        ...boardWrites,
+        { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x31 },
+        { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x20 },
+        { type: 'chip_write', chip: 'C140', register: 0x08, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x09, data: 0x60 },
+        { type: 'chip_write', chip: 'C140', register: 0x0A, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x0B, data: 0x30 },
+        { type: 'chip_write', chip: 'C140', register: 0x05, data: 0x90 },
+        { type: 'end' },
+      ],
+      dataBlocks: [createROMBlock(romStartAddress)],
+    });
+
+    converter.convert();
+    converter.exportTrackMetadata(metadataPath, 0);
+    const pcm = JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(
+      track => track.pcm?.source === 'c140'
+    ).pcm;
+    assert.equal(pcm.dataBlock.romStartAddress, romStartAddress);
+    assert.deepEqual(pcm.events[0], expectedEvent);
+  };
+
+  // System 21 remaps C140 logical 0x310020 to physical 0x190020.
+  convertC140Board(1, [], 0x190000, {
+    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x190060, loopAddress: 0x190030,
+  });
+  // C219 uses word addresses and its channel 0 external bank ($1f7) selects 0x40000.
+  convertC140Board(2, [
+    { type: 'chip_write', chip: 'C140', register: 0x1F7, data: 0x02 },
+  ], 0x350000, {
+    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x3500C0, loopAddress: 0x350060,
+  });
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
+test('C140 and C219 sidecars estimate only finite playback duration from frequency', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-c140-duration-test-'));
+  const expectedC140Duration = Math.round((0x100 * 44100 * 65536) / (0x8000 * Math.floor(8000000 / 384) * 2));
+  const convertC140Duration = (c140Type, mode, name) => {
+    const metadataPath = path.join(tempDirectory, `${name}.libvgm.json`);
+    const converter = new MidiConverter({
+      header: createHeader({ c140Clock: 8000000, c140Type, ym2151Clock: 0 }),
+      commands: [
+        { type: 'chip_write', chip: 'C140', register: 0x02, data: 0x80 },
+        { type: 'chip_write', chip: 'C140', register: 0x03, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x01 },
+        { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x08, data: 0x02 },
+        { type: 'chip_write', chip: 'C140', register: 0x09, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x05, data: mode },
+        { type: 'end' },
+      ],
+    });
+    converter.convert();
+    converter.exportTrackMetadata(metadataPath, 0);
+    return JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm.events[0];
+  };
+
+  assert.equal(convertC140Duration(0, 0x80, 'system2').durationSamples, expectedC140Duration);
+  assert.equal(convertC140Duration(1, 0x80, 'system21').durationSamples, expectedC140Duration);
+  assert.equal(convertC140Duration(2, 0x80, 'c219').durationSamples, expectedC140Duration * 2);
+  assert.equal(convertC140Duration(2, 0x84, 'c219-noise').durationSamples, undefined);
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 

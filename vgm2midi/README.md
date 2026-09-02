@@ -58,6 +58,12 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
 - SegaPCM and C140 start events also retain their exclusive end address, loop
   address, and loop-enabled state. These fields do not infer a MIDI note-off
   time because playback rate and chip behaviour remain chip-specific
+- C140 ROM links and range addresses honor VGM header C140 type 0 (System 2),
+  1 (System 21), and 2 (C219 on NA-1/NA-2); an unknown type uses System 2
+  addressing
+- For non-looping C140/C219 triggers with a valid range and frequency,
+  `--track-metadata` records an estimated `durationSamples`. It is sidecar-only,
+  never an automatic MIDI Note Off; C219 noise mode has no finite estimate
 - Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
   an explicitly written, unambiguous power-of-two operator multiplier, including
   `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch

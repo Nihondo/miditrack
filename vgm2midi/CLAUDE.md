@@ -828,9 +828,11 @@ FM notes:
   voice control register (`$86 + voice*8`, bit 0 clear) is a retrigger, even if
   the previous control value was already enabled. *Passing Breeze* depends on
   this repeated-write behavior for 3,955 of its 3,961 PCM attacks.
-- VGM header `$A8` / command `$D4` describe C140. Each voice has 16 registers;
-  mode register offset 5 uses bit 7 for key-on. Bit 6 retriggers only while the
-  voice is already active, matching MAME's C140 behavior.
+- VGM header `$A8` / command `$D4` describe C140. Header `$96` selects the ROM
+  connection: 0 is System 2, 1 is System 21, and 2 is the NA-1/NA-2 C219.
+  Each C140 voice has 16 registers; mode register offset 5 uses bit 7 for
+  key-on. Bit 6 retriggers only while the voice is already active, matching
+  MAME's C140 behavior.
 - SegaPCM sample identity combines control-bank bits with the current-address
   registers. C140 identity combines bank and sample-start registers. Each
   first-seen identity receives the next GM percussion note from 35 through 81
@@ -841,11 +843,26 @@ FM notes:
   `$80` and C140 type `$8D` links retain the source block/offset but do not
   decode audio. Each SegaPCM start event records its bank-relative exclusive
   end address, optional loop address, and control-bit-1 loop state. Each C140
-  start event records bank-applied exclusive end/loop addresses and mode-bit-4
-  loop state. These range fields deliberately do not schedule MIDI note-off:
-  calculating audible duration still needs chip-specific pitch and playback
-  behavior. MIDI note numbers remain stable identity labels within the file,
-  not semantic GM instrument claims.
+  start event records board-mapped exclusive end/loop addresses and mode-bit-4
+  loop state. System 21 remaps the C140 logical ROM address to its wiring
+  layout. C219 first doubles the word address, then adds the C140 bank and its
+  four-voice-group external 128 KiB bank (`$1F7`, `$1F1`, `$1F3`, or `$1F5`).
+  Unknown header types retain System 2 addressing. These range fields
+  deliberately do not schedule MIDI note-off: calculating audible duration
+  still needs chip-specific pitch and playback behavior. MIDI note numbers
+  remain stable identity labels within the file, not semantic GM instrument
+  claims.
+
+For a finite C140/C219 range, `c140DurationSamples()` adds a sidecar-only
+`durationSamples` estimate. It follows VGMPlay's 16.16 position accumulator:
+the frequency registers advance by `frequency * baseRate * 2 / 65536` ROM
+address units per second, where a MHz-class VGM C140 input clock has a
+`baseRate` of `floor(clock / 384)` and a lower clock is already a base rate.
+C219 address registers are word-addressed, so its range is doubled before the
+calculation. Do not emit a duration for a looped range, C219 noise mode (bit 2,
+which repeats at range end), zero frequency, reversed/empty range, or a missing
+clock. The estimate deliberately does not schedule a MIDI Note Off: later chip
+writes and chip-specific playback details remain the source of MIDI boundaries.
 
 `segaPCMActiveVoices` and `c140ActiveVoices` associate each hardware voice with
 its currently sounding sample track and note, so overlapping voices that use

@@ -365,7 +365,7 @@ interface PCMTrackEvent {
   endAddressExclusive?: number;
   /** ループ時の再開位置。`isLoop`がtrueの場合だけ出力する。 */
   loopAddress?: number;
-  /** VGM streamから解決できた再生予定長。loop時は省略する。 */
+  /** チップまたはVGM streamから解決できた再生予定長。loop時は省略する。 */
   durationSamples?: number;
   /** VGM data bankから要求されるエンコード済みbyte数。 */
   dataLengthBytes?: number;
@@ -3849,10 +3849,16 @@ export class MidiConverter {
     const note = this.pcmNoteForSample(trackKey);
     const total = left + right;
     this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
-    const dataBlock = this.pcmROMDataBlockForAddress(0x8D, instance, (bank << 16) | start);
     const end = (this.c140Registers[base + 8] << 8) | this.c140Registers[base + 9];
     const isLoop = (this.c140Registers[base + 5] & 0x10) !== 0;
+    const isC219Noise = this.vgmData.header.c140Type === 2 && (this.c140Registers[base + 5] & 0x04) !== 0;
     const loop = (this.c140Registers[base + 10] << 8) | this.c140Registers[base + 11];
+    const startAddress = this.c140ROMAddress(channel, bank, start);
+    const dataBlock = this.pcmROMDataBlockForAddress(0x8D, instance, startAddress);
+    const frequency = (this.c140Registers[base + 2] << 8) | this.c140Registers[base + 3];
+    const durationSamples = isLoop || isC219Noise
+      ? undefined
+      : this.c140DurationSamples(start, end, frequency);
     const descriptorId = this.noteOnPCMPercussion(
       trackKey,
       note,
@@ -3860,13 +3866,42 @@ export class MidiConverter {
       currentTime,
       isLoop,
       dataBlock,
-      undefined,
+      durationSamples,
       {
-        endAddressExclusive: (bank << 16) | end,
-        ...(isLoop ? { loopAddress: (bank << 16) | loop } : {}),
+        endAddressExclusive: this.c140ROMAddress(channel, bank, end),
+        ...(isLoop ? { loopAddress: this.c140ROMAddress(channel, bank, loop) } : {}),
       }
     );
     this.c140ActiveVoices[channel] = { descriptorId, note };
+  }
+
+  /** C140/C219の非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
+  private c140DurationSamples(start: number, end: number, frequency: number): number | undefined {
+    if (end <= start || frequency === 0) return undefined;
+    const inputClock = this.vgmData.header.c140Clock & CLOCK_MASK;
+    if (inputClock === 0) return undefined;
+    // VGMPlay's C140 core treats a MHz-class header clock as the input clock and
+    // derives its base rate by /384; already-low clocks are an explicit base rate.
+    const baseRate = inputClock >= 1000000 ? Math.floor(inputClock / 384) : inputClock;
+    if (baseRate === 0) return undefined;
+    const addressLength = (end - start) * (this.vgmData.header.c140Type === 2 ? 2 : 1);
+    return Math.round((addressLength * this.sampleRate * 65536) / (frequency * baseRate * 2));
+  }
+
+  /** C140系レジスタのバンク・開始位置を、VGM ROM blockで使う物理ROMアドレスへ変換する。 */
+  private c140ROMAddress(channel: number, bank: number, address: number): number {
+    const logicalAddress = (bank << 16) | address;
+    if (this.vgmData.header.c140Type === 1) {
+      // System 21 はC140の論理アドレスをROM配線に合わせて並べ替える。
+      return (logicalAddress & 0x7FFFF) | ((logicalAddress & 0x300000) >> 1);
+    }
+    if (this.vgmData.header.c140Type === 2) {
+      // C219 (NA-1/NA-2): 音声アドレスはword単位、4音声ごとの外部bankは128 KiB単位。
+      const externalBankRegisters = [0x1F7, 0x1F1, 0x1F3, 0x1F5];
+      const externalBank = this.c140Registers[externalBankRegisters[Math.floor(channel / 4)]] & 0x03;
+      return (externalBank << 17) + (bank << 16) + (address << 1);
+    }
+    return logicalAddress;
   }
 
   private handleOPLWrite(

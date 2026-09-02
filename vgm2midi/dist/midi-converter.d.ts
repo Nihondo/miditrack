@@ -246,6 +246,10 @@ export declare class MidiConverter {
     private triggerSegaPCMVoice;
     private handleC140Write;
     private triggerC140Voice;
+    /** C140/C219の非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
+    private c140DurationSamples;
+    /** C140系レジスタのバンク・開始位置を、VGM ROM blockで使う物理ROMアドレスへ変換する。 */
+    private c140ROMAddress;
     private handleOPLWrite;
     private oplKey;
     private oplOperatorSlot;
