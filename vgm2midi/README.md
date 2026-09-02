@@ -317,8 +317,11 @@ vgm2midi song.vgz --ch3-special-percussion
   interaction. `--ch3-special-percussion` preserves one composite attack and
   maps its carrier base range heuristically to GM drums; it still does not
   synthesize the original FM timbre and can misclassify unusual patches
-- CSM mode (Timer-A-driven automatic key-on for speech-formant synthesis) is
-  not modeled for YM2612, YM2151, YM2203, or YM2608
+- CSM mode is converted for YM2612, YM2151, YM2203, and YM2608. Timer A
+  overflows become one-tick MIDI attacks: OPN uses the existing Ch3 Special
+  representation and OPM attacks all eight configured channels. Multiple
+  overflows in one MIDI tick are coalesced, so this is an editable onset
+  approximation rather than a reproduction of the original FM envelope
 - YM2151/YM2203/YM2608/OPL FM tracks declare a ±96-semitone pitch-bend range through MIDI RPN 0
   so large in-note key-code/key-fraction or F-Number movement remains continuous. A MIDI player that ignores
   pitch-bend-range RPN messages will reproduce those bends at the wrong interval

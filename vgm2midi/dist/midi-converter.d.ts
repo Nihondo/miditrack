@@ -31,6 +31,8 @@ export declare class MidiConverter {
     private ym2612DirectDACLastWriteTime?;
     private opnCh3SpecialModes;
     private opnCh3PercussionActiveKeys;
+    private opnCsmTimers;
+    private opmCsmTimers;
     private oplRhythmModes;
     private oplRhythmControlBytes;
     private ym2203Prescalers;
@@ -138,6 +140,34 @@ export declare class MidiConverter {
     private handleYM2612Write;
     private isOPNCh3SpecialMode;
     private handleOPNCh3ModeWrite;
+    /** OPN Timer Aの値をCSM schedulerへ反映する。 */
+    private updateOPNCsmTimerRegister;
+    /** OPN $27のCSM有効状態とTimer Aの開始状態を更新する。 */
+    private updateOPNCsmTimer;
+    /** OPM Timer Aの値をCSM schedulerへ反映する。 */
+    private updateOPMCsmTimerRegister;
+    /** OPM $14のCSM有効状態とTimer Aの開始状態を更新する。 */
+    private updateOPMCsmTimer;
+    /** すべての動作中CSM Timer Aをwait区間内で進める。 */
+    private advanceCSMTimers;
+    /** Timer AのoverflowとMIDI pulse終了を時刻順に処理する。 */
+    private advanceCSMTimer;
+    /** OPN CSMを既存のCh3 Special出力形式へ変換する。 */
+    private emitOPNCsmPulse;
+    /** OPM CSMを各チャンネルの短いMIDIアタックとして出力する。 */
+    private emitOPMCsmPulse;
+    /** OPN/OPMが共通で使う1 MIDI tick分のCSM pulse長をsampleへ換算する。 */
+    private csmPulseSamples;
+    /** OPN Timer Aの1周期をVGM sampleへ換算する。 */
+    private opnCsmPeriodSamples;
+    /** OPM Timer Aの1周期をVGM sampleへ換算する。 */
+    private opmCsmPeriodSamples;
+    /** OPN各機種のヘッダーclockを取得する。 */
+    private opnClockRate;
+    /** OPNチップインスタンスのCSM状態を初期化して返す。 */
+    private opnCsmTimer;
+    /** OPMチップインスタンスのCSM状態を初期化して返す。 */
+    private opmCsmTimer;
     private handleOPNCh3SpecialKeyWrite;
     private handleOPNCh3SpecialOperators;
     private handleOPNCh3SpecialPercussion;

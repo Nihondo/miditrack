@@ -726,6 +726,64 @@ test('YM2151 key code and key-on writes produce a playable MIDI track', () => {
   assert.notEqual(midi.indexOf(Buffer.from([0x90, 69])), -1);
 });
 
+test('OPN CSM turns Timer A overflows into Ch3 Special MIDI attacks and stops with Load A', () => {
+  const write = (register, data) => ({
+    type: 'chip_write', chip: 'YM2612', port: 0, register, data,
+  });
+  const { converter, tracks } = convertYM2612Commands([
+    // Ch3 Special's four independent frequencies must be set before CSM starts.
+    write(0xAD, 0x22), write(0xA9, 0x69),
+    write(0xAE, 0x22), write(0xAA, 0x69),
+    write(0xAC, 0x22), write(0xA8, 0x69),
+    write(0xA6, 0x22), write(0xA2, 0x69),
+    write(0x24, 0x00), write(0x25, 0x00),
+    write(0x27, 0x81), // Mode 10 (CSM) + Timer A Load.
+    { type: 'wait', samples: 1300 },
+    write(0x27, 0x80), // Keep CSM selected but stop Timer A.
+    { type: 'wait', samples: 1300 },
+  ]);
+
+  const noteOns = tracks.flatMap(track => track.events).filter(event => event.name === 'NoteOnEvent');
+  assert.equal(converter.generatedNoteCount, 12, 'three Timer A overflows × four Ch3 operators');
+  assert.equal(noteOns.length, 12);
+});
+
+test('YM2203 and YM2608 apply their own Timer A clocks to OPN CSM', () => {
+  for (const [chip, clock] of [['YM2203', 4000000], ['YM2608', 7987200]]) {
+    const write = (register, data) => ({ type: 'chip_write', chip, port: 0, register, data });
+    const { converter } = convertOPNCommands(chip, [
+      write(0xAD, 0x22), write(0xA9, 0x69), write(0xAE, 0x22), write(0xAA, 0x69),
+      write(0xAC, 0x22), write(0xA8, 0x69), write(0xA6, 0x22), write(0xA2, 0x69),
+      write(0x24, 0x00), write(0x25, 0x00), write(0x27, 0x81),
+      { type: 'wait', samples: 1700 },
+    ], clock);
+    assert.ok(converter.generatedNoteCount >= 8, `${chip} must emit at least two four-operator CSM attacks`);
+  }
+});
+
+test('OPM CSM turns Timer A overflows into one-tick attacks on all eight channels', () => {
+  const converter = new MidiConverter({
+    header: createHeader(),
+    commands: [
+      ...Array.from({ length: 8 }, (_, channel) => ({
+        type: 'chip_write', chip: 'YM2151', register: 0x28 + channel, data: 0x4A,
+      })),
+      { type: 'chip_write', chip: 'YM2151', register: 0x10, data: 0x00 },
+      { type: 'chip_write', chip: 'YM2151', register: 0x11, data: 0x00 },
+      { type: 'chip_write', chip: 'YM2151', register: 0x14, data: 0x81 }, // CSM + Timer A start.
+      { type: 'wait', samples: 900 },
+      { type: 'chip_write', chip: 'YM2151', register: 0x14, data: 0x80 }, // Stop Timer A.
+      { type: 'wait', samples: 1700 },
+      { type: 'end' },
+    ],
+  });
+
+  const tracks = converter.convert();
+  const noteOns = tracks.flatMap(track => track.events).filter(event => event.name === 'NoteOnEvent');
+  assert.equal(converter.generatedNoteCount, 8);
+  assert.equal(noteOns.length, 8, 'CSM enables all eight YM2151 channels at one overflow');
+});
+
 test('YM2151 key-code and key-fraction changes remain pitch bends inside one key-on', () => {
   const converter = new MidiConverter({
     header: createHeader(),

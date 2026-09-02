@@ -157,7 +157,7 @@ vgm2midi song.vgz --ch3-special-percussion
 - YM2413は逆順の`$20`→`$10` key-onを遅延確定し、明示的な2の累乗carrier Multiple補正だけを扱います。2の累乗以外の比率、envelope、detune、元のOPLL音色はMIDIのモデル外です
 - YM3526/YM3812/Y8950 OPL変換はF-Number/block、key遷移、CNT carrier経路、Total Level、MULTIPLEによるオクターブ補正、`$BD`リズムキーを扱います。KSL、feedback、波形選択、envelope、AM/vibrato、元のFM音色は再現しません。YMF262/OPL3とY8950 ADPCMは変換対象外で、Y8950 ADPCM writeはdiagnosticsと`--strict`に残ります
 - YM2203／YM2608／YM2612チャンネル3のスペシャルモードは、オペレータ別の`$A8-$AA`／`$AC-$AE`周波数と、オペレータ4が使う通常の`$A2`／`$A6`周波数から変換します。既定の4トラック出力は編集用に各オペレータ周波数を露出しますが、アルゴリズム内のFM相互作用は再現できません。`--ch3-special-percussion`は複合アタックを1打に保ち、キャリアの基準音域からGMドラムへヒューリスティックに割り当てますが、元のFM音色は合成せず、特殊な音色を誤分類する可能性があります
-- CSMモード（音声フォルマント合成向けのTimer A駆動自動キーオン）は、YM2612、YM2151、YM2203、YM2608のいずれでもモデル化していません
+- CSMモードはYM2612、YM2151、YM2203、YM2608で変換します。Timer Aのオーバーフローを1 tickのMIDIアタックへ変換します。OPNは既存のCh3 Special表現を使い、OPMは設定済みの8チャンネルをアタックします。同一MIDI tick内の複数オーバーフローは1回へ集約するため、元のFMエンベロープを再現するのではなく、編集可能なアタック近似として出力します
 - YM2151/YM2203/YM2608/OPL FMトラックは、発音中の大きなキーコード/キーフラクションまたはF-Number変化を連続して保持するため、MIDI RPN 0で±96半音のピッチベンドレンジを宣言します。ピッチベンドレンジのRPNメッセージを無視するMIDIプレーヤーでは、ベンド幅が正しく再生されません
 - SN76489、YM2151、YM2203/YM2608 SSG、AY-3-8910、HuC6280、Game Boy DMGのハードウェアノイズはGMドラムノートとして近似されます（多くはClosed Hi-Hat、一部のチップは高/中/低の3バンド）。チップ固有のノイズ音色は再現されません
 - Game Boy DMGは512 Hz frame sequencerによるchannel 1 sweep、length counter、envelope CC11を扱います。wave RAMの内容、従って元の音色はMIDIのモデル外です

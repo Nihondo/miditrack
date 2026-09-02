@@ -32,6 +32,10 @@ const YM2608_FM_PITCH_BEND_RANGE = 96;
 const OPL_FM_PITCH_BEND_RANGE = 96;
 const CHIP_PITCH_BEND_RANGE = 96;
 const MIDI_PPQ = 960;
+// CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
+// MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
+// オーバーフローは1回へ集約し、出力ノートは1 tickだけ保持する。
+const CSM_MIDI_PULSE_TICKS = 1;
 const YM2608_RHYTHM_NOTES = [36, 38, 49, 42, 45, 37] as const;
 const YM2608_RHYTHM_NAMES = [
   'Bass Drum',
@@ -48,8 +52,9 @@ const YM2608_RHYTHM_NAMES = [
 // nonzero value enables per-operator frequency, confirmed against Nuked-OPN2's
 // `chip->mode_ch3 = (data & 0xc0) >> 6` plus `if (chip->mode_ch3)` gating per-operator
 // phase generation — https://github.com/nukeykt/Nuked-OPN2/blob/master/ym3438.c). CSM
-// (mode 2, automatic Timer-A-driven key-on for speech-formant synthesis) is not modeled;
-// this heuristic keys sub-voices only from ordinary $28 writes like every other channel.
+// (mode 2) keys all Ch3 operators from each Timer A overflow. The converter emits that
+// envelope attack as a one-MIDI-tick pulse, while preserving the usual per-operator or
+// optional GM-percussion Ch3 Special representation.
 // In special mode, operators 1-3 read their own frequency/block from $A8-$AA (LSB) and
 // $AC-$AE (MSB/block); operator 4 continues to use the normal channel $A2/$A6 registers.
 // The register-offset-to-operator mapping is NOT sequential (0,1,2 -> Op1,Op2,Op3) — it's
@@ -383,6 +388,18 @@ interface OPNCh3Context {
   percussionPrefix: string;
 }
 
+interface CSMTimerState {
+  timerHigh: number;
+  timerLow: number;
+  isRunning: boolean;
+  isCSMEnabled: boolean;
+  nextOverflow?: number;
+  nextRelease?: number;
+  lastEmittedTick?: number;
+  manualKeyOnMask?: number;
+  manualKeyOnMasks?: number[];
+}
+
 /** VGMのチップ書き込みを解析し、音程・音量・ノイズの発音状態をMIDIイベントへ変換する。 */
 export class MidiConverter {
   private vgmData: VGMData;
@@ -412,6 +429,8 @@ export class MidiConverter {
   // Ch3 mode and active collapsed-percussion track are isolated per OPN chip instance.
   private opnCh3SpecialModes: Map<string, boolean> = new Map();
   private opnCh3PercussionActiveKeys: Map<string, string> = new Map();
+  private opnCsmTimers: Map<string, CSMTimerState> = new Map();
+  private opmCsmTimers: Map<number, CSMTimerState> = new Map();
   private oplRhythmModes: Map<string, boolean> = new Map();
   private oplRhythmControlBytes: Map<string, number> = new Map();
   private ym2203Prescalers = [6, 6];
@@ -1441,6 +1460,8 @@ export class MidiConverter {
     this.ym2612DirectDACLastWriteTime = undefined;
     this.opnCh3SpecialModes.clear();
     this.opnCh3PercussionActiveKeys.clear();
+    this.opnCsmTimers.clear();
+    this.opmCsmTimers.clear();
     this.oplRhythmModes.clear();
     this.oplRhythmControlBytes.clear();
     this.ym2413RhythmMode = false;
@@ -1479,6 +1500,7 @@ export class MidiConverter {
       const cmd = this.vgmData.commands[i];
       
       if (cmd.type === 'wait' && cmd.samples) {
+        this.advanceCSMTimers(currentTime, currentTime + cmd.samples, activeNotes);
         currentTime += cmd.samples;
         this.advanceGBDMGFrameSequencers(currentTime, activeNotes);
       }
@@ -1487,7 +1509,9 @@ export class MidiConverter {
       }
       else if (cmd.type === 'pcm_write' && cmd.chip === 'YM2612') {
         this.handleYM2612DACWrite(currentTime);
-        currentTime += cmd.samples ?? 0;
+        const samples = cmd.samples ?? 0;
+        this.advanceCSMTimers(currentTime, currentTime + samples, activeNotes);
+        currentTime += samples;
       }
       else if (cmd.type.startsWith('stream_')) {
         this.handleStreamCommand(cmd, currentTime);
@@ -1806,6 +1830,12 @@ export class MidiConverter {
 
     if (port === 0 && reg === 0x27) {
       this.handleOPNCh3ModeWrite(ch3Context, data, currentTime, activeNotes);
+      this.updateOPNCsmTimer('YM2612', cmd.instance ?? 0, data, currentTime, activeNotes);
+      return;
+    }
+
+    if (port === 0 && (reg === 0x24 || reg === 0x25)) {
+      this.updateOPNCsmTimerRegister('YM2612', cmd.instance ?? 0, reg, data);
       return;
     }
 
@@ -1952,20 +1982,249 @@ export class MidiConverter {
       this.noteOff(key, 0, currentTime, activeNotes);
     }
     this.channels.get(context.parentKey)!.keyOnMask = 0;
+    this.opnCsmTimer(context.chip, context.instance).manualKeyOnMask = 0;
     this.opnCh3SpecialModes.set(context.stateKey, isSpecial);
+  }
+
+  /** OPN Timer Aの値をCSM schedulerへ反映する。 */
+  private updateOPNCsmTimerRegister(
+    chip: OPNCh3Chip,
+    instance: number,
+    register: number,
+    data: number
+  ): void {
+    const timer = this.opnCsmTimer(chip, instance);
+    if (register === 0x24) timer.timerHigh = data;
+    else timer.timerLow = data & 0x03;
+  }
+
+  /** OPN $27のCSM有効状態とTimer Aの開始状態を更新する。 */
+  private updateOPNCsmTimer(
+    chip: OPNCh3Chip,
+    instance: number,
+    data: number,
+    currentTime: number,
+    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+  ): void {
+    const timer = this.opnCsmTimer(chip, instance);
+    const wasActive = timer.isRunning && timer.isCSMEnabled;
+    timer.isRunning = (data & 0x01) !== 0;
+    timer.isCSMEnabled = (data & 0xC0) === 0x80;
+    const isActive = timer.isRunning && timer.isCSMEnabled;
+
+    if (!isActive) {
+      if (timer.nextRelease !== undefined) this.emitOPNCsmPulse(chip, instance, false, currentTime, activeNotes);
+      timer.nextOverflow = undefined;
+      timer.nextRelease = undefined;
+      return;
+    }
+    if (!wasActive) {
+      timer.nextOverflow = currentTime + this.opnCsmPeriodSamples(chip, timer);
+      timer.nextRelease = undefined;
+      timer.lastEmittedTick = undefined;
+    }
+  }
+
+  /** OPM Timer Aの値をCSM schedulerへ反映する。 */
+  private updateOPMCsmTimerRegister(instance: number, register: number, data: number): void {
+    const timer = this.opmCsmTimer(instance);
+    if (register === 0x10) timer.timerHigh = data;
+    else timer.timerLow = data & 0x03;
+  }
+
+  /** OPM $14のCSM有効状態とTimer Aの開始状態を更新する。 */
+  private updateOPMCsmTimer(
+    instance: number,
+    data: number,
+    currentTime: number,
+    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+  ): void {
+    const timer = this.opmCsmTimer(instance);
+    const wasActive = timer.isRunning && timer.isCSMEnabled;
+    timer.isRunning = (data & 0x01) !== 0;
+    timer.isCSMEnabled = (data & 0x80) !== 0;
+    const isActive = timer.isRunning && timer.isCSMEnabled;
+
+    if (!isActive) {
+      if (timer.nextRelease !== undefined) this.emitOPMCsmPulse(instance, false, currentTime, activeNotes);
+      timer.nextOverflow = undefined;
+      timer.nextRelease = undefined;
+      return;
+    }
+    if (!wasActive) {
+      timer.nextOverflow = currentTime + this.opmCsmPeriodSamples(timer);
+      timer.nextRelease = undefined;
+      timer.lastEmittedTick = undefined;
+    }
+  }
+
+  /** すべての動作中CSM Timer Aをwait区間内で進める。 */
+  private advanceCSMTimers(
+    startTime: number,
+    targetTime: number,
+    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+  ): void {
+    if (targetTime <= startTime) return;
+    for (const [key, timer] of this.opnCsmTimers) {
+      if (!timer.isRunning || !timer.isCSMEnabled) continue;
+      const [chip, instanceText] = key.split(':');
+      const chipInstance = Number(instanceText);
+      this.withChipInstance(chip, chipInstance, () => {
+        this.advanceCSMTimer(
+          timer,
+          targetTime,
+          this.opnCsmPeriodSamples(chip as OPNCh3Chip, timer),
+          time => this.emitOPNCsmPulse(chip as OPNCh3Chip, chipInstance, true, time, activeNotes),
+          time => this.emitOPNCsmPulse(chip as OPNCh3Chip, chipInstance, false, time, activeNotes)
+        );
+      });
+    }
+    for (const [instance, timer] of this.opmCsmTimers) {
+      if (!timer.isRunning || !timer.isCSMEnabled) continue;
+      this.withChipInstance('YM2151', instance, () => {
+        this.advanceCSMTimer(
+          timer,
+          targetTime,
+          this.opmCsmPeriodSamples(timer),
+          time => this.emitOPMCsmPulse(instance, true, time, activeNotes),
+          time => this.emitOPMCsmPulse(instance, false, time, activeNotes)
+        );
+      });
+    }
+  }
+
+  /** Timer AのoverflowとMIDI pulse終了を時刻順に処理する。 */
+  private advanceCSMTimer(
+    timer: CSMTimerState,
+    targetTime: number,
+    periodSamples: number,
+    emitAttack: (time: number) => void,
+    emitRelease: (time: number) => void
+  ): void {
+    while (true) {
+      const nextOverflow = timer.nextOverflow ?? Infinity;
+      const nextRelease = timer.nextRelease ?? Infinity;
+      const nextEvent = Math.min(nextOverflow, nextRelease);
+      if (nextEvent > targetTime) return;
+
+      if (nextRelease <= nextOverflow) {
+        emitRelease(nextRelease);
+        timer.nextRelease = undefined;
+        continue;
+      }
+
+      timer.nextOverflow = nextOverflow + periodSamples;
+      const currentTick = this.samplesToTicks(nextOverflow, this.options.tempo!);
+      if (timer.lastEmittedTick === currentTick) continue;
+      if (timer.nextRelease !== undefined) emitRelease(nextOverflow);
+      emitAttack(nextOverflow);
+      timer.lastEmittedTick = currentTick;
+      timer.nextRelease = nextOverflow + this.csmPulseSamples();
+    }
+  }
+
+  /** OPN CSMを既存のCh3 Special出力形式へ変換する。 */
+  private emitOPNCsmPulse(
+    chip: OPNCh3Chip,
+    instance: number,
+    isKeyOn: boolean,
+    currentTime: number,
+    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+  ): void {
+    const context = this.opnCh3Context(chip, instance);
+    this.handleOPNCh3SpecialKeyWrite(
+      context,
+      isKeyOn ? 0xF2 : 0x02,
+      currentTime,
+      activeNotes,
+      true
+    );
+  }
+
+  /** OPM CSMを各チャンネルの短いMIDIアタックとして出力する。 */
+  private emitOPMCsmPulse(
+    instance: number,
+    isKeyOn: boolean,
+    currentTime: number,
+    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+  ): void {
+    const timer = this.opmCsmTimer(instance);
+    timer.manualKeyOnMasks ??= new Array(8).fill(0);
+    for (let channel = 0; channel < 8; channel++) {
+      const key = `ym2151_${channel}`;
+      const state = this.channels.get(key)!;
+      state.keyOnMask = timer.manualKeyOnMasks[channel] | (isKeyOn ? 0x0F : 0);
+      this.syncYM2151ToneState(channel, false, currentTime, activeNotes);
+      if (channel === 7) this.syncYM2151NoiseState(false, currentTime, activeNotes);
+    }
+  }
+
+  /** OPN/OPMが共通で使う1 MIDI tick分のCSM pulse長をsampleへ換算する。 */
+  private csmPulseSamples(): number {
+    return Math.max(1, (CSM_MIDI_PULSE_TICKS * 60 * this.sampleRate) / (this.options.tempo! * MIDI_PPQ));
+  }
+
+  /** OPN Timer Aの1周期をVGM sampleへ換算する。 */
+  private opnCsmPeriodSamples(chip: OPNCh3Chip, timer: CSMTimerState): number {
+    const clock = this.opnClockRate(chip);
+    const count = (timer.timerHigh << 2) | timer.timerLow;
+    return Math.max(1, (72 * (1024 - count) * this.sampleRate) / clock);
+  }
+
+  /** OPM Timer Aの1周期をVGM sampleへ換算する。 */
+  private opmCsmPeriodSamples(timer: CSMTimerState): number {
+    const clock = (this.vgmData.header.ym2151Clock & CLOCK_MASK) || 3579545;
+    const count = (timer.timerHigh << 2) | timer.timerLow;
+    return Math.max(1, (64 * (1024 - count) * this.sampleRate) / clock);
+  }
+
+  /** OPN各機種のヘッダーclockを取得する。 */
+  private opnClockRate(chip: OPNCh3Chip): number {
+    const clock = chip === 'YM2612'
+      ? this.vgmData.header.ym2612Clock
+      : chip === 'YM2203'
+        ? this.vgmData.header.ym2203Clock
+        : this.vgmData.header.ym2608Clock;
+    return (clock & CLOCK_MASK) || 7670453;
+  }
+
+  /** OPNチップインスタンスのCSM状態を初期化して返す。 */
+  private opnCsmTimer(chip: OPNCh3Chip, instance: number): CSMTimerState {
+    const key = `${chip}:${instance}`;
+    const current = this.opnCsmTimers.get(key);
+    if (current) return current;
+    const timer: CSMTimerState = { timerHigh: 0, timerLow: 0, isRunning: false, isCSMEnabled: false };
+    this.opnCsmTimers.set(key, timer);
+    return timer;
+  }
+
+  /** OPMチップインスタンスのCSM状態を初期化して返す。 */
+  private opmCsmTimer(instance: number): CSMTimerState {
+    const current = this.opmCsmTimers.get(instance);
+    if (current) return current;
+    const timer: CSMTimerState = { timerHigh: 0, timerLow: 0, isRunning: false, isCSMEnabled: false };
+    this.opmCsmTimers.set(instance, timer);
+    return timer;
   }
 
   private handleOPNCh3SpecialKeyWrite(
     context: OPNCh3Context,
     data: number,
     currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
+    isCSMEvent = false
   ): void {
+    const timer = this.opnCsmTimer(context.chip, context.instance);
+    const rawMask = (data >> 4) & 0x0F;
+    if (!isCSMEvent) timer.manualKeyOnMask = rawMask;
+    const manualMask = timer.manualKeyOnMask ?? 0;
+    const csmMask = isCSMEvent ? rawMask : timer.nextRelease === undefined ? 0 : 0x0F;
+    const effectiveData = (data & 0x0F) | ((manualMask | csmMask) << 4);
     if (this.options.opnCh3SpecialPercussion) {
-      this.handleOPNCh3SpecialPercussion(context, data, currentTime, activeNotes);
+      this.handleOPNCh3SpecialPercussion(context, effectiveData, currentTime, activeNotes);
       return;
     }
-    this.handleOPNCh3SpecialOperators(context, data, currentTime, activeNotes);
+    this.handleOPNCh3SpecialOperators(context, effectiveData, currentTime, activeNotes);
   }
 
   private handleOPNCh3SpecialOperators(
@@ -2374,6 +2633,11 @@ export class MidiConverter {
     }
     if (reg === 0x27) {
       this.handleOPNCh3ModeWrite(ch3Context, data, currentTime, activeNotes);
+      this.updateOPNCsmTimer('YM2203', instance, data, currentTime, activeNotes);
+      return;
+    }
+    if (reg === 0x24 || reg === 0x25) {
+      this.updateOPNCsmTimerRegister('YM2203', instance, reg, data);
       return;
     }
     if (this.handleOPNTimbreWrite(keyPrefix, 0, reg, data, currentTime)) return;
@@ -2539,6 +2803,11 @@ export class MidiConverter {
     }
     if (port === 0 && reg === 0x27) {
       this.handleOPNCh3ModeWrite(ch3Context, data, currentTime, activeNotes);
+      this.updateOPNCsmTimer('YM2608', instance, data, currentTime, activeNotes);
+      return;
+    }
+    if (port === 0 && (reg === 0x24 || reg === 0x25)) {
+      this.updateOPNCsmTimerRegister('YM2608', instance, reg, data);
       return;
     }
     if (this.handleOPNTimbreWrite(keyPrefix, port, reg, data, currentTime)) return;
@@ -2998,6 +3267,16 @@ export class MidiConverter {
     const reg = cmd.register;
     const data = cmd.data;
 
+    if (reg === 0x10 || reg === 0x11) {
+      this.updateOPMCsmTimerRegister(cmd.instance ?? 0, reg, data);
+      return;
+    }
+
+    if (reg === 0x14) {
+      this.updateOPMCsmTimer(cmd.instance ?? 0, data, currentTime, activeNotes);
+      return;
+    }
+
     // $20-$27: RL pan bits plus algorithm/feedback. OPM stores each channel's
     // pan in the same register, so emit a portable CC10 state change.
     if (reg >= 0x20 && reg <= 0x27) {
@@ -3052,7 +3331,11 @@ export class MidiConverter {
       const channel = data & 0x07;
       const key = `ym2151_${channel}`;
       const state = this.channels.get(key)!;
-      state.keyOnMask = (data >> 3) & 0x0F;
+      const timer = this.opmCsmTimer(cmd.instance ?? 0);
+      timer.manualKeyOnMasks ??= new Array(8).fill(0);
+      timer.manualKeyOnMasks[channel] = (data >> 3) & 0x0F;
+      const csmMask = timer.nextRelease === undefined ? 0 : 0x0F;
+      state.keyOnMask = timer.manualKeyOnMasks[channel] | csmMask;
 
       // A repeated key-on retriggers the YM2151 envelope, so mirror that onset in MIDI.
       this.syncYM2151ToneState(channel, true, currentTime, activeNotes);

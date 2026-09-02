@@ -397,10 +397,11 @@ per-operator phase generation in
 [Nuked-OPN2's `ym3438.c`](https://github.com/nukeykt/Nuked-OPN2/blob/master/ym3438.c),
 a cycle-accurate YM3438/YM2612 emulator — the most authoritative available
 reference short of the Yamaha datasheet itself). CSM (mode `10`, automatic
-Timer-A-driven key-on for speech-formant synthesis) is not modeled; per-
-operator frequency is keyed only from ordinary `$28` writes like every other
-channel, which is sufficient for game music (CSM is essentially never used
-outside speech-synthesis demos).
+Timer-A-driven key-on for speech-formant synthesis) is scheduled from Timer A
+in the VGM sample timeline. Each overflow is emitted through the same Ch3
+Special path as a one-MIDI-tick pulse. Repeated overflows that quantize to one
+MIDI tick are coalesced, because a MIDI file cannot represent the hardware's
+instantaneous key-on/key-off pair faithfully.
 
 In special mode, operators 1-3 read their own frequency/block from
 `$A8-$AA` (LSB) and `$AC-$AE` (MSB/block) — the same bit layout as the
@@ -1371,9 +1372,11 @@ the converter.
   reproduction-fidelity pass" below), but YM2151's own TL registers
   (`$60-$7F`) are not read yet, so its FM tracks still use a fixed neutral
   velocity.
-- Timer-A-driven CSM automatic key-on for YM2203/YM2608/YM2612. Their channel 3
-  Special per-operator frequencies and ordinary `$28` key masks are converted
-  as described above, but mode `10` does not synthesize Timer-A key events.
+- Timer-A-driven CSM automatic key-on has register-command-level tests for
+  YM2203/YM2608/YM2612 and YM2151. The OPN implementation shares the Ch3
+  Special output path, while the OPM implementation attacks all configured
+  channels. It deliberately emits one-tick MIDI pulses and coalesces repeated
+  overflows inside one MIDI tick.
 - YM2413 per-operator Multiple (instrument-dependent pitch scaling) and a
   `$20`-before-`$10` key-on write order — see "Added: YM2413 (OPLL) FM and
   rhythm conversion" above; note conversion itself is now implemented.
