@@ -28,6 +28,7 @@ VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイ�
 - YM2203／YM2608／YM2612チャンネル3のスペシャルモードを、既定では編集可能な4本のオペレータ別ピッチトラックへ変換。`--ch3-special-percussion`指定時は、FM複合音の各アタックをGMのBass Drum、Snare、Hi-Hat、Crash、または音程別Tomの1打へ畳み込み
 - YM2612の旋律チャンネル6をMIDIチャンネル14へ割り当て、General MIDIで予約されたパーカッション用チャンネル10との衝突を回避
 - YM2612 DAC、YM2608 ADPCM-B、SegaPCM、C140の異なるサンプルIDごとに独立したGMパーカッショントラックへ変換し、最初の47種類へ初出順でノート35〜81を割り当てる。GMノート範囲が循環した後も、`--track-metadata`は循環しないサンプルID、割当先GMノート、開始／停止境界を保持する
+- 対応するVGM data blockがある場合、`--track-metadata`はYM2612 DAC、MSM6258、YM2608 ADPCM-BのROMモード、SegaPCM、C140のトリガーをbank/blockとoffsetへ関連付ける。ROM参照には宣言されたROM size、ロード開始アドレス、payload長を含めるが、サンプル音声はデコードしない
 - 発音中のYM2203/YM2608/YM2612アルゴリズム経路に、明示的に書き込まれた明確な2の累乗の共通オペレータ倍率がある場合、`MULTI=0`の実効0.5倍を含めてノートをオクターブ単位で補正。補正値はキーオン時に固定するため、キーオフ直前の音色設定による瞬間的な余分なノートを防止
 - SN76489およびAY/YM2149のクロック分周・periodフラグを反映し、チップ種別・dual-chipビットをクロック値から除外。dual AY8910/HuC6280は別々のMIDIトラックへ変換
 - HuC6280の分割周波数レジスタ書き込みは最大1フレーム（50 Hz）までを結合し、それより後の無関係な書き込みとは分離
@@ -40,7 +41,7 @@ VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイ�
 - MIDI音符を生成できない場合は成功扱いや出力の上書きをせず、14バイトの空MIDIヘッダーを作る代わりにエラー終了
 - `--noise-wav FILE`でSN76489/HuC6280ノイズを16bit・44.1kHz・ステレオの独立したLFSRステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-noise-midi`を追加可能
 - `--dac-wav FILE`で実際のYM2612 DAC/PCMサンプル音声（メガドライブのドラムチャンネル）を16bit・44.1kHz・ステレオの独立したステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-dac-midi`を追加可能
-- `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。FMトラックには最初のノート時点の音源モデル、アルゴリズム、carrier、オペレータレベル、倍率、キーオンマスク、GM音色候補を出力する。YM2413は選択patchから初期候補を選ぶ。`fmEvents`には発音中のpatch/user patch変更に加え、OPN/OPM/OPLのアルゴリズム、オペレータMULTIPLE、Total Level変更を記録する。OPN Ch3 SpecialトラックにはSpecialまたはSpecial+CSM状態も記録する。PCMトラックには音源固有のサンプルID、割当先GMノート、開始／停止境界とMSM6258のループ境界を出力する。data blockを参照するYM2612 DACとMSM6258は、VGM data block内の範囲も記録する。MSM6258開始イベントには要求byte長と、解決できる場合の再生予定長を記録する。既存のチャンネル対応を使う`miditrack`との互換性は維持する
+- `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。FMトラックには最初のノート時点の音源モデル、アルゴリズム、carrier、オペレータレベル、倍率、キーオンマスク、GM音色候補を出力する。YM2413は選択patchから初期候補を選ぶ。`fmEvents`には発音中のpatch/user patch変更に加え、OPN/OPM/OPLのアルゴリズム、オペレータMULTIPLE、Total Level変更を記録する。OPN Ch3 SpecialトラックにはSpecialまたはSpecial+CSM状態も記録する。PCMトラックには音源固有のサンプルID、割当先GMノート、開始／停止境界とMSM6258のループ境界を出力する。YM2612 DAC、MSM6258、YM2608 ADPCM-BのROMモード、SegaPCM、C140は、該当するVGM data blockの範囲も記録する。ROM参照には物理サンプルアドレス、宣言されたROM size、blockのロード開始アドレス、payload長を含める。MSM6258開始イベントには要求byte長と、解決できる場合の再生予定長を記録する。既存のチャンネル対応を使う`miditrack`との互換性は維持する
 
 ## インストール
 

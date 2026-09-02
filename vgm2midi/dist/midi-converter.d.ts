@@ -313,6 +313,8 @@ export declare class MidiConverter {
     private resolveStreamBankOffset;
     /** data bank内の連結offsetを、sidecar用のblock/offset情報へ変換する。 */
     private pcmDataBlockForRange;
+    /** ROM data blockの実データ範囲から、物理サンプルアドレスをsidecar情報へ解決する。 */
+    private pcmROMDataBlockForAddress;
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
     private streamBankSize;
     /** setup先のVGM command/data幅から、stream一回のwriteに必要なbyte数を得る。 */

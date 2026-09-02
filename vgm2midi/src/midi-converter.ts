@@ -372,12 +372,18 @@ interface PCMDataBlockMetadata {
   bankType: number;
   bankInstance: number;
   blockId: number;
-  /** 同じbank type/instance内で連結したときの先頭offset。 */
+  /** stream bankでは連結先頭offset、ROMでは物理サンプルアドレス。 */
   bankOffset: number;
   /** block内の先頭offset。 */
   blockOffset: number;
   /** stream開始時に要求されたbyte数。長さを解決できない場合は省略する。 */
   lengthBytes?: number;
+  /** ROM data blockが示すチップ側ROM全体のsize。 */
+  romSizeBytes?: number;
+  /** このROM data blockがロードするチップ側の先頭アドレス。 */
+  romStartAddress?: number;
+  /** ROM data block内の実データ部のsize。8 byteのROM headerは含まない。 */
+  romDataLengthBytes?: number;
 }
 
 interface PCMTrackMetadata {
@@ -3193,11 +3199,19 @@ export class MidiConverter {
 
     this.stopYM2608ADPCMBVoice(instance, currentTime);
     const address = registers[0x02] | (registers[0x03] << 8);
+    const endAddress = registers[0x04] | (registers[0x05] << 8);
+    // ADPCM-B's ROM start/end registers address 32-byte units.  RAM mode has
+    // no VGM ROM data-block equivalent, so preserve the trigger without a link.
+    const isROMMode = (registers[0x01] & 0x01) !== 0;
+    const dataLengthBytes = endAddress >= address ? (endAddress - address + 1) << 5 : undefined;
+    const dataBlock = isROMMode
+      ? this.pcmROMDataBlockForAddress(0x81, instance, address << 5, dataLengthBytes)
+      : undefined;
     const sampleId = address.toString(16).padStart(4, '0');
     const trackKey = `ym2608_${instance}_adpcmb_sample_${sampleId}`;
     const note = this.pcmNoteForSample(trackKey);
     const velocity = Math.max(1, Math.round((registers[0x0B] / 255) * 100));
-    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime);
+    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, false, dataBlock);
     this.ym2608ADPCMActiveVoices[instance] = { descriptorId, note };
   }
 
@@ -3744,13 +3758,14 @@ export class MidiConverter {
     if ((data & 0x01) !== 0) {
       this.stopPCMVoice(this.segaPCMActiveVoices, channel, currentTime);
     } else {
-      this.triggerSegaPCMVoice(channel, data, currentTime);
+      this.triggerSegaPCMVoice(channel, data, cmd.instance ?? 0, currentTime);
     }
   }
 
   private triggerSegaPCMVoice(
     channel: number,
     control: number,
+    instance: number,
     currentTime: number
   ): void {
     this.stopPCMVoice(this.segaPCMActiveVoices, channel, currentTime);
@@ -3767,7 +3782,8 @@ export class MidiConverter {
     const note = this.pcmNoteForSample(trackKey);
     const total = left + right;
     this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
-    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime);
+    const dataBlock = this.pcmROMDataBlockForAddress(0x80, instance, address);
+    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, false, dataBlock);
     this.segaPCMActiveVoices[channel] = { descriptorId, note };
   }
 
@@ -3784,12 +3800,13 @@ export class MidiConverter {
     const channel = register >> 4;
     const isActive = this.c140ActiveVoices[channel] !== undefined;
     const shouldTrigger = (data & 0x80) !== 0 || ((data & 0x40) !== 0 && isActive);
-    if (shouldTrigger) this.triggerC140Voice(channel, currentTime);
+    if (shouldTrigger) this.triggerC140Voice(channel, cmd.instance ?? 0, currentTime);
     else this.stopPCMVoice(this.c140ActiveVoices, channel, currentTime);
   }
 
   private triggerC140Voice(
     channel: number,
+    instance: number,
     currentTime: number
   ): void {
     this.stopPCMVoice(this.c140ActiveVoices, channel, currentTime);
@@ -3807,7 +3824,8 @@ export class MidiConverter {
     const note = this.pcmNoteForSample(trackKey);
     const total = left + right;
     this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
-    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime);
+    const dataBlock = this.pcmROMDataBlockForAddress(0x8D, instance, (bank << 16) | start);
+    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, false, dataBlock);
     this.c140ActiveVoices[channel] = { descriptorId, note };
   }
 
@@ -4844,6 +4862,39 @@ export class MidiConverter {
         };
       }
       offset += block.size;
+    }
+    return undefined;
+  }
+
+  /** ROM data blockの実データ範囲から、物理サンプルアドレスをsidecar情報へ解決する。 */
+  private pcmROMDataBlockForAddress(
+    bankType: number,
+    bankInstance: number,
+    romAddress: number,
+    lengthBytes?: number
+  ): PCMDataBlockMetadata | undefined {
+    if (romAddress < 0) return undefined;
+    const blocks = (this.vgmData.dataBlocks ?? [])
+      .filter(block => block.type === bankType && (block.instance ?? 0) === bankInstance)
+      .sort((left, right) => left.blockId - right.blockId);
+    for (const block of blocks) {
+      // VGM ROM blocks begin with the full ROM size and the block's load address.
+      if (block.payload.length < 8) continue;
+      const romSizeBytes = block.payload.readUInt32LE(0);
+      const romStartAddress = block.payload.readUInt32LE(4);
+      const romDataLengthBytes = block.payload.length - 8;
+      if (romAddress < romStartAddress || romAddress >= romStartAddress + romDataLengthBytes) continue;
+      return {
+        bankType,
+        bankInstance,
+        blockId: block.blockId,
+        bankOffset: romAddress,
+        blockOffset: romAddress - romStartAddress,
+        ...(lengthBytes === undefined ? {} : { lengthBytes }),
+        romSizeBytes,
+        romStartAddress,
+        romDataLengthBytes,
+      };
     }
     return undefined;
   }

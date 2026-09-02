@@ -3764,6 +3764,74 @@ test('YM2612 DAC sidecar resolves a seek address to its VGM PCM data block', () 
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-rom-bank-metadata-test-'));
+  const metadataPath = path.join(tempDirectory, 'rom.libvgm.json');
+  const createROMBlock = (type, blockId, romSize, romStartAddress, dataLength) => {
+    const payload = Buffer.alloc(8 + dataLength);
+    payload.writeUInt32LE(romSize, 0);
+    payload.writeUInt32LE(romStartAddress, 4);
+    return { type, blockId, size: payload.length, payload };
+  };
+  const converter = new MidiConverter({
+    header: createHeader({ ym2608Clock: 7987200, segaPCMClock: 4000000, c140Clock: 2139000, ym2151Clock: 0 }),
+    commands: [
+      // YM2608 ADPCM-B: ROM mode, start=0x0002/end=0x0003 in 32-byte units.
+      { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x01, data: 0x01 },
+      { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x02, data: 0x02 },
+      { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x03, data: 0x00 },
+      { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x04, data: 0x03 },
+      { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x05, data: 0x00 },
+      { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x00, data: 0x80 },
+      // SegaPCM reads a 24-bit ROM address.  The second block must be selected.
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x02 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x00 },
+      // C140 samples use bank:16-bit start.  A second trigger has no matching block.
+      { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x01 },
+      { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
+      { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x20 },
+      { type: 'chip_write', chip: 'C140', register: 0x05, data: 0x80 },
+      { type: 'chip_write', chip: 'C140', register: 0x14, data: 0x02 },
+      { type: 'chip_write', chip: 'C140', register: 0x16, data: 0x00 },
+      { type: 'chip_write', chip: 'C140', register: 0x17, data: 0x00 },
+      { type: 'chip_write', chip: 'C140', register: 0x15, data: 0x80 },
+      { type: 'end' },
+    ],
+    dataBlocks: [
+      createROMBlock(0x81, 0, 0x400, 0x40, 0x100),
+      createROMBlock(0x80, 0, 0x40000, 0x10000, 0x20),
+      createROMBlock(0x80, 1, 0x40000, 0x20000, 0x80),
+      createROMBlock(0x8D, 0, 0x40000, 0x10000, 0x80),
+    ],
+  });
+
+  converter.convert();
+  converter.exportTrackMetadata(metadataPath, 0);
+  const pcmTracks = JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks
+    .filter(track => track.pcm);
+  const ym2608 = pcmTracks.find(track => track.pcm.source === 'ym2608-adpcm-b');
+  const segaPCM = pcmTracks.find(track => track.pcm.source === 'segapcm');
+  const c140 = pcmTracks.find(track => track.pcm.source === 'c140' && track.pcm.sampleId === '010020');
+  const unmatchedC140 = pcmTracks.find(track => track.pcm.source === 'c140' && track.pcm.sampleId === '020000');
+
+  assert.deepEqual(ym2608.pcm.dataBlock, {
+    bankType: 0x81, bankInstance: 0, blockId: 0, bankOffset: 0x40, blockOffset: 0,
+    lengthBytes: 0x40, romSizeBytes: 0x400, romStartAddress: 0x40, romDataLengthBytes: 0x100,
+  });
+  assert.equal(ym2608.pcm.events[0].dataLengthBytes, 0x40);
+  assert.deepEqual(segaPCM.pcm.dataBlock, {
+    bankType: 0x80, bankInstance: 0, blockId: 1, bankOffset: 0x20000, blockOffset: 0,
+    romSizeBytes: 0x40000, romStartAddress: 0x20000, romDataLengthBytes: 0x80,
+  });
+  assert.deepEqual(c140.pcm.dataBlock, {
+    bankType: 0x8D, bankInstance: 0, blockId: 0, bankOffset: 0x10020, blockOffset: 0x20,
+    romSizeBytes: 0x40000, romStartAddress: 0x10000, romDataLengthBytes: 0x80,
+  });
+  assert.equal(unmatchedC140.pcm.dataBlock, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('MSM6258 0x93 length modes convert commands, milliseconds, end-of-bank and raw bytes to duration', () => {
   const bank = [{ type: 4, blockId: 0, size: 40, payload: Buffer.alloc(40) }];
   const cases = [

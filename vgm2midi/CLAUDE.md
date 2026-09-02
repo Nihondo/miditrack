@@ -208,10 +208,12 @@ Port-1 ADPCM-B registers `$00-$10` are interpreted as sample triggers rather
 than decoded audio. An execute write (`$00` bit 7) uses `$02/$03` start address
 as stable sample identity; repeating execute retriggers it, and reset/execute
 clear, a subsequent start, or conversion end closes the MIDI note. Register
-`$0B` drives velocity/expression. Delta-N (`$09/$0A`), end address, repeat mode,
-and real sample duration are retained only as raw register state or ignored,
-because faithfully reconstructing them requires the external ADPCM data and a
-decoder rather than register-level note inference.
+`$0B` drives velocity/expression. In ROM mode (`$01` bit 0), `$02/$03` and
+`$04/$05` are 32-byte start/end units, so a matching VGM type `$81` ROM block
+is recorded in the sidecar with its physical source address and requested byte
+range. RAM mode has no equivalent VGM ROM-block reference. Delta-N (`$09/$0A`),
+repeat mode, real sample duration, and ADPCM decoding remain outside the
+register-level note inference.
 
 Like YM2203, channel 3 Special mode uses the shared OPN implementation described
 below. Only port 0 owns `$27`, `$28`, and the Special frequency registers;
