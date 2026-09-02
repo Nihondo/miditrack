@@ -3927,6 +3927,49 @@ test('C140 and C219 sidecars estimate only finite playback duration from frequen
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('SegaPCM sidecars estimate finite duration across the 24-bit end-page wrap', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-segapcm-duration-test-'));
+  const metadataPath = path.join(tempDirectory, 'segapcm.libvgm.json');
+  const converter = new MidiConverter({
+    header: createHeader({ segaPCMClock: 4000000, ym2151Clock: 0 }),
+    commands: [
+      // Current address 0xfe0000 and end page 0x00 finish after the 24-bit wrap.
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x06, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x07, data: 0x80 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0xFE },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x02 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x00 },
+      { type: 'end' },
+    ],
+  });
+
+  converter.convert();
+  converter.exportTrackMetadata(metadataPath, 0);
+  const event = JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm.events[0];
+  const expectedDuration = Math.round((0x30000 * 44100 * 128) / (0x80 * 4000000));
+  assert.equal(event.durationSamples, expectedDuration);
+  assert.equal(event.endAddressExclusive, 0x100);
+
+  const loopConverter = new MidiConverter({
+    header: createHeader({ segaPCMClock: 4000000, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x06, data: 0x01 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x07, data: 0x80 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x00 },
+      { type: 'end' },
+    ],
+  });
+  loopConverter.convert();
+  const loopMetadataPath = path.join(tempDirectory, 'segapcm-loop.libvgm.json');
+  loopConverter.exportTrackMetadata(loopMetadataPath, 0);
+  const loopEvent = JSON.parse(fs.readFileSync(loopMetadataPath, 'utf8')).tracks.find(track => track.pcm).pcm.events[0];
+  assert.equal(loopEvent.durationSamples, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('MSM6258 0x93 length modes convert commands, milliseconds, end-of-bank and raw bytes to duration', () => {
   const bank = [{ type: 4, blockId: 0, size: 40, payload: Buffer.alloc(40) }];
   const cases = [

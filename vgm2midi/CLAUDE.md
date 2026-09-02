@@ -853,6 +853,17 @@ FM notes:
   remain stable identity labels within the file, not semantic GM instrument
   claims.
 
+For a non-looping SegaPCM voice, `segaPCMDurationSamples()` adds the same
+sidecar-only `durationSamples` field. SegaPCM advances its 16.8 current address
+by the `$07` frequency each audio tick. The standard 16-voice 315-5218 output
+rate is `clock / 128`, so calculate the modular 24-bit distance to the page
+after `$06` and convert it to the VGM 44.1 kHz time base. The page comparison
+wraps from `0xFF` to `0x00`, so retain that wrap in the distance calculation.
+Do not estimate looped voices, a zero frequency, an empty range, or a missing
+clock. The header interface register can describe board-specific arrangements;
+the converter's existing 16-voice model is the supported duration model.
+Never schedule MIDI Note Off from this estimate.
+
 For a finite C140/C219 range, `c140DurationSamples()` adds a sidecar-only
 `durationSamples` estimate. It follows VGMPlay's 16.16 position accumulator:
 the frequency registers advance by `frequency * baseRate * 2 / 65536` ROM

@@ -64,6 +64,9 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
 - For non-looping C140/C219 triggers with a valid range and frequency,
   `--track-metadata` records an estimated `durationSamples`. It is sidecar-only,
   never an automatic MIDI Note Off; C219 noise mode has no finite estimate
+- Non-looping SegaPCM triggers likewise record an estimated `durationSamples`
+  from their 16.8 address, end page, frequency, and the standard 16-voice clock
+  divider. This is sidecar-only; looped triggers have no finite estimate
 - Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
   an explicitly written, unambiguous power-of-two operator multiplier, including
   `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch

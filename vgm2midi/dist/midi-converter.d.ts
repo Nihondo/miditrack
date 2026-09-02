@@ -244,6 +244,8 @@ export declare class MidiConverter {
     private updateHuC6280Pan;
     private handleSegaPCMWrite;
     private triggerSegaPCMVoice;
+    /** SegaPCMの非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
+    private segaPCMDurationSamples;
     private handleC140Write;
     private triggerC140Voice;
     /** C140/C219の非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */

@@ -3797,6 +3797,9 @@ export class MidiConverter {
     // names the final 256-byte page, therefore the useful end is exclusive.
     const endAddressExclusive = (this.segaPCMRegisters[base + 0x06] + 1) << 8;
     const isLoop = (control & 0x02) === 0;
+    const durationSamples = isLoop
+      ? undefined
+      : this.segaPCMDurationSamples(address, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07]);
     const loopAddress = this.segaPCMRegisters[base + 0x04]
       | (this.segaPCMRegisters[base + 0x05] << 8);
     const descriptorId = this.noteOnPCMPercussion(
@@ -3806,10 +3809,22 @@ export class MidiConverter {
       currentTime,
       isLoop,
       dataBlock,
-      undefined,
+      durationSamples,
       { endAddressExclusive, ...(isLoop ? { loopAddress } : {}) }
     );
     this.segaPCMActiveVoices[channel] = { descriptorId, note };
+  }
+
+  /** SegaPCMの非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
+  private segaPCMDurationSamples(address: number, endPage: number, frequency: number): number | undefined {
+    if (frequency === 0) return undefined;
+    const clock = this.vgmData.header.segaPCMClock & CLOCK_MASK;
+    if (clock === 0) return undefined;
+    // The 315-5218's 16 voices advance their 16.8 address at clock / 128.
+    const endAddress = ((endPage + 1) & 0xFF) << 16;
+    const distance = (endAddress - address + 0x1000000) & 0xFFFFFF;
+    if (distance === 0) return undefined;
+    return Math.round((distance * this.sampleRate * 128) / (frequency * clock));
   }
 
   private handleC140Write(
