@@ -781,7 +781,7 @@ class MidiConverter {
         const instance = this.activeChipInstance?.chip === chip
             ? this.activeChipInstance.instance : embeddedInstance ?? 0;
         const section = sourceKey.includes('_noise_') ? 'noise'
-            : sourceKey.includes('_sample_') || sourceKey.includes('_dac_') || sourceKey.includes('_adpcmb_') ? 'pcm'
+            : sourceKey.includes('_sample_') || sourceKey.includes('_dac_') || sourceKey.includes('_adpcmb_') || sourceKey === 'ym2612dac_direct_stream' ? 'pcm'
                 : sourceKey.includes('_rhythm_') ? 'rhythm'
                     : sourceKey.includes('_ch3sp_') ? 'ch3-special'
                         : sourceKey.includes('_ch3perc_') ? 'ch3-percussion'
@@ -854,6 +854,33 @@ class MidiConverter {
             ...(state.ym2413Instrument === undefined ? {} : { ym2413Instrument: state.ym2413Instrument }),
             ...(specialMatch ? { specialOperator: Number(specialMatch[1]) } : {}),
         };
+    }
+    /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
+    pcmMetadataForTrack(state) {
+        if (state.pcmEvents === undefined)
+            return undefined;
+        const sourceKey = state.descriptor.sourceKey;
+        const gmNote = this.pcmSampleNotes.get(sourceKey);
+        const events = state.pcmEvents.map(event => ({ ...event }));
+        if (sourceKey.startsWith('ym2612dac_sample_')) {
+            return { source: 'ym2612-dac', sampleId: sourceKey.slice('ym2612dac_sample_'.length), gmNote, events };
+        }
+        if (sourceKey === 'ym2612dac_direct_stream') {
+            return { source: 'ym2612-dac-direct', sampleId: 'direct-stream', gmNote, events };
+        }
+        const adpcmMatch = /^ym2608_\d+_adpcmb_sample_(.+)$/.exec(sourceKey);
+        if (adpcmMatch)
+            return { source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events };
+        if (sourceKey.startsWith('segapcm_sample_')) {
+            return { source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events };
+        }
+        if (sourceKey.startsWith('c140_sample_')) {
+            return { source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events };
+        }
+        if (sourceKey.startsWith('msm6258_sample_')) {
+            return { source: 'msm6258', sampleId: sourceKey.slice('msm6258_sample_'.length), gmNote, events };
+        }
+        return undefined;
     }
     getTrack(key) {
         const descriptor = this.resolveDescriptor(key);
@@ -3860,7 +3887,7 @@ class MidiConverter {
                 const identity = this.streamIdentity(stream, range);
                 const key = `msm6258_sample_${identity}`;
                 const note = this.pcmNoteForSample(key);
-                const descriptorId = this.noteOnPCMPercussion(key, note, 80, currentTime);
+                const descriptorId = this.noteOnPCMPercussion(key, note, 80, currentTime, range.isLoop);
                 stream.voice = { descriptorId, note };
                 if (!range.isLoop && range.durationSamples !== undefined) {
                     // Do not emit the Note Off yet.  A later $94 or a restart can occur before
@@ -4080,9 +4107,15 @@ class MidiConverter {
         return false;
     }
     // --- Common Note Helpers ---
-    noteOnPCMPercussion(key, pitch, velocity, currentTime) {
+    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
+        trackState.pcmEvents ?? (trackState.pcmEvents = []);
+        trackState.pcmEvents.push({
+            type: 'start',
+            sampleTime: currentTime,
+            ...(isLoop ? { isLoop: true } : {}),
+        });
         const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.NoteOnEvent({
@@ -4100,6 +4133,8 @@ class MidiConverter {
     noteOffPCMPercussion(key, pitch, currentTime) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
+        trackState.pcmEvents ?? (trackState.pcmEvents = []);
+        trackState.pcmEvents.push({ type: 'stop', sampleTime: currentTime });
         const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.NoteOffEvent({
@@ -4569,6 +4604,7 @@ class MidiConverter {
             descriptor: state.descriptor,
             libvgm: this.libvgmTargetForDescriptor(state.descriptor),
             fm: state.fmTimbre,
+            pcm: this.pcmMetadataForTrack(state),
         }));
         require('fs').writeFileSync(outputPath, JSON.stringify({
             version: 1,

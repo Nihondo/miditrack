@@ -1377,6 +1377,11 @@ the converter.
   Special output path, while the OPM implementation attacks all configured
   channels. It deliberately emits one-tick MIDI pulses and coalesces repeated
   overflows inside one MIDI tick.
+- PCM metadata now preserves the source-specific sample ID independently from
+  the 47-note GM percussion allocation. `pcm.events` records start/stop sample
+  times, and an MSM6258 start carries its loop flag. This keeps repeated and
+  post-wrap sample identities editable without changing `miditrack`'s version-1
+  channel-mapping reader.
 - YM2413 per-operator Multiple (instrument-dependent pitch scaling) and a
   `$20`-before-`$10` key-on write order — see "Added: YM2413 (OPLL) FM and
   rhythm conversion" above; note conversion itself is now implemented.

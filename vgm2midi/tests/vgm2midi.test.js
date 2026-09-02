@@ -3561,6 +3561,36 @@ function streamNoteEvents(converter) {
   };
 }
 
+test('PCM sidecar preserves more sample IDs than GM percussion notes and records stream boundaries', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-pcm-metadata-test-'));
+  const metadataPath = path.join(tempDirectory, 'pcm.libvgm.json');
+  const commands = Array.from({ length: 48 }, (_, address) => [
+    {
+      type: 'stream_start', streamId: 0, address, length: 1, lengthMode: 1,
+      data: address === 0 ? 0x81 : 0x01, // First stream loops; the rest are one-shot.
+    },
+    { type: 'stream_stop', streamId: 0 },
+  ]).flat();
+  const converter = createMSM6258StreamConverter(commands, [
+    { type: 4, blockId: 0, size: 64, payload: Buffer.alloc(64) },
+  ]);
+
+  converter.convert();
+  converter.exportTrackMetadata(metadataPath, 0);
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  const pcmTracks = metadata.tracks.filter(entry => entry.pcm?.source === 'msm6258');
+
+  assert.equal(metadata.version, 1, 'existing sidecar readers remain compatible');
+  assert.equal(pcmTracks.length, 48);
+  assert.equal(pcmTracks[0].pcm.gmNote, pcmTracks[47].pcm.gmNote, 'GM percussion note allocation wraps');
+  assert.notEqual(pcmTracks[0].pcm.sampleId, pcmTracks[47].pcm.sampleId, 'sidecar sample IDs stay unique');
+  assert.deepEqual(pcmTracks[0].pcm.events, [
+    { type: 'start', sampleTime: 0, isLoop: true },
+    { type: 'stop', sampleTime: 0 },
+  ]);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('MSM6258 0x93 length modes convert commands, milliseconds, end-of-bank and raw bytes to duration', () => {
   const bank = [{ type: 4, blockId: 0, size: 40, payload: Buffer.alloc(40) }];
   const cases = [

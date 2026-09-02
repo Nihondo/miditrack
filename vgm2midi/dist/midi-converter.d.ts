@@ -86,6 +86,8 @@ export declare class MidiConverter {
     private opnCh3ParentStateForSourceKey;
     /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
     private fmTimbreForDescriptor;
+    /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
+    private pcmMetadataForTrack;
     private getTrack;
     private isPercussionKey;
     private isWidePitchBendFMKey;

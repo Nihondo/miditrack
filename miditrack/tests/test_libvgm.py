@@ -32,6 +32,9 @@ class TestLibvgmMetadata(unittest.TestCase):
                 }, "fm": {
                     "model": "opn", "algorithm": 5,
                     "carrierOperators": [1, 2, 3], "suggestedProgram": 62,
+                }, "pcm": {
+                    "source": "ym2612-dac", "sampleId": "001234", "gmNote": 35,
+                    "events": [{"type": "start", "sampleTime": 0}],
                 }},
                 {"trackIndex": 1, "libvgm": {
                     "deviceType": 2, "instance": 0, "mainMask": 64,

@@ -49,7 +49,8 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   reserved percussion channel 10 available for drum tracks
 - Converts each distinct YM2612 DAC, YM2608 ADPCM-B, SegaPCM, and C140 sample identity to a
   separate GM percussion track; the first 47 identities receive notes 35-81
-  in first-seen order
+  in first-seen order. `--track-metadata` retains the non-cycling sample ID,
+  assigned GM note, and start/stop boundaries after the GM note range wraps
 - Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
   an explicitly written, unambiguous power-of-two operator multiplier, including
   `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch
@@ -86,7 +87,9 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   MIDI track index to its libvgm device, instance, and main/linked channel masks.
   FM tracks also include a first-note snapshot of the detected model, algorithm,
   carrier operators, operator levels, multipliers, key-on mask, and suggested
-  GM program; `miditrack` remains compatible with the existing channel mapping
+  GM program. PCM tracks include their source-specific sample ID, assigned GM
+  note, and start/stop (plus MSM6258 loop) boundaries; `miditrack` remains
+  compatible with the existing channel mapping
 
 ## Installation
 
