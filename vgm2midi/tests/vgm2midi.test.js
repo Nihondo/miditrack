@@ -3721,9 +3721,46 @@ test('PCM sidecar preserves more sample IDs than GM percussion notes and records
   assert.equal(pcmTracks[0].pcm.gmNote, pcmTracks[47].pcm.gmNote, 'GM percussion note allocation wraps');
   assert.notEqual(pcmTracks[0].pcm.sampleId, pcmTracks[47].pcm.sampleId, 'sidecar sample IDs stay unique');
   assert.deepEqual(pcmTracks[0].pcm.events, [
-    { type: 'start', sampleTime: 0, isLoop: true },
+    { type: 'start', sampleTime: 0, isLoop: true, dataLengthBytes: 2 },
     { type: 'stop', sampleTime: 0 },
   ]);
+  assert.deepEqual(pcmTracks[0].pcm.dataBlock, {
+    bankType: 4, bankInstance: 0, blockId: 0, bankOffset: 0, blockOffset: 0, lengthBytes: 2,
+  });
+  assert.equal(pcmTracks[1].pcm.events[0].durationSamples, 44);
+  assert.deepEqual(pcmTracks[1].pcm.dataBlock, {
+    bankType: 4, bankInstance: 0, blockId: 0, bankOffset: 1, blockOffset: 1, lengthBytes: 2,
+  });
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
+test('YM2612 DAC sidecar resolves a seek address to its VGM PCM data block', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-dac-bank-metadata-test-'));
+  const metadataPath = path.join(tempDirectory, 'dac.libvgm.json');
+  const converter = new MidiConverter({
+    header: createHeader({ ym2612Clock: 7670453, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x2B, data: 0x80 },
+      { type: 'pcm_seek', chip: 'YM2612', address: 4 },
+      { type: 'pcm_write', chip: 'YM2612', samples: 0 },
+      { type: 'end' },
+    ],
+    dataBlocks: [
+      { type: 0x00, blockId: 0, size: 3, payload: Buffer.alloc(3) },
+      { type: 0x00, blockId: 1, size: 5, payload: Buffer.alloc(5) },
+    ],
+  });
+
+  converter.convert();
+  converter.exportTrackMetadata(metadataPath, 0);
+  const entry = JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(
+    track => track.pcm?.source === 'ym2612-dac'
+  );
+
+  assert.equal(entry.pcm.sampleId, '000004');
+  assert.deepEqual(entry.pcm.dataBlock, {
+    bankType: 0, bankInstance: 0, blockId: 1, bankOffset: 4, blockOffset: 1,
+  });
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 

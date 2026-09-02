@@ -311,6 +311,8 @@ export declare class MidiConverter {
     private stopStreamVoice;
     /** 0x91で選択したbank内の連結offsetとblock番号を求める。 */
     private resolveStreamBankOffset;
+    /** data bank内の連結offsetを、sidecar用のblock/offset情報へ変換する。 */
+    private pcmDataBlockForRange;
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
     private streamBankSize;
     /** setup先のVGM command/data幅から、stream一回のwriteに必要なbyte数を得る。 */

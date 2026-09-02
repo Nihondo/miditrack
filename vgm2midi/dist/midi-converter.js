@@ -951,23 +951,26 @@ class MidiConverter {
         const sourceKey = state.descriptor.sourceKey;
         const gmNote = this.pcmSampleNotes.get(sourceKey);
         const events = state.pcmEvents.map(event => ({ ...event }));
+        const dataBlock = state.pcmDataBlock === undefined ? {} : { dataBlock: state.pcmDataBlock };
         if (sourceKey.startsWith('ym2612dac_sample_')) {
-            return { source: 'ym2612-dac', sampleId: sourceKey.slice('ym2612dac_sample_'.length), gmNote, events };
+            return {
+                source: 'ym2612-dac', sampleId: sourceKey.slice('ym2612dac_sample_'.length), gmNote, events, ...dataBlock,
+            };
         }
         if (sourceKey === 'ym2612dac_direct_stream') {
-            return { source: 'ym2612-dac-direct', sampleId: 'direct-stream', gmNote, events };
+            return { source: 'ym2612-dac-direct', sampleId: 'direct-stream', gmNote, events, ...dataBlock };
         }
         const adpcmMatch = /^ym2608_\d+_adpcmb_sample_(.+)$/.exec(sourceKey);
         if (adpcmMatch)
-            return { source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events };
+            return { source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events, ...dataBlock };
         if (sourceKey.startsWith('segapcm_sample_')) {
-            return { source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events };
+            return { source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events, ...dataBlock };
         }
         if (sourceKey.startsWith('c140_sample_')) {
-            return { source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events };
+            return { source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events, ...dataBlock };
         }
         if (sourceKey.startsWith('msm6258_sample_')) {
-            return { source: 'msm6258', sampleId: sourceKey.slice('msm6258_sample_'.length), gmNote, events };
+            return { source: 'msm6258', sampleId: sourceKey.slice('msm6258_sample_'.length), gmNote, events, ...dataBlock };
         }
         return undefined;
     }
@@ -2307,7 +2310,8 @@ class MidiConverter {
         const sampleId = address.toString(16).padStart(6, '0');
         const trackKey = `ym2612dac_sample_${sampleId}`;
         const note = this.pcmNoteForSample(trackKey);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, 100, currentTime);
+        const dataBlock = this.pcmDataBlockForRange(0x00, 0, address);
+        const descriptorId = this.noteOnPCMPercussion(trackKey, note, 100, currentTime, false, dataBlock);
         this.ym2612DACActiveVoice = { descriptorId, note };
     }
     stopYM2612DACVoice(currentTime) {
@@ -4006,7 +4010,12 @@ class MidiConverter {
                 const identity = this.streamIdentity(stream, range);
                 const key = `msm6258_sample_${identity}`;
                 const note = this.pcmNoteForSample(key);
-                const descriptorId = this.noteOnPCMPercussion(key, note, 80, currentTime, range.isLoop);
+                const commandSize = this.streamCommandSize(stream);
+                const dataLengthBytes = range.commandCount > 0
+                    ? range.commandCount * commandSize * Math.max(1, stream.stepSize)
+                    : undefined;
+                const dataBlock = this.pcmDataBlockForRange(stream.bankId, stream.targetInstance ?? 0, range.start, dataLengthBytes);
+                const descriptorId = this.noteOnPCMPercussion(key, note, 80, currentTime, range.isLoop, dataBlock, range.isLoop ? undefined : range.durationSamples);
                 stream.voice = { descriptorId, note };
                 if (!range.isLoop && range.durationSamples !== undefined) {
                     // Do not emit the Note Off yet.  A later $94 or a restart can occur before
@@ -4037,6 +4046,29 @@ class MidiConverter {
         const start = blocks.filter(candidate => candidate.blockId < blockId)
             .reduce((total, candidate) => total + candidate.size, 0);
         return { start, length: block.size };
+    }
+    /** data bank内の連結offsetを、sidecar用のblock/offset情報へ変換する。 */
+    pcmDataBlockForRange(bankType, bankInstance, bankOffset, lengthBytes) {
+        if (bankOffset < 0)
+            return undefined;
+        const blocks = (this.vgmData.dataBlocks ?? [])
+            .filter(block => block.type === bankType && (block.instance ?? 0) === bankInstance)
+            .sort((left, right) => left.blockId - right.blockId);
+        let offset = 0;
+        for (const block of blocks) {
+            if (bankOffset < offset + block.size) {
+                return {
+                    bankType,
+                    bankInstance,
+                    blockId: block.blockId,
+                    bankOffset,
+                    blockOffset: bankOffset - offset,
+                    ...(lengthBytes === undefined ? {} : { lengthBytes }),
+                };
+            }
+            offset += block.size;
+        }
+        return undefined;
     }
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
     streamBankSize(bankId, instance) {
@@ -4226,14 +4258,17 @@ class MidiConverter {
         return false;
     }
     // --- Common Note Helpers ---
-    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false) {
+    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false, dataBlock, durationSamples) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
         trackState.pcmEvents ?? (trackState.pcmEvents = []);
+        trackState.pcmDataBlock ?? (trackState.pcmDataBlock = dataBlock);
         trackState.pcmEvents.push({
             type: 'start',
             sampleTime: currentTime,
             ...(isLoop ? { isLoop: true } : {}),
+            ...(isLoop || durationSamples === undefined ? {} : { durationSamples }),
+            ...(dataBlock?.lengthBytes === undefined ? {} : { dataLengthBytes: dataBlock.lengthBytes }),
         });
         const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
         const gap = Math.max(0, currentTick - trackState.cursor);

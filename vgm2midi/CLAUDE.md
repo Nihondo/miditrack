@@ -1381,6 +1381,11 @@ the converter.
   times, and an MSM6258 start carries its loop flag. This keeps repeated and
   post-wrap sample identities editable without changing `miditrack`'s version-1
   channel-mapping reader.
+- Data-bank-backed YM2612 DAC and MSM6258 PCM metadata additionally records the
+  originating VGM bank type/instance, block ID, and offsets. MSM6258 start events
+  carry resolved requested byte count and a non-loop playback duration when the
+  stream frequency provides one. This is source-location metadata, not PCM/ADPCM
+  decoding or semantic drum classification.
 - YM2413 writes `$30-$38` select an initial patch-derived GM program only at
   track creation. Later active patch changes and user-patch register writes are
   appended as `fmEvents` sidecar entries with their VGM sample time; they do not

@@ -34,7 +34,11 @@ class TestLibvgmMetadata(unittest.TestCase):
                     "carrierOperators": [1, 2, 3], "suggestedProgram": 62,
                 }, "pcm": {
                     "source": "ym2612-dac", "sampleId": "001234", "gmNote": 35,
-                    "events": [{"type": "start", "sampleTime": 0}],
+                    "dataBlock": {
+                        "bankType": 0, "bankInstance": 0, "blockId": 0,
+                        "bankOffset": 0x1234, "blockOffset": 0x234,
+                    },
+                    "events": [{"type": "start", "sampleTime": 0, "durationSamples": 441}],
                 }, "fmEvents": [{
                     "sampleTime": 441, "source": "ym2413-patch",
                     "timbre": {"model": "opll", "suggestedProgram": 16},
