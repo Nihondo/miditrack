@@ -70,6 +70,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   triggers likewise record an estimated `durationSamples` from their 16.8
   address, end page, frequency, and clock divider. This is sidecar-only; looped
   triggers have no finite estimate
+- When a SegaPCM sample range is fully available in one ROM data block,
+  `--track-metadata` also emits signed-8-bit PCM waveform statistics: normalized
+  peak, mean, RMS, and zero-crossing count. It deliberately omits partial or
+  cross-block ranges and does not infer an instrument name
 - Non-repeat YM2608 ADPCM-B triggers with a valid range, Delta-N, and clock also
   record an estimated `durationSamples`; ROM/8-bit RAM uses 32-byte address
   units and 1-bit RAM uses 4-byte units. Repeat mode is retained as `isLoop`.
@@ -121,7 +125,8 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   retain repeat state and, for finite playback, estimated duration. SegaPCM
   start events use the interface-mapped physical ROM address; SegaPCM/C140 start
   events also retain their exclusive end address, loop address, and
-  loop-enabled state; MSM6258 start events
+  loop-enabled state. Fully resolved SegaPCM ranges also expose basic waveform
+  statistics; MSM6258 start events
   carry requested byte length and, when known, planned playback duration. `miditrack` remains
   compatible with the existing channel mapping
 
@@ -374,8 +379,9 @@ vgm2midi song.vgz --ch3-special-percussion
 - Game Boy DMG models the 512 Hz frame sequencer for channel-1 sweep, length
   counters, and envelope CC11. Wave RAM contents and therefore the original
   timbre remain outside MIDI's model
-- YM2612 DAC, YM2608 ADPCM-B, SegaPCM, and C140 sample audio is not decoded or classified. Assigned GM notes
-  distinguish sample identities but do not claim that a sample is semantically
+- YM2612 DAC, YM2608 ADPCM-B, SegaPCM, and C140 sample audio is not classified. Fully resolved SegaPCM
+  ranges expose only basic raw-PCM statistics, not decoded ADPCM or a timbre
+  label. Assigned GM notes distinguish sample identities but do not claim that a sample is semantically
   a kick, snare, hi-hat, or other matching GM instrument; mappings wrap after
   47 identities. A YM2612 seek followed by DAC output is treated as an onset,
   so a source that seeks only to continue silence or a partial sample may create

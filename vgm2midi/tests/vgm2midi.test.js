@@ -4008,6 +4008,41 @@ test('SegaPCM interface maps non-standard ROM bank shifts and masks into sidecar
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('SegaPCM sidecars analyze complete signed 8-bit PCM ranges only', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-segapcm-analysis-test-'));
+  const convertWaveform = (dataLength, name) => {
+    const metadataPath = path.join(tempDirectory, `${name}.libvgm.json`);
+    const payload = Buffer.alloc(8 + dataLength);
+    payload.writeUInt32LE(0x4000, 0);
+    payload.writeUInt32LE(0x2000, 4);
+    payload.fill(0x00, 8, 8 + Math.floor(dataLength / 2));
+    payload.fill(0xFF, 8 + Math.floor(dataLength / 2));
+    const converter = new MidiConverter({
+      header: createHeader({ segaPCMClock: 4000000, ym2151Clock: 0 }),
+      commands: [
+        { type: 'chip_write', chip: 'SegaPCM', register: 0x06, data: 0x20 },
+        { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x00 },
+        { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x20 },
+        { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x02 },
+        { type: 'end' },
+      ],
+      dataBlocks: [{ type: 0x80, blockId: 0, size: payload.length, payload }],
+    });
+    converter.convert();
+    converter.exportTrackMetadata(metadataPath, 0);
+    return JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm;
+  };
+
+  const pcm = convertWaveform(0x100, 'complete');
+  const expectedRms = Math.round((Math.sqrt((128 ** 2 + 127 ** 2) / 2) / 128) * 1_000_000) / 1_000_000;
+  assert.deepEqual(pcm.analysis, {
+    format: 'signed-8bit-pcm', sourceByteLength: 0x100, analyzedSampleCount: 0x100,
+    peak: 1, mean: -0.003906, rms: expectedRms, zeroCrossingCount: 1,
+  });
+  assert.equal(convertWaveform(0x80, 'partial').analysis, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('YM2608 ADPCM-B sidecars estimate ROM/RAM duration and preserve repeat mode', () => {
   const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-ym2608-adpcmb-duration-test-'));
   const clock = 7987200;

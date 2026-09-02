@@ -325,6 +325,10 @@ export declare class MidiConverter {
     private pcmDataBlockForRange;
     /** ROM data blockの実データ範囲から、物理サンプルアドレスをsidecar情報へ解決する。 */
     private pcmROMDataBlockForAddress;
+    /** 単一ROM blockへ完全に収まるSegaPCMの生8-bit PCMを解析する。 */
+    private segaPCMAnalysisForTrack;
+    /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
+    private analyzeSigned8BitPCM;
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
     private streamBankSize;
     /** setup先のVGM command/data幅から、stream一回のwriteに必要なbyte数を得る。 */

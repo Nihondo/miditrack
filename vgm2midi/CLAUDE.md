@@ -881,6 +881,16 @@ wraps from `0xFF` to `0x00`, so retain that wrap in the distance calculation.
 Do not estimate looped voices, a zero frequency, an empty range, or a missing
 clock. Never schedule MIDI Note Off from this estimate.
 
+`segaPCMAnalysisForTrack()` is the initial waveform-analysis path. It analyzes
+only a SegaPCM range that starts in a type `$80` ROM data block and finishes in
+that same block. SegaPCM bytes are signed PCM with `$80` as zero; analyze at
+most 65,536 evenly spaced bytes and emit normalized `peak`, `mean`, `rms`, and
+an observed `zeroCrossingCount` in the PCM track's `analysis` object. Emit no
+analysis for an unresolved, empty, partial, or cross-block range. These are
+descriptive signal features, not an instrument classifier, and must not alter
+the assigned GM percussion note or MIDI events. Other PCM and ADPCM codecs need
+their own verified decoders before joining this path.
+
 For a finite C140/C219 range, `c140DurationSamples()` adds a sidecar-only
 `durationSamples` estimate. It follows VGMPlay's 16.16 position accumulator:
 the frequency registers advance by `frequency * baseRate * 2 / 65536` ROM

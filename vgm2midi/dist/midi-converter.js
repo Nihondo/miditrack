@@ -42,6 +42,7 @@ const YM2608_FM_PITCH_BEND_RANGE = 96;
 const OPL_FM_PITCH_BEND_RANGE = 96;
 const CHIP_PITCH_BEND_RANGE = 96;
 const MIDI_PPQ = 960;
+const MAX_PCM_ANALYSIS_SAMPLES = 65536;
 // CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
 // MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
 // オーバーフローは1回へ集約し、出力ノートは1 tickだけ保持する。
@@ -951,7 +952,8 @@ class MidiConverter {
         const sourceKey = state.descriptor.sourceKey;
         const gmNote = this.pcmSampleNotes.get(sourceKey);
         const events = state.pcmEvents.map(event => ({ ...event }));
-        const dataBlock = state.pcmDataBlock === undefined ? {} : { dataBlock: state.pcmDataBlock };
+        const pcmDataBlock = state.pcmDataBlock;
+        const dataBlock = pcmDataBlock === undefined ? {} : { dataBlock: pcmDataBlock };
         if (sourceKey.startsWith('ym2612dac_sample_')) {
             return {
                 source: 'ym2612-dac', sampleId: sourceKey.slice('ym2612dac_sample_'.length), gmNote, events, ...dataBlock,
@@ -964,7 +966,11 @@ class MidiConverter {
         if (adpcmMatch)
             return { source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events, ...dataBlock };
         if (sourceKey.startsWith('segapcm_sample_')) {
-            return { source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events, ...dataBlock };
+            const analysis = this.segaPCMAnalysisForTrack(pcmDataBlock, events);
+            return {
+                source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events, ...dataBlock,
+                ...(analysis === undefined ? {} : { analysis }),
+            };
         }
         if (sourceKey.startsWith('c140_sample_')) {
             return { source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events, ...dataBlock };
@@ -4209,6 +4215,58 @@ class MidiConverter {
             };
         }
         return undefined;
+    }
+    /** 単一ROM blockへ完全に収まるSegaPCMの生8-bit PCMを解析する。 */
+    segaPCMAnalysisForTrack(dataBlock, events) {
+        if (dataBlock?.bankType !== 0x80 || dataBlock.romStartAddress === undefined)
+            return undefined;
+        const startEvent = events.find(event => event.type === 'start' && event.endAddressExclusive !== undefined);
+        if (startEvent?.endAddressExclusive === undefined)
+            return undefined;
+        const endAddress = startEvent.endAddressExclusive;
+        if (endAddress <= dataBlock.bankOffset)
+            return undefined;
+        const block = (this.vgmData.dataBlocks ?? []).find(candidate => candidate.type === 0x80
+            && (candidate.instance ?? 0) === dataBlock.bankInstance
+            && candidate.blockId === dataBlock.blockId);
+        if (!block || block.payload.length < 8)
+            return undefined;
+        const sourceByteLength = endAddress - dataBlock.bankOffset;
+        const blockEndAddress = dataBlock.romStartAddress + block.payload.length - 8;
+        if (endAddress > blockEndAddress)
+            return undefined;
+        const sourceStart = 8 + dataBlock.blockOffset;
+        return this.analyzeSigned8BitPCM(block.payload.subarray(sourceStart, sourceStart + sourceByteLength));
+    }
+    /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
+    analyzeSigned8BitPCM(samples) {
+        if (samples.length === 0)
+            return undefined;
+        const analyzedSampleCount = Math.min(samples.length, MAX_PCM_ANALYSIS_SAMPLES);
+        let peak = 0;
+        let sum = 0;
+        let sumSquares = 0;
+        let zeroCrossingCount = 0;
+        let previousSign = 0;
+        for (let index = 0; index < analyzedSampleCount; index++) {
+            const sourceIndex = Math.floor((index * samples.length) / analyzedSampleCount);
+            const sample = samples[sourceIndex] - 0x80;
+            peak = Math.max(peak, Math.abs(sample));
+            sum += sample;
+            sumSquares += sample * sample;
+            const sign = Math.sign(sample);
+            if (sign !== 0 && previousSign !== 0 && sign !== previousSign)
+                zeroCrossingCount++;
+            if (sign !== 0)
+                previousSign = sign;
+        }
+        const normalize = (value) => Math.round((value / 128) * 1000000) / 1000000;
+        return {
+            format: 'signed-8bit-pcm', sourceByteLength: samples.length, analyzedSampleCount,
+            ...(samples.length > analyzedSampleCount ? { isDownsampled: true } : {}),
+            peak: normalize(peak), mean: normalize(sum / analyzedSampleCount),
+            rms: normalize(Math.sqrt(sumSquares / analyzedSampleCount)), zeroCrossingCount,
+        };
     }
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
     streamBankSize(bankId, instance) {
