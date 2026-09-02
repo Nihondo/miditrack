@@ -18,6 +18,7 @@
 #include "../src/detector.h"
 #include "../src/mdf.h"
 #include "../src/smf.h"
+#include "../src/timbre.h"
 #include "../src/wav_writer.h"
 
 using namespace nsf2midi;
@@ -432,6 +433,74 @@ void TestWavWriterEmptyStreamIsStillValid() {
     std::remove(path.c_str());
 }
 
+// FDS: なだらかな波形 (振幅一定に近い) は暖かいPad系候補になる。
+void TestTimbreFdsSmoothWaveformPicksPad() {
+    TimbreSnapshot s;
+    s.kind = ChannelKind::Fds;
+    s.fds_wave_table = std::vector<int>(64, 32);  // 完全に平坦 = 粗さ0
+    CHECK(GmProgramCandidateFor(s) == 89);  // Pad 2 (warm)
+}
+
+// FDS: 交互に振れる矩形波的な波形 (最大振幅の反復) は最も粗い候補になる。
+void TestTimbreFdsHarshWaveformPicksLead() {
+    TimbreSnapshot s;
+    s.kind = ChannelKind::Fds;
+    s.fds_wave_table.resize(64);
+    for (size_t i = 0; i < s.fds_wave_table.size(); i++) {
+        s.fds_wave_table[i] = (i % 2 == 0) ? 0 : 63;
+    }
+    CHECK(GmProgramCandidateFor(s) == 87);  // Lead 8 (bass + lead)
+}
+
+// N163: アクティブチャンネル数の3段階でGM候補が変わる。
+void TestTimbreN163ChannelCountBuckets() {
+    TimbreSnapshot low;
+    low.kind = ChannelKind::N163;
+    low.n163_active_channels = 1;
+    CHECK(GmProgramCandidateFor(low) == 80);  // Lead 1 (square)
+
+    TimbreSnapshot mid;
+    mid.kind = ChannelKind::N163;
+    mid.n163_active_channels = 4;
+    CHECK(GmProgramCandidateFor(mid) == 91);  // Pad 4 (choir)
+
+    TimbreSnapshot high;
+    high.kind = ChannelKind::N163;
+    high.n163_active_channels = 8;
+    CHECK(GmProgramCandidateFor(high) == 90);  // Pad 3 (polysynth)
+}
+
+// S5B: エンベロープ有効時はオルガン系、ノイズ混合時はバズ系、素のトーンは
+// 標準Lead系になる。
+void TestTimbreS5bMixerAndEnvelope() {
+    TimbreSnapshot envelope;
+    envelope.kind = ChannelKind::S5B;
+    envelope.s5b_envelope_enabled = true;
+    CHECK(GmProgramCandidateFor(envelope) == 16);  // Drawbar Organ
+
+    TimbreSnapshot noiseMix;
+    noiseMix.kind = ChannelKind::S5B;
+    noiseMix.s5b_tone_enabled = true;
+    noiseMix.s5b_noise_enabled = true;
+    CHECK(GmProgramCandidateFor(noiseMix) == 81);  // Lead 2 (sawtooth)
+
+    TimbreSnapshot toneOnly;
+    toneOnly.kind = ChannelKind::S5B;
+    toneOnly.s5b_tone_enabled = true;
+    CHECK(GmProgramCandidateFor(toneOnly) == 80);  // Lead 1 (square)
+}
+
+// VRC6: GmProgramCandidateFor(Vrc6Pulse) は ProgramForDuty() と同じ結果を返す
+// (候補と実際のDutyProgramChangeEnabled送出が食い違わないことの回帰ガード)。
+void TestTimbreVrc6MatchesProgramForDuty() {
+    for (int duty = 0; duty <= 7; duty++) {
+        TimbreSnapshot s;
+        s.kind = ChannelKind::Vrc6Pulse;
+        s.vrc6_duty = duty;
+        CHECK(GmProgramCandidateFor(s) == ProgramForDuty(ChannelKind::Vrc6Pulse, duty));
+    }
+}
+
 int main() {
     TestNoiseFrequencyRetrigger();
     TestNoiseDrumMapSelectsNote();
@@ -445,6 +514,11 @@ int main() {
     TestWavWriterPatchesSizesOnClose();
     TestWavWriterMonoDuplicatesToBothChannels();
     TestWavWriterEmptyStreamIsStillValid();
+    TestTimbreFdsSmoothWaveformPicksPad();
+    TestTimbreFdsHarshWaveformPicksLead();
+    TestTimbreN163ChannelCountBuckets();
+    TestTimbreS5bMixerAndEnvelope();
+    TestTimbreVrc6MatchesProgramForDuty();
 
     if (g_failures == 0) {
         std::printf("All tests passed.\n");

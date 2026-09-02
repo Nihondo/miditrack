@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "timbre.h"
+
 namespace nsf2midi {
 
 // 1 MIDIトラックぶんのメタデータ。channel は channel_map.cpp の
@@ -19,13 +21,24 @@ namespace nsf2midi {
 struct TrackMetadataEntry {
     int track_index = 0;
     std::string channel;
+
+    // FDS/N163/S5B/VRC6-Pulse のみ、かつそのチャンネルで一度でもノートオンが
+    // 発生した場合にのみ埋める。それ以外は has_timbre = false のまま
+    // (音色候補を出せる材料が無いチャンネル、または一度も発音しなかった
+    // チャンネル)。
+    bool has_timbre = false;
+    TimbreSnapshot timbre;
 };
 
 // path へ version:1 のJSON sidecarを書く。
 // { "version": 1, "sampleRate": 44100, "sampleCount": <n>,
 //   "tracks": [ { "trackIndex": 0, "channel": "SQ1",
 //                 "chipRender": { "channel": "SQ1", "groupId": "SQ1",
-//                                 "suggestedForHardwareMix": true } }, ... ] }
+//                                 "suggestedForHardwareMix": true },
+//                 "timbre": { "kind": "fds", "waveform": [...64要素],
+//                             "masterVolume": 20, "gmProgramCandidate": 89 }
+//               }, ... ] }
+// "timbre" は has_timbre な entry にのみ出力される (省略可能なフィールド)。
 // 成功時 true。ファイルが開けない場合 false。
 bool WriteTrackMetadata(const std::string& path, int sample_rate, long long sample_count,
                          const std::vector<TrackMetadataEntry>& entries);

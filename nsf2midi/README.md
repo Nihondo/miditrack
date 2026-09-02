@@ -133,6 +133,21 @@ as a safe default. `--sample-count` should be the sidecar's own
 `sampleCount` value, so the rendered WAV's length always matches the
 originally converted MIDI's duration.
 
+For FDS, N163, S5B (FME-7/Sunsoft 5B), and VRC6-pulse channels, the sidecar
+also carries a `timbre` block captured at that channel's first note-on: the
+FDS 64-step wave table and master volume, the N163 wave RAM and active
+channel count, the S5B tone/noise mixer state and hardware envelope
+settings, or the VRC6 duty register. Each block also carries a
+`gmProgramCandidate` — a single GM Program number picked from that state by
+a simple heuristic (FDS: how jagged the waveform is; N163: how many
+channels are active, since more active channels are known to sound more
+detuned/vocal-like on real hardware; S5B: whether the hardware envelope or
+noise mixer is in use; VRC6: the same duty-to-Program mapping
+`DutyProgramChangeEnabled` already sends). This is metadata only — it
+doesn't change the note/gate conversion or send any Program Change itself,
+the same non-committal role vgm2midi's OPN/OPM/OPL `fm` candidates play for
+VGM (see `docs/chip-support.md`).
+
 ## The `.mdf` instrument definition file
 
 A `.mdf` file is an INI-style text file with one section per NES sound

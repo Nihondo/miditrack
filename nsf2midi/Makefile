@@ -22,7 +22,8 @@ NSF_C_SRCS   := $(NSF_DIR)/fmopl.c
 APP_SRCS := $(SRC_DIR)/main.cpp $(SRC_DIR)/mdf.cpp $(SRC_DIR)/channel_map.cpp \
             $(SRC_DIR)/pitch.cpp $(SRC_DIR)/detector.cpp $(SRC_DIR)/smf.cpp \
             $(SRC_DIR)/wav_writer.cpp $(SRC_DIR)/chip_render.cpp \
-            $(SRC_DIR)/track_metadata.cpp
+            $(SRC_DIR)/track_metadata.cpp $(SRC_DIR)/timbre.cpp \
+            $(SRC_DIR)/timbre_capture.cpp
 
 OBJ_DIR := build
 NSF_CPP_OBJS := $(patsubst $(NSF_DIR)/%.cpp,$(OBJ_DIR)/nsf_%.o,$(NSF_CPP_SRCS))
@@ -45,7 +46,7 @@ all: $(TARGET)
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
-$(TEST_TARGET): $(TEST_SRC) $(SRC_DIR)/mdf.cpp $(SRC_DIR)/pitch.cpp $(SRC_DIR)/detector.cpp $(SRC_DIR)/smf.cpp $(SRC_DIR)/wav_writer.cpp | $(OBJ_DIR)
+$(TEST_TARGET): $(TEST_SRC) $(SRC_DIR)/mdf.cpp $(SRC_DIR)/pitch.cpp $(SRC_DIR)/detector.cpp $(SRC_DIR)/smf.cpp $(SRC_DIR)/wav_writer.cpp $(SRC_DIR)/timbre.cpp | $(OBJ_DIR)
 	$(CXX) $(APP_CXXSTD) $(CFLAGS_COMMON) -I$(SRC_DIR) -o $@ $^
 
 $(TARGET): $(NSF_CPP_OBJS) $(NSF_C_OBJS) $(APP_OBJS)

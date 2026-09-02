@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "timbre.h"
+
 namespace nsf2midi {
 
 namespace {
@@ -33,28 +35,9 @@ int NormalizeToVelocity(int volume, int max_volume) {
     return static_cast<int>(std::lround(1 + ratio * 126));
 }
 
-// デューティ比から GM Program を選ぶ。矩形波の音色感の核心はデューティ比なので、
-// 12.5%/25%・75%/50% の3段階を、細い/標準/太いの語彙に対応する GM Program に
-// マッピングする。APU (Square) の STATE_DUTYCYCLE は 0-3 のインデックス
-// (DUTY_CYCLE_TABLE={2,4,8,12} の何番目か。0=12.5%,1=25%,2=50%,3=75%)、
-// VRC6 (Vrc6Pulse) は duty=(n+1)/16 の生値 0-7 を返す — 呼び出し前提が違うので
-// ChannelKind で分岐する。
-int ProgramForDuty(ChannelKind kind, int duty) {
-    constexpr int kProgramLead1Square = 80;      // 50%
-    constexpr int kProgramLead2Sawtooth = 81;    // 25% / 75%
-    constexpr int kProgramLead5Charang = 84;     // 12.5% (最も細い)
-    if (kind == ChannelKind::Vrc6Pulse) {
-        if (duty <= 2) return kProgramLead5Charang;
-        if (duty <= 5) return kProgramLead2Sawtooth;
-        return kProgramLead1Square;
-    }
-    // ChannelKind::Square (APU)
-    switch (duty) {
-        case 0: return kProgramLead5Charang;
-        case 2: return kProgramLead1Square;
-        default: return kProgramLead2Sawtooth;  // 1 (25%) / 3 (75%)
-    }
-}
+// デューティ比から GM Program を選ぶ実装は timbre.h/timbre.cpp の
+// ProgramForDuty() へ移設した (--track-metadata の音色候補生成と実装を共有し、
+// 候補と実際に送出する Program Change が食い違わないようにするため)。
 
 // STATE_PERIOD (0-15, ノイズ周期インデックス。小さいほど高速=高域) と短周期LFSR
 // モードから GM ドラムノートを選ぶ。vgm2midi の noiseDrumNote() と同じノート語彙

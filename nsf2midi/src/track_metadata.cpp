@@ -35,6 +35,63 @@ std::string EscapeJsonString(const std::string& value) {
     return out;
 }
 
+const char* TimbreKindName(ChannelKind kind) {
+    switch (kind) {
+        case ChannelKind::Fds: return "fds";
+        case ChannelKind::N163: return "n163";
+        case ChannelKind::S5B: return "s5b";
+        case ChannelKind::Vrc6Pulse: return "vrc6";
+        default: return "unknown";
+    }
+}
+
+void WriteIntArray(std::FILE* file, const std::vector<int>& values) {
+    std::fprintf(file, "[");
+    for (size_t i = 0; i < values.size(); i++) {
+        std::fprintf(file, "%s%d", (i == 0) ? "" : ",", values[i]);
+    }
+    std::fprintf(file, "]");
+}
+
+// TimbreSnapshot を "timbre": { ... } オブジェクトとして書く。kind ごとに
+// 意味を持つフィールドだけを出す (timbre.h のコメント参照)。
+void WriteTimbre(std::FILE* file, const TrackMetadataEntry& entry) {
+    const TimbreSnapshot& t = entry.timbre;
+    std::fprintf(file, "      \"timbre\": {\n");
+    std::fprintf(file, "        \"kind\": \"%s\",\n", TimbreKindName(t.kind));
+    switch (t.kind) {
+        case ChannelKind::Fds:
+            std::fprintf(file, "        \"waveform\": ");
+            WriteIntArray(file, t.fds_wave_table);
+            std::fprintf(file, ",\n");
+            std::fprintf(file, "        \"masterVolume\": %d,\n", t.fds_master_volume);
+            break;
+        case ChannelKind::N163:
+            std::fprintf(file, "        \"waveform\": ");
+            WriteIntArray(file, t.n163_wave);
+            std::fprintf(file, ",\n");
+            std::fprintf(file, "        \"activeChannels\": %d,\n", t.n163_active_channels);
+            break;
+        case ChannelKind::S5B:
+            std::fprintf(file, "        \"toneEnabled\": %s,\n", t.s5b_tone_enabled ? "true" : "false");
+            std::fprintf(file, "        \"noiseEnabled\": %s,\n",
+                         t.s5b_noise_enabled ? "true" : "false");
+            std::fprintf(file, "        \"noiseFrequency\": %d,\n", t.s5b_noise_frequency);
+            std::fprintf(file, "        \"envelope\": { \"enabled\": %s, \"frequency\": %d, "
+                                "\"shape\": %d },\n",
+                         t.s5b_envelope_enabled ? "true" : "false", t.s5b_envelope_frequency,
+                         t.s5b_envelope_shape);
+            break;
+        case ChannelKind::Vrc6Pulse:
+            std::fprintf(file, "        \"duty\": %d,\n", t.vrc6_duty);
+            break;
+        default:
+            break;
+    }
+    std::fprintf(file, "        \"gmProgramCandidate\": %d\n", GmProgramCandidateFor(t));
+    std::fprintf(file, "      }\n");
+}
+
 }  // namespace
 
 bool WriteTrackMetadata(const std::string& path, int sample_rate, long long sample_count,
@@ -57,7 +114,8 @@ bool WriteTrackMetadata(const std::string& path, int sample_rate, long long samp
         std::fprintf(file, "        \"channel\": \"%s\",\n", channel.c_str());
         std::fprintf(file, "        \"groupId\": \"%s\",\n", channel.c_str());
         std::fprintf(file, "        \"suggestedForHardwareMix\": true\n");
-        std::fprintf(file, "      }\n");
+        std::fprintf(file, "      }%s\n", entry.has_timbre ? "," : "");
+        if (entry.has_timbre) WriteTimbre(file, entry);
         std::fprintf(file, "    }%s\n", (i + 1 < entries.size()) ? "," : "");
     }
     std::fprintf(file, "  ]\n");

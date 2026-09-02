@@ -622,6 +622,136 @@ codebase's `Makefile` has no header-dependency tracking either (only
 `third_party/NotSoFatso/Wave_FDS.h`) silently no-ops on a plain `make`
 regardless.
 
+## Added: `timbre` sidecar block — FDS/N163/S5B/VRC6 GM candidate metadata
+
+Ports `docs/chip-support.md`'s "対応中チップの制限解除" plan item for
+"NSF の FDS、N163、S5B、VRC6" (波形RAM/デューティ比/ノイズ混合/エンベロープ
+を調べ、GM音色候補とチップレンダーの選択へ反映する) — the same
+metadata-only-candidate pattern `vgm2midi` already applies to OPN/OPM/OPL/
+YM2413 (see its own `CLAUDE.md`), adapted to the four NSF expansion-chip
+channel kinds that have no `duty` concept beyond what `DutyProgramChangeEnabled`
+already covers for Square/VRC6-pulse.
+
+- **New files, split the same way `pitch.{h,cpp}` and `chip_render.{h,cpp}`
+  already are**: `src/timbre.{h,cpp}` holds pure, `third_party/NotSoFatso`-
+  independent logic (`TimbreSnapshot` struct + `GmProgramCandidateFor()` +
+  `ProgramForDuty()`) and is linked into both the app binary and
+  `tests/test_detector.cpp` (like `pitch.cpp`); `src/timbre_capture.{h,cpp}`
+  holds the `CNSFCore::GetState()` calls that fill a `TimbreSnapshot` from a
+  live channel (like `chip_render.cpp`) and is **not** linked into the test
+  binary — there is no lightweight way to exercise real chip register state
+  without the emulation core, so this half is verified manually the same
+  way the FDS `--chip-render`/pitch-divisor bugs above were (hand-built
+  synthetic NSFs; see "Verified" below).
+- **`ProgramForDuty()` moved out of `detector.cpp`'s anonymous namespace
+  into `timbre.h`/`timbre.cpp`**, unchanged in behavior. `detector.cpp`'s
+  `MaybeSendDutyProgramChange()` now calls the shared implementation instead
+  of a private copy, so the VRC6 `timbre.duty` candidate and the actual
+  Program Change `DutyProgramChangeEnabled` sends can never drift apart —
+  `TestTimbreVrc6MatchesProgramForDuty` (`tests/test_detector.cpp`) asserts
+  this equality directly across all 8 duty values.
+- **Capture timing: the first frame a channel's note actually sounds, not
+  every frame.** `PitchedChannelDetector` gained a trivial
+  `IsNoteActive() const` getter; `main.cpp`'s frame loop calls
+  `CaptureTimbreSnapshot(core, ac.info)` right after `ProcessFrame()` only
+  when `!ac.timbre_captured && is_timbre_eligible(ac.info.kind) &&
+  ac.pitched->IsNoteActive()`, then latches `ac.timbre_captured = true` so
+  it never re-reads for that channel again. This mirrors vgm2midi's `fm`
+  field ("first sounding" snapshot, not a time series — `fmEvents` is the
+  separate, later-added time series for OPN/OPM/OPL/YM2413) rather than
+  attempting a `timbreEvents` equivalent, since NSF channels retrigger far
+  more often per second than VGM FM channels change algorithm/patch, and a
+  channel that never sounds within `-d <duration>` has nothing to report
+  anyway (`has_timbre` stays `false`, the `"timbre"` key is omitted
+  entirely — not `null` — from that track's JSON object).
+- **Why these four `ChannelKind`s and not Square/Triangle/Noise/Dpcm/
+  Vrc6Saw**: Square and Vrc6Pulse already get a GM-candidate-equivalent via
+  `DutyProgramChangeEnabled`'s actual Program Change; Triangle/Noise/Dpcm
+  have no duty/waveform/envelope concept this metadata scheme models.
+  Vrc6Saw (`CHANNEL_VRC6SAW`) has no duty register either (`nAccumRate` is
+  its only per-instance state, already used directly as `STATE_VOLUME`) —
+  extending `TimbreSnapshot` to a fifth kind for a single accumulator-rate
+  scalar was judged not worth a new candidate-selection heuristic; `gm.mdf`
+  already hardcodes `Instrument=81` (Lead 2 sawtooth) for it (see the
+  "reproduction-fidelity pass" section above).
+- **Heuristics are deliberately simple and documented as approximations,
+  not attempts to reproduce the real timbre** (same posture
+  `docs/chip-support.md` takes for OPN algorithm→GM and PCM
+  quiet/tonal/noise-like labels):
+  - **FDS**: mean absolute difference between adjacent wave-table steps
+    (wrapping across the 64-step loop) as a roughness proxy — `<4` (smooth,
+    e.g. a near-sine or near-flat table) → GM 89 Pad 2 (warm), `<12`
+    (moderate slope) → GM 81 Lead 2 (sawtooth), else (sharp/noisy) → GM 87
+    Lead 8 (bass+lead). Verified against a hand-built ramp (0..63 linear,
+    roughness ≈2 from the small per-step deltas plus one large 63→0
+    wraparound jump averaged over 64 steps) landing in the smooth bucket,
+    and an alternating 0/63 "square" table (roughness 63) landing in the
+    harsh bucket.
+  - **N163**: bucketed by `n163_active_channels` alone (≤2 → GM 80 Lead 1
+    square, 3-5 → GM 91 Pad 4 choir, 6-8 → GM 90 Pad 3 polysynth) — real
+    N163 hardware divides its output sample rate among active channels
+    (`fFrequencyLookupTable[nActiveChannels]`,
+    `third_party/NotSoFatso/Wave_N106.h`), which is widely documented
+    (NESdev wiki, FamiTracker docs) to make more-simultaneous-channel N163
+    music sound more detuned/vocal/chorus-like — this candidate leans on
+    that known relationship rather than inspecting waveform shape at all.
+  - **S5B**: `s5b_envelope_enabled` (this channel's `STATE_S5BENVENABLED`)
+    → GM 16 Drawbar Organ (continuous hardware-envelope tone, the AY
+    feature with no equivalent on the other PSG-family chips this project
+    handles); else tone+noise both mixed in → GM 81 Lead 2 (sawtooth, buzz
+    approximation); else plain tone → GM 80 Lead 1 (square), matching the
+    default APU/PSG-family candidate used elsewhere. `s5b_tone_enabled`/
+    `s5b_noise_enabled` are decoded from `STATE_S5BMIXER`'s per-channel
+    `bChannelMixer` value as **disable** bits (bit0=tone disabled,
+    bit3=noise disabled — the real AY-3-8910 R7 polarity, confirmed by
+    reading how `NSF_Core.cpp`'s `$07` write handler packs the shared
+    3-channel register into each channel's own 2-bit view and how
+    `bChannelEnabled`'s `!= 0x9` check treats "both bits set" as fully
+    muted).
+  - **VRC6-pulse**: reuses `ProgramForDuty()` directly (no separate
+    heuristic) — see above.
+- **N163 wave capture reads raw `nRAM[]` bytes (0-15, one already-unpacked
+  4-bit sample per byte — confirmed via `WriteMemory_N106()`'s `$4800`
+  handler, which splits each incoming byte into two separate `nRAM[]`
+  entries), not the packed 2-samples-per-byte register format** a real
+  cartridge's ROM would use. This matches what `DoTicks()` itself reads
+  (`nRAM[nWavePos[i]]`) — i.e. the sidecar's `n163.waveform` values are
+  exactly what the emulation core plays back, not a re-derivation of the
+  original packed data.
+- **FDS wave capture reads all 64 `nWaveTable[]` slots unconditionally**
+  (`STATE_FDSWAVETABLE` sub 0-63) rather than only the slots covered by
+  `nWaveSize`-equivalent bookkeeping — FDS, unlike N163, has no partial-
+  table-length concept; the full 64-entry table is always meaningful.
+- Verified with hand-built minimal NSFs, one per chip kind (same technique
+  as the FDS `--chip-render`/pitch-divisor fixes above: a NESM header
+  declaring the target `nChipExtensions` bit, an INIT routine that writes
+  the chip's registers directly, and a silent PLAY routine placed far
+  enough past INIT in PRG-ROM to not be clobbered by INIT's own byte
+  stream — an early draft placed PLAY only 16 bytes after INIT and had
+  every frame's PLAY call re-execute a misaligned slice of INIT's own
+  opcode bytes as if it were code, corrupting chip state between the
+  note-on frame and the point this feature reads it back; moving PLAY to a
+  separate, generously-sized region fixed it). Confirmed via
+  `--track-metadata`'s JSON output: **FDS** — a linear 0..63 ramp written
+  through `$4089`/`$4040-$407F` came back as an exact 64-element
+  `waveform` array with `gmProgramCandidate: 89`; **N163** — 16 nibble
+  writes through `$F800`/`$4800` (channel 7 / public "N163-1") came back
+  as the expected 16-element `waveform` (with the every-other-byte-zero
+  pattern this write path's 2-bytes-per-write unpacking produces from
+  single-nibble source values — expected, not a bug, per the N163 capture
+  note above) with `activeChannels: 1`, `gmProgramCandidate: 80`; **S5B**
+  — channel 0's mixer/volume registers (`$C000`/`$E000`, reg `$07`=`0x08`
+  tone-on/noise-off, reg `$08`=`0x0F` volume/no-envelope) came back as
+  `toneEnabled: true, noiseEnabled: false, envelope.enabled: false,
+  gmProgramCandidate: 80`; **VRC6** — `$9000`=`0x5F` (duty 5, volume 15)
+  came back as `duty: 5, gmProgramCandidate: 81`, matching
+  `ProgramForDuty(Vrc6Pulse, 5)` exactly. All four channels' `NoteOn`
+  events (`-v` output) were unaffected by this feature being present.
+  `make test` (5 new test functions covering FDS roughness buckets, N163
+  channel-count buckets, S5B mixer/envelope combos, and an 8-way VRC6/
+  `ProgramForDuty` equality check, alongside the existing suite) passes in
+  full.
+
 ## Out of scope (by user decision)
 
 - CoreMIDI live playback (the original could play through a MIDI device;

@@ -25,6 +25,8 @@
 #include "detector.h"
 #include "mdf.h"
 #include "smf.h"
+#include "timbre.h"
+#include "timbre_capture.h"
 #include "track_metadata.h"
 
 namespace {
@@ -385,8 +387,19 @@ int main(int argc, char** argv) {
         MidiTrack* track;
         std::unique_ptr<PitchedChannelDetector> pitched;
         std::unique_ptr<RhythmChannelDetector> rhythm;
+        // --track-metadata の音色候補用。FDS/N163/S5B/VRC6-Pulse のみ、
+        // このチャンネルで最初にノートオンが起きたフレームで一度だけ埋める。
+        bool timbre_captured = false;
+        TimbreSnapshot timbre;
     };
     std::vector<ActiveChannel> active;
+
+    // 波形メモリ/エンベロープを CNSFCore から読み出す価値があるチャンネル種別。
+    // duty概念のないチップにまで毎フレーム余計な状態を読みに行かないためのガード。
+    auto is_timbre_eligible = [](ChannelKind kind) {
+        return kind == ChannelKind::Fds || kind == ChannelKind::N163 ||
+               kind == ChannelKind::S5B || kind == ChannelKind::Vrc6Pulse;
+    };
 
     for (size_t i = 0; i < channels.size(); i++) {
         const ChannelInfo& info = channels[i];
@@ -446,6 +459,14 @@ int main(int argc, char** argv) {
 
             if (ac.pitched) {
                 ac.pitched->ProcessFrame(tick, state, *ac.track);
+                // 最初のノートオンが起きたフレームでだけ、実チップの波形/エンベロープ
+                // 状態を読み出す (毎フレーム読むのは無駄で、複数ノートオンを跨いだ
+                // 「代表的な」状態を選ぶ根拠もないため、最初の1回に固定する)。
+                if (!ac.timbre_captured && is_timbre_eligible(ac.info.kind) &&
+                    ac.pitched->IsNoteActive()) {
+                    ac.timbre = CaptureTimbreSnapshot(core, ac.info);
+                    ac.timbre_captured = true;
+                }
             } else {
                 ac.rhythm->ProcessFrame(tick, state, *ac.track);
             }
@@ -486,6 +507,10 @@ int main(int argc, char** argv) {
             // i+1 に対応する (main() 冒頭の smf.AddTrack() 呼び出し順と一致)。
             entry.track_index = static_cast<int>(entries.size() + 1);
             entry.channel = ac.info.label;
+            if (ac.timbre_captured) {
+                entry.has_timbre = true;
+                entry.timbre = ac.timbre;
+            }
             entries.push_back(std::move(entry));
         }
         if (!WriteTrackMetadata(opt.track_metadata_path, kChipSampleRate, chip_sample_count,

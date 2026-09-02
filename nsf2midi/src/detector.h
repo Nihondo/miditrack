@@ -43,6 +43,11 @@ public:
     void ProcessFrame(uint32_t tick, const FrameState& state, MidiTrack& track);
     void Finish(uint32_t tick, MidiTrack& track);
 
+    // このフレーム処理後にノートが発音中かどうか。main.cpp が
+    // --track-metadata の音色スナップショット (FDS波形/N163波形RAM/S5B状態/
+    // VRC6デューティ) を「最初のノートオンが起きたフレーム」だけ捉えるために使う。
+    bool IsNoteActive() const { return note_active_; }
+
 private:
     ChannelInfo info_;
     ChannelConfig cfg_;
