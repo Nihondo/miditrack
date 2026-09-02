@@ -118,6 +118,12 @@ Exit code `3` is deliberately distinct from `1`, so a batch script processing
 a folder of `.spc`/`.rsn` files can tell "this file isn't supported" apart
 from "this file is broken."
 
+For a single `.spc`/`.spc2` file (not a `.rsn` archive), exit code `3` also
+prints the file's ID666 tag — song title, game title, artist, comments,
+dumper name — and its SPC700 entry point address to stderr, as a starting
+point for figuring out whether the driver is a variant of one already
+supported or genuinely new.
+
 ## Limitations
 
 - Files using a sound driver outside VGMTrans's ~20 supported SNES formats

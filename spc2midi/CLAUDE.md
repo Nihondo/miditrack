@@ -204,6 +204,105 @@ issues, all fixed:
   `used_stems` while still returning the candidate with its original
   casing intact, so the second collection correctly gets suffixed.
 
+## Added: ID666/entry-point diagnostics on exit code 3 (`ReportSpcHeaderHints()`)
+
+`ReportNoDriver()` used to print only a fixed, generic message (three
+example driver names) when none of VGMTrans's ~20 scanners recognized the
+file — useful for telling "unsupported" apart from "broken" (see the exit
+code note above), but of no help figuring out *which* driver a given file
+actually needs. This closes `docs/chip-support.md`'s low-priority "SPC の
+対応ドライバ" plan item: "VGMTrans が持つドライバ検出結果を詳細化し、未対応
+SPC で候補ドライバ名と次に必要な解析情報を報告する," with exit code `3`
+kept unchanged as the completion condition requires.
+
+**Why this couldn't be "make VGMTrans's own scanners report a near-miss
+score"**: investigated and rejected. All ~20 `formats/*Snes/*Scanner.cpp`
+files use the same design — a `BytePattern` (fixed bytes + wildcard mask,
+`util/BytePattern.h`) searched via `RawFile::searchBytePattern()` — and
+`Scanner::scan()`'s return type is `void`; a non-matching scan just returns
+with nothing recorded anywhere. There is no fuzzy-match score, no
+"here's what it almost matched" log, not even at verbose/debug log levels
+(confirmed by reading every scanner's failure path). Getting that kind of
+diagnostic out of VGMTrans itself would mean patching ~20 vendored files
+plus their shared base class — a real fork, not a pin, contradicting this
+project's whole "pinned commit, only `main.cpp` grows a feature" posture
+(see "How VGMTrans is vendored" above). It was also unnecessary: `Root.cpp`
+also confirmed `VGMRoot::openRawFile()` deletes and discards the `DiskFile`
+entirely when no scanner matches (`if (!loadRawFile(newFile)) delete
+newFile;`, and a failed `loadRawFile()` never adds it to `m_rawfiles`), so
+even `g_root.rawFiles()` has nothing left to inspect after the fact —
+confirming the diagnostic has to come from re-reading the input
+independently, not from anything VGMTrans retained.
+
+**What `ReportSpcHeaderHints()` (`main.cpp`) does instead**: constructs its
+own `DiskFile`/`SPCFile` directly from `input_path`, entirely independent
+of (and after) `g_root`'s failed attempt. `SPCFile`'s constructor already
+validates the SPC700 signature and minimum size and parses the ID666 tag
+(song title, game title, artist, comments, dumper name — `components/
+SPCFile.h`/`.cpp`, a small, already-public VGMTrans class this project
+doesn't need to patch) — a game title is exactly the search term someone
+would use to check whether VGMTrans has (or nearly has) a scanner for that
+game's driver family. `SPCFile` does *not* parse the SPC700 register block
+(PC/A/X/Y/PSW/SP at raw offset `0x25`-`0x2D`), so `ReportSpcHeaderHints()`
+reads the entry point (`readShort(0x25)`) directly off the same `DiskFile`
+— the two-byte PC register an SNES emulator loaded at power-on, i.e. the
+first address someone reverse-engineering an unrecognized driver's boot
+code would want. The offset is cross-checked, not just recalled from the
+general SPC file format spec: `SPCFile.cpp`'s own `loadID666Tag()` reads
+the song title starting at `0x2E`, and `0x25` (PC) + 2 (PC) + 1+1+1+1+1
+(A/X/Y/PSW/SP) + 2 (reserved) = `0x2E` exactly, confirming the layout
+against the vendored parser's own known-correct offset rather than trusting
+memory alone.
+
+**Why `.spc2` gets full hints but `.rsn` does not**: `SPCFile`'s constructor
+throws (`std::runtime_error`/`std::length_error`) for anything that isn't a
+single raw SPC700 dump — a `.rsn` (a RAR archive of many `.spc` files, see
+"What this project is" above) fails the leading `"SNES-SPC700 Sound File
+Data"` signature check immediately. `ReportSpcHeaderHints()` catches
+`std::exception` around the whole `DiskFile`/`SPCFile` construction and
+simply returns with no extra output in that case — `.rsn` support would
+require unpacking the archive the same way `loaders/RSNLoader.cpp` does
+(via `unarr`) and reporting per-member hints, judged out of scope for a
+low-priority diagnostic-only feature; `ReportNoDriver()`'s base message is
+unaffected either way. A garbage/corrupted `.spc`-named file degrades the
+same way (caught, no hints, same base message) — confirmed with both
+a random-bytes file and a tiny non-SPC text file during verification below.
+
+**`miditrack/convert.py` had to change too, or none of this would ever
+reach a user.** `list_songs()`/`convert_to_midi()` both special-case SPC's
+exit code `3` by raising a *fixed* Japanese `ConvertError` message and
+discarding `result.stderr` entirely (see miditrack's own `CLAUDE.md`, "Why
+nsf2midi/spc2midi's own exit code 3 gets a dedicated message") — so
+strengthening `ReportNoDriver()` alone would have been invisible through
+the Web UI. `convert._spc_no_driver_message()` now finds spc2midi's new
+`"--- ID666 tag"` marker line in `result.stderr` (present only when
+`ReportSpcHeaderHints()` actually printed something) and appends everything
+from that marker onward to the fixed Japanese message, rather than
+appending the *entire* stderr (which would duplicate spc2midi's own English
+base message right after the Japanese one). This is the same
+literal-string-coupling-to-a-`printf`-format posture `_parse_nsf_list()`/
+`_parse_spc_list()` already document for `-l`/`--list` output — an edit to
+`ReportSpcHeaderHints()`'s marker text must be mirrored in
+`_SPC_NO_DRIVER_HINTS_MARKER`, or the hints silently stop appearing without
+breaking anything else. Reused by both `list_songs()` and
+`convert_to_midi()`'s identical exit-3 branches, which previously each
+inlined the same fixed message independently.
+
+Verified with hand-built fixtures (no real unsupported SPC available in
+this environment): a synthetic `.spc2` with a valid SPC700 header, an ID666
+tag (song/game/artist/dumper/comments), a nonzero PC register, and 64KB of
+`0xAA`-filled ARAM (guaranteed to match no real driver's byte pattern)
+printed the full hint block and still exited `3`; a 2000-byte random-bytes
+file named `.spc` and a tiny non-SPC text file both degraded to the base
+message only, still exiting `3` (no crash, no false hints) — confirming the
+signature-mismatch catch path. `miditrack`'s own `test_convert.py` gained
+`test_spc_no_driver_exit_code_includes_id666_hints_when_present` in both
+`TestListSongs`/`TestConvertToMidi` (marker-containing stderr surfaces the
+game title/entry point through `ConvertError`) alongside the pre-existing
+`test_spc_no_driver_exit_code_raises_dedicated_message` (marker-free stderr
+still falls back to the base message only) — full miditrack suite (561
+tests) passes.
+
 ## Build
 
 ```

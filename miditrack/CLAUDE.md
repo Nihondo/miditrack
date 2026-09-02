@@ -1223,6 +1223,28 @@ both special-case this exit code with the same Japanese message a user
 would actually want to see, before falling through to the generic
 stderr-tail message for any other nonzero exit.
 
+**`convert._spc_no_driver_message()` also forwards spc2midi's own ID666/
+entry-point diagnostics, when present.** `spc2midi`'s `ReportSpcHeaderHints()`
+(its own `CLAUDE.md`) prints a `"--- ID666 tag ..."`-marked block to stderr
+on exit 3 for a single `.spc`/`.spc2` input — the game title, artist,
+comments, dumper name, and SPC700 entry point, useful for judging whether
+an unrecognized driver is a variant of one VGMTrans already supports.
+Simply keeping the pre-existing fixed-message replacement would have
+silently discarded that block along with the rest of `result.stderr`, so
+`_spc_no_driver_message()` locates `_SPC_NO_DRIVER_HINTS_MARKER` in the
+stderr text and appends everything from that point on to the fixed Japanese
+message — never the *entire* stderr, which would duplicate spc2midi's own
+English base message right underneath the Japanese one. This is literal-
+string coupling to `spc2midi/src/main.cpp`'s own `printf` text, the same
+posture already established for `_parse_nsf_list()`/`_parse_spc_list()`'s
+`-l`/`--list` output parsing — a marker-text change on the C++ side must be
+mirrored here or the hints silently stop appearing (harmlessly: the base
+message alone is still correct, just less helpful). A `.rsn` archive or a
+corrupted `.spc`-named input produces no marker (spc2midi's own hint
+generation catches that and prints nothing extra), so
+`_spc_no_driver_message()` naturally falls back to the base message only —
+no branch needed here for that case.
+
 ## Why the WAV/MIDI conversion options are a server-owned schema
 
 `convert.option_schema()` plays the same role for the "convert" panel that

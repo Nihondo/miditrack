@@ -173,6 +173,25 @@ class TestListSongs(unittest.TestCase):
                 convert.list_songs(convert.format_by_key("nsf"), self.source_path)
         self.assertIn("boom", str(ctx.exception))
 
+    def test_spc_no_driver_exit_code_includes_id666_hints_when_present(self) -> None:
+        hint_stderr = (
+            "error: no supported SNES sequence driver was recognized in 'x.spc'.\n"
+            "       --- ID666 tag (candidate identification hints) ---\n"
+            "       Game title:  Test Game\n"
+            "       Entry point: $1234 (SPC700 PC register at load time)\n"
+        )
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 3, stdout="", stderr=hint_stderr)
+
+        with mock.patch("miditrack.convert.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(ConvertError) as ctx:
+                convert.list_songs(convert.format_by_key("spc"), self.source_path)
+        message = str(ctx.exception)
+        self.assertIn("ドライバ", message)
+        self.assertIn("Game title:  Test Game", message)
+        self.assertIn("Entry point: $1234", message)
+
 
 class TestOptionSchemaAndValidation(unittest.TestCase):
     def test_nsf_defaults_song_index_zero_when_songs_present(self) -> None:
@@ -617,6 +636,33 @@ class TestConvertToMidi(unittest.TestCase):
                     convert.format_by_key("spc"), self.source_path, self.output_path, {"songIndex": 0, "loops": 1}
                 )
         self.assertIn("conversion failed", str(ctx.exception))
+
+    def test_spc_no_driver_exit_code_includes_id666_hints_when_present(self) -> None:
+        # spc2midi/src/main.cppのReportSpcHeaderHints()が単体.spc/.spc2で追加する
+        # 診断ブロック(docs/chip-support.mdの「SPCの対応ドライバ」検証項目)が、
+        # 固定の日本語メッセージに続けてConvertErrorへ残ることを確認する。
+        hint_stderr = (
+            "error: no supported SNES sequence driver was recognized in 'x.spc'.\n"
+            "       The file loaded correctly, but its music driver is not one of the 20\n"
+            "       formats VGMTrans can parse.\n"
+            "       --- ID666 tag (candidate identification hints) ---\n"
+            "       Song title:  Test Song\n"
+            "       Game title:  Test Game\n"
+            "       Entry point: $1234 (SPC700 PC register at load time)\n"
+        )
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 3, stdout="", stderr=hint_stderr)
+
+        with mock.patch("miditrack.convert.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(ConvertError) as ctx:
+                convert.convert_to_midi(
+                    convert.format_by_key("spc"), self.source_path, self.output_path, {"songIndex": 0, "loops": 1}
+                )
+        message = str(ctx.exception)
+        self.assertIn("ドライバ", message)
+        self.assertIn("Game title:  Test Game", message)
+        self.assertIn("Entry point: $1234", message)
 
     def test_missing_output_raises(self) -> None:
         def fake_run(argv, **kwargs):

@@ -12,6 +12,7 @@
 // VGMColl に対して coll->seq()->saveAsMidi(path, coll) / conversion::createSF2File(*coll)
 // / conversion::createDLSFile(dls, *coll)。
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -25,8 +26,10 @@
 #include "DLSConversion.h"
 #include "DLSFile.h"
 #include "Options.h"
+#include "RawFile.h"
 #include "SF2Conversion.h"
 #include "SF2File.h"
+#include "SPCFile.h"
 #include "VGMColl.h"
 #include "VGMSeq.h"
 #include "paths.h"
@@ -148,6 +151,54 @@ ParseResult ParseArgs(int argc, char** argv, Options& opt) {
   return ParseResult::Ok;
 }
 
+// input_path が単体の .spc/.spc2 (SPC700ヘッダ+ID666タグ+64KB ARAMダンプ) として
+// 読める場合だけ、未対応ドライバの調査に使える追加情報をstderrへ出す。
+//
+// VGMTransの約20スキャナはどれも「既知タイトルから採取した固定バイト列パターン」
+// 方式で、惜しい一致のスコアやログを一切保持しない(上流にその情報が無い)ため、
+// 「次にどのドライバに近いか」はVGMTrans側からは得られない。代わりに、
+// spc2midi自身がSPCヘッダを直接読み、ゲームタイトル/アーティスト/コメント/
+// ダンパー名(VGMTransのSPCFileクラスが既に正しくパースできるID666タグ)と、
+// SPCFileが読まないSPC700初期レジスタのうちPC(エントリポイント)を出力する。
+// ゲームタイトルは「この曲のドライバがVGMTrans対応済みドライバの亜種か」を
+// 人間やAIエージェントが調べる手がかりに、エントリポイントは新規スキャナ
+// パターンを書く際の解析の出発点になる。
+//
+// .spc2は単体SPCの別拡張子だが、.rsn(複数.spcを含むRARアーカイブ)はここでは
+// 展開しない — RawFile/SPCFileの構築失敗(シグネチャ不一致や最小サイズ未満)を
+// 例外で検知し、その場合は追加情報を出さずに黙って戻る(ReportNoDriver()の
+// 既存の固定メッセージだけが残る)。
+void ReportSpcHeaderHints(const std::string& input_path) {
+  try {
+    DiskFile file(input_path);
+    SPCFile spc(file);  // シグネチャ不一致や0x10180バイト未満なら例外を投げる
+    // SPC700ヘッダの初期レジスタ (PC/A/X/Y/PSW/SP、いずれもSPCFileは読まない)。
+    // オフセットは標準SPCファイルフォーマット仕様: 0x25(PC,2byte)+A(1)+X(1)+Y(1)+
+    // PSW(1)+SP(1)+予約(2)=9byte で 0x25+9=0x2E となり、SPCFile.cpp の
+    // loadID666Tag() がID666タグの開始位置として使う 0x2E と一致することで
+    // 裏付けが取れている。SPCFileが上のサイズチェックを通過済みなので安全に読める。
+    uint16_t pc = file.readShort(0x25);
+    const ID666Tag& tag = spc.id666Tag();
+    std::fprintf(stderr,
+        "       --- ID666 tag (candidate identification hints) ---\n"
+        "       Song title:  %s\n"
+        "       Game title:  %s\n"
+        "       Artist:      %s\n"
+        "       Dumped by:   %s\n"
+        "       Comments:    %s\n"
+        "       Entry point: $%04X (SPC700 PC register at load time)\n"
+        "       If this game's driver is a variant of one VGMTrans already supports,\n"
+        "       the game title above is the search term to check VGMTrans's\n"
+        "       formats/ tree or issue tracker with. Otherwise, the entry point is\n"
+        "       the starting address for tracing the driver's boot code by hand.\n",
+        tag.songTitle.c_str(), tag.gameTitle.c_str(), tag.artist.c_str(),
+        tag.nameOfDumper.c_str(), tag.comments.c_str(), pc);
+  } catch (const std::exception&) {
+    // .spc2/.rsn以外の非SPC入力、またはRSNアーカイブそのもの。追加情報を
+    // 出せないだけで、ReportNoDriver()自体は失敗させない。
+  }
+}
+
 // ファイルは読めたが VGMTrans の20ドライバいずれにも該当しなかった場合のエラー。
 // 「壊れている」ではなく「未対応」だと分かるようにする。exit 3 で他の失敗と区別する。
 int ReportNoDriver(const std::string& input_path) {
@@ -158,6 +209,7 @@ int ReportNoDriver(const std::string& input_path) {
       "       CapcomSnes, SuzukiSnes, HudsonSnes, ...).\n"
       "       Run with -v to see which scanners were tried.\n",
       input_path.c_str());
+  ReportSpcHeaderHints(input_path);
   return 3;
 }
 

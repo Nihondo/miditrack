@@ -31,6 +31,15 @@ CONVERT_TIMEOUT_SECONDS = 300
 _STDERR_TAIL_LINES = 20
 
 _SPC_NO_DRIVER_EXIT_CODE = 3
+# spc2midi/src/main.cpp の ReportSpcHeaderHints() が出す診断ブロックの見出し。
+# 単体の.spc/.spc2 (SPC700ヘッダ+ID666タグを持つ入力) でだけ付く追加行で、
+# ゲームタイトル・アーティスト・コメント・ダンパー名・SPC700エントリポイントを
+# 含む——対応候補ドライバを後から調べる手がかりになるので、固定の日本語
+# メッセージに続けてそのまま残す。.rsn(複数.spcのRARアーカイブ)や壊れた入力
+# では出ないため、その場合は基本メッセージのみになる。文字列一致でspc2midi
+# 側のstderr整形と結合しているため、main.cppのメッセージ文言を変えたら
+# ここも合わせて変更すること(_parse_nsf_list()/_parse_spc_list()と同じ結合)。
+_SPC_NO_DRIVER_HINTS_MARKER = "--- ID666 tag"
 
 _M3U_EXTENSIONS = (".m3u", ".m3u8")
 _ZIP_EXTENSIONS = (".zip",)
@@ -484,6 +493,26 @@ def _parse_spc_list(output: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return metadata, songs
 
 
+def _spc_no_driver_message(stderr: str) -> str:
+    """ドライバ未検出(exit 3)時のConvertErrorメッセージを組み立てる。
+
+    固定の日本語説明に加え、spc2midi自身がstderrへ出す診断情報(見つかれば)
+    をそのまま末尾へ残す——ゲームタイトル/アーティスト/コメント/ダンパー名
+    (spc2midiが単体.spc/.spc2のID666タグから読む)とSPC700エントリポイント。
+    これらは「このドライバが対応済みドライバの亜種か」「新規対応を追加する
+    ならどこから解析すればよいか」を後から調べる際の手がかりになる。
+    """
+    message = (
+        "対応するSNESサウンドドライバが見つかりませんでした。"
+        "このSPCファイルの音楽ドライバはspc2midiが解析できる20種類のいずれにも該当しません。"
+    )
+    index = stderr.find(_SPC_NO_DRIVER_HINTS_MARKER)
+    if index == -1:
+        return message
+    hints = stderr[index:].strip()
+    return f"{message}\n{hints}"
+
+
 def list_songs(fmt: SourceFormat, source_path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """<tool> -l/--list を実行し、(メタデータ, 曲一覧) を返す。
 
@@ -497,10 +526,7 @@ def list_songs(fmt: SourceFormat, source_path: Path) -> tuple[dict[str, Any], li
     result = _run(argv, tool_label=f"{fmt.key}2midi")
 
     if fmt.key == "spc" and result.returncode == _SPC_NO_DRIVER_EXIT_CODE:
-        raise ConvertError(
-            "対応するSNESサウンドドライバが見つかりませんでした。"
-            "このSPCファイルの音楽ドライバはspc2midiが解析できる20種類のいずれにも該当しません。"
-        )
+        raise ConvertError(_spc_no_driver_message(result.stderr))
     if result.returncode != 0:
         stderr_lines = result.stderr.strip().splitlines()
         tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
@@ -850,10 +876,7 @@ def convert_to_midi(
     result = _run(argv, tool_label=tool_label)
 
     if fmt.key == "spc" and result.returncode == _SPC_NO_DRIVER_EXIT_CODE:
-        raise ConvertError(
-            "対応するSNESサウンドドライバが見つかりませんでした。"
-            "このSPCファイルの音楽ドライバはspc2midiが解析できる20種類のいずれにも該当しません。"
-        )
+        raise ConvertError(_spc_no_driver_message(result.stderr))
     if result.returncode != 0:
         stderr_lines = result.stderr.strip().splitlines()
         tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
