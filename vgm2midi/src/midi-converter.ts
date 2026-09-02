@@ -10,6 +10,12 @@ const GM_PROGRAM_LEAD_1_SQUARE = 80;
 const GM_PROGRAM_LEAD_2_SAWTOOTH = 81;
 const GM_PROGRAM_DRAWBAR_ORGAN = 16;
 const GM_PROGRAM_SYNTH_BRASS_1 = 62;
+// YM2413の内蔵patch 1-15を、近いGM試聴音色へ対応付ける。patch 0はユーザー
+// patchなので固定候補を与えず、従来と同じLead 1へフォールバックする。
+const YM2413_GM_PROGRAM_BY_PATCH = [
+  GM_PROGRAM_LEAD_1_SQUARE, 40, 24, 0, 73, 71, 68, 56,
+  GM_PROGRAM_DRAWBAR_ORGAN, 60, GM_PROGRAM_LEAD_1_SQUARE, 6, 11, 38, 32, 27,
+] as const;
 const GM_PERCUSSION_CHANNEL = 10;
 const GM_CLOSED_HI_HAT_NOTE = 42;
 const GM_PCM_PERCUSSION_FIRST_NOTE = 35;
@@ -311,7 +317,15 @@ interface FMTimbreMetadata {
   operatorTotalLevels?: number[];
   keyOnMask?: number;
   ym2413Instrument?: number;
+  ym2413CarrierMultiple?: number;
+  ym2413Volume?: number;
   specialOperator?: number;
+}
+
+interface FMTimbreEvent {
+  sampleTime: number;
+  source: 'ym2413-patch' | 'ym2413-custom-patch';
+  timbre: FMTimbreMetadata;
 }
 
 interface ActiveNoteInfo {
@@ -331,6 +345,7 @@ interface TrackState {
   cursor: number;
   expression: number;
   fmTimbre?: FMTimbreMetadata;
+  fmEvents?: FMTimbreEvent[];
   pcmEvents?: PCMTrackEvent[];
 }
 
@@ -995,6 +1010,20 @@ export class MidiConverter {
     return GM_PROGRAM_DRAWBAR_ORGAN;
   }
 
+  /** YM2413内蔵patch番号に対応するGM試聴音色候補を返す。 */
+  private suggestedProgramForYM2413Patch(instrument: number): number {
+    return YM2413_GM_PROGRAM_BY_PATCH[instrument & 0x0F] ?? GM_PROGRAM_LEAD_1_SQUARE;
+  }
+
+  /** YM2413の選択patchからcarrier Multipleを取得する。 */
+  private ym2413CarrierMultiple(state: ChannelState): number {
+    const instrument = state.ym2413Instrument ?? 0;
+    const nibble = instrument === 0
+      ? (this.hasYM2413CustomCarrierMultiple ? this.ym2413CustomPatch[1] & 0x0F : 1)
+      : YM2413_BUILTIN_CARRIER_MULTIPLES[instrument] ?? 1;
+    return YM2413_OPERATOR_MULTIPLES[nibble] ?? 1;
+  }
+
   /** OPN Ch3 Specialのオペレータトラックから親FMチャンネルを解決する。 */
   private opnCh3ParentStateForSourceKey(sourceKey: string): ChannelState | undefined {
     if (sourceKey.startsWith('ym2612_ch3sp_')) return this.channels.get('ym2612_2');
@@ -1025,18 +1054,49 @@ export class MidiConverter {
       : (paths[algorithm] ?? paths[0]).map(path => path.carrier);
     const specialMatch = /_ch3sp_(\d+)$/.exec(descriptor.sourceKey);
 
+    const ym2413Instrument = state.ym2413Instrument;
+    const suggestedProgram = model === 'opll'
+      ? this.suggestedProgramForYM2413Patch(ym2413Instrument ?? 0)
+      : this.suggestedProgramForFMTimbre(model, algorithm);
     return {
       model,
-      suggestedProgram: this.suggestedProgramForFMTimbre(model, algorithm),
+      suggestedProgram,
       ...(algorithm === undefined ? {} : { algorithm }),
       ...(carrierOperators === undefined ? {} : { carrierOperators }),
       ...(state.opnOperatorMultipliers ? { operatorMultipliers: state.opnOperatorMultipliers.slice() } : {}),
       ...(state.opnOperatorMultiplierWritten ? { operatorMultiplierWritten: state.opnOperatorMultiplierWritten.slice() } : {}),
       ...(state.opnOperatorTotalLevels ? { operatorTotalLevels: state.opnOperatorTotalLevels.slice() } : {}),
       ...(state.keyOnMask === undefined ? {} : { keyOnMask: state.keyOnMask }),
-      ...(state.ym2413Instrument === undefined ? {} : { ym2413Instrument: state.ym2413Instrument }),
+      ...(ym2413Instrument === undefined ? {} : {
+        ym2413Instrument,
+        ym2413CarrierMultiple: this.ym2413CarrierMultiple(state),
+        ym2413Volume: state.volume,
+      }),
       ...(specialMatch ? { specialOperator: Number(specialMatch[1]) } : {}),
     };
+  }
+
+  /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
+  private recordYM2413TimbreEvent(
+    channel: number,
+    currentTime: number,
+    source: FMTimbreEvent['source']
+  ): void {
+    const key = `ym2413_${channel}`;
+    const state = this.channels.get(key)!;
+    if (!state.active) return;
+    const descriptor = this.resolveDescriptor(key);
+    const trackState = this.tracks.get(descriptor.id);
+    if (!trackState) return;
+    const timbre = this.fmTimbreForDescriptor(descriptor);
+    if (!timbre) return;
+    const events = trackState.fmEvents;
+    const prior = events && events.length > 0
+      ? events[events.length - 1].timbre
+      : trackState.fmTimbre;
+    if (JSON.stringify(prior) === JSON.stringify(timbre)) return;
+    trackState.fmEvents ??= [];
+    trackState.fmEvents.push({ sampleTime: currentTime, source, timbre });
   }
 
   /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
@@ -3886,6 +3946,11 @@ export class MidiConverter {
     if (reg >= 0x00 && reg <= 0x07) {
       this.ym2413CustomPatch[reg] = data;
       if (reg === 0x01) this.hasYM2413CustomCarrierMultiple = true;
+      for (let channel = 0; channel < 9; channel++) {
+        if (this.channels.get(`ym2413_${channel}`)!.ym2413Instrument === 0) {
+          this.recordYM2413TimbreEvent(channel, currentTime, 'ym2413-custom-patch');
+        }
+      }
       return;
     }
     if (reg === 0x0E) {
@@ -4051,9 +4116,9 @@ export class MidiConverter {
     this.noteOn(key, 0, currentTime, activeNotes);
   }
 
-  // $30-$38: upper nibble is normally the instrument number (not modeled — every melodic
-  // track uses the shared square-lead GM Program like every other chip in this file), lower
-  // nibble is a 4-bit volume (0=loudest, 15=quietest). In rhythm mode, $37/$38's upper
+  // $30-$38: upper nibble is normally the instrument number, which selects an initial GM
+  // audition candidate and sidecar timbre snapshot; lower nibble is a 4-bit volume
+  // (0=loudest, 15=quietest). In rhythm mode, $37/$38's upper
   // nibble is repurposed as HH/TOM volume (confirmed against emu2413's OPLL_writeReg()
   // $30-$38 case); the lower nibble always carries SD/CYM (or, for $30-$36, the normal
   // per-channel) volume.
@@ -4092,6 +4157,7 @@ export class MidiConverter {
       const expression = Math.round((this.ym2413Velocity(volume) / 100) * 127);
       this.addExpression(key, expression, currentTime);
     }
+    this.recordYM2413TimbreEvent(channel, currentTime, 'ym2413-patch');
   }
 
   // No authoritative dB/step figure was available for YM2413's 4-bit volume register
@@ -5367,6 +5433,7 @@ export class MidiConverter {
       descriptor: state.descriptor,
       libvgm: this.libvgmTargetForDescriptor(state.descriptor),
       fm: state.fmTimbre,
+      fmEvents: state.fmEvents,
       pcm: this.pcmMetadataForTrack(state),
     }));
     require('fs').writeFileSync(outputPath, JSON.stringify({

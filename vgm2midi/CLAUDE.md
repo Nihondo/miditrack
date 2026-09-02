@@ -1382,6 +1382,10 @@ the converter.
   times, and an MSM6258 start carries its loop flag. This keeps repeated and
   post-wrap sample identities editable without changing `miditrack`'s version-1
   channel-mapping reader.
+- YM2413 writes `$30-$38` select an initial patch-derived GM program only at
+  track creation. Later active patch changes and user-patch register writes are
+  appended as `fmEvents` sidecar entries with their VGM sample time; they do not
+  emit MIDI Program Change events or claim to reproduce the OPLL timbre.
 - YM2413 per-operator Multiple (instrument-dependent pitch scaling) and a
   `$20`-before-`$10` key-on write order — see "Added: YM2413 (OPLL) FM and
   rhythm conversion" above; note conversion itself is now implemented.

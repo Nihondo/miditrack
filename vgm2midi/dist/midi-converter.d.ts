@@ -82,10 +82,16 @@ export declare class MidiConverter {
     private resolveDescriptor;
     /** FMトラックの初回発音時に使うGM音色候補を返す。 */
     private suggestedProgramForFMTimbre;
+    /** YM2413内蔵patch番号に対応するGM試聴音色候補を返す。 */
+    private suggestedProgramForYM2413Patch;
+    /** YM2413の選択patchからcarrier Multipleを取得する。 */
+    private ym2413CarrierMultiple;
     /** OPN Ch3 Specialのオペレータトラックから親FMチャンネルを解決する。 */
     private opnCh3ParentStateForSourceKey;
     /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
     private fmTimbreForDescriptor;
+    /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
+    private recordYM2413TimbreEvent;
     /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
     private pcmMetadataForTrack;
     private getTrack;

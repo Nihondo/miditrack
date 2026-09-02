@@ -35,7 +35,10 @@ class TestLibvgmMetadata(unittest.TestCase):
                 }, "pcm": {
                     "source": "ym2612-dac", "sampleId": "001234", "gmNote": 35,
                     "events": [{"type": "start", "sampleTime": 0}],
-                }},
+                }, "fmEvents": [{
+                    "sampleTime": 441, "source": "ym2413-patch",
+                    "timbre": {"model": "opll", "suggestedProgram": 16},
+                }]},
                 {"trackIndex": 1, "libvgm": {
                     "deviceType": 2, "instance": 0, "mainMask": 64,
                     "linkedMask": 0, "groupId": "2:0:64:0",

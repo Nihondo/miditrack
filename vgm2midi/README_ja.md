@@ -40,7 +40,7 @@ VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイ�
 - MIDI音符を生成できない場合は成功扱いや出力の上書きをせず、14バイトの空MIDIヘッダーを作る代わりにエラー終了
 - `--noise-wav FILE`でSN76489/HuC6280ノイズを16bit・44.1kHz・ステレオの独立したLFSRステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-noise-midi`を追加可能
 - `--dac-wav FILE`で実際のYM2612 DAC/PCMサンプル音声（メガドライブのドラムチャンネル）を16bit・44.1kHz・ステレオの独立したステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-dac-midi`を追加可能
-- `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。FMトラックには最初のノート時点の音源モデル、アルゴリズム、carrier、オペレータレベル、倍率、キーオンマスク、GM音色候補を出力する。PCMトラックには音源固有のサンプルID、割当先GMノート、開始／停止境界とMSM6258のループ境界を出力する。既存のチャンネル対応を使う`miditrack`との互換性は維持する
+- `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。FMトラックには最初のノート時点の音源モデル、アルゴリズム、carrier、オペレータレベル、倍率、キーオンマスク、GM音色候補を出力する。YM2413は選択patchから初期候補を選び、`fmEvents`には発音中のpatchおよびuser patch変更を記録する。PCMトラックには音源固有のサンプルID、割当先GMノート、開始／停止境界とMSM6258のループ境界を出力する。既存のチャンネル対応を使う`miditrack`との互換性は維持する
 
 ## インストール
 
@@ -154,7 +154,7 @@ vgm2midi song.vgz --ch3-special-percussion
 ### 制限事項
 
 - FM音源のパラメータは簡略化されています — MIDIにはFM音色のネイティブなモデルが無いため、YM2203/YM2608/YM2612/YM2151のチャンネルは単純なノートとして近似されます。YM2203、YM2608、YM2612では、アルゴリズム、キーオンマスク、トータルレベル、明示的に書き込まれたオペレータ倍率を、0.5倍を含む明確な2の累乗の共通オクターブ補正にのみ使用します。共通する2の累乗倍率を持たない比率、デチューン、エンベロープ、聴感上のミッシングファンダメンタルは、従来どおり生のF-Numberによる近似のままです
-- YM2413は逆順の`$20`→`$10` key-onを遅延確定し、明示的な2の累乗carrier Multiple補正だけを扱います。2の累乗以外の比率、envelope、detune、元のOPLL音色はMIDIのモデル外です
+- YM2413は逆順の`$20`→`$10` key-onを遅延確定し、明示的な2の累乗carrier Multiple補正だけを扱います。2の累乗以外の比率、envelope、detune、元のOPLL音色はMIDIのモデル外です。patchから選ぶGM音色候補は試聴用であり、音色再現ではありません
 - YM3526/YM3812/Y8950 OPL変換はF-Number/block、key遷移、CNT carrier経路、Total Level、MULTIPLEによるオクターブ補正、`$BD`リズムキーを扱います。KSL、feedback、波形選択、envelope、AM/vibrato、元のFM音色は再現しません。YMF262/OPL3とY8950 ADPCMは変換対象外で、Y8950 ADPCM writeはdiagnosticsと`--strict`に残ります
 - YM2203／YM2608／YM2612チャンネル3のスペシャルモードは、オペレータ別の`$A8-$AA`／`$AC-$AE`周波数と、オペレータ4が使う通常の`$A2`／`$A6`周波数から変換します。既定の4トラック出力は編集用に各オペレータ周波数を露出しますが、アルゴリズム内のFM相互作用は再現できません。`--ch3-special-percussion`は複合アタックを1打に保ち、キャリアの基準音域からGMドラムへヒューリスティックに割り当てますが、元のFM音色は合成せず、特殊な音色を誤分類する可能性があります
 - CSMモードはYM2612、YM2151、YM2203、YM2608で変換します。Timer Aのオーバーフローを1 tickのMIDIアタックへ変換します。OPNは既存のCh3 Special表現を使い、OPMは設定済みの8チャンネルをアタックします。同一MIDI tick内の複数オーバーフローは1回へ集約するため、元のFMエンベロープを再現するのではなく、編集可能なアタック近似として出力します

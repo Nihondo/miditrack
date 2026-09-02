@@ -1575,6 +1575,43 @@ test('FM track metadata snapshots the first-note timbre state without changing n
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('YM2413 patch selects an initial GM candidate and records active timbre changes', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-ym2413-metadata-test-'));
+  const metadataPath = path.join(tempDirectory, 'ym2413.libvgm.json');
+  const converter = new MidiConverter({
+    header: createHeader({ ym2413Clock: 3579545, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2413', register: 0x30, data: 0x10 }, // Patch 1: Violin.
+      { type: 'chip_write', chip: 'YM2413', register: 0x10, data: 0x69 },
+      { type: 'chip_write', chip: 'YM2413', register: 0x20, data: 0x14 },
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2413', register: 0x30, data: 0x80 }, // Patch 8: Organ.
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2413', register: 0x30, data: 0x00 }, // Patch 0: user patch.
+      { type: 'chip_write', chip: 'YM2413', register: 0x01, data: 0x04 }, // User carrier MULTI=4.
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2413', register: 0x20, data: 0x04 },
+      { type: 'end' },
+    ],
+  });
+
+  const tracks = converter.convert();
+  converter.exportTrackMetadata(metadataPath, 300);
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  const entry = metadata.tracks.find(track => track.descriptor.sourceKey === 'ym2413_0');
+
+  assert.equal(tracks[0].events.filter(event => event.name === 'NoteOnEvent').length, 1);
+  assert.equal(entry.fm.ym2413Instrument, 1);
+  assert.equal(entry.fm.suggestedProgram, 40);
+  assert.deepEqual(entry.fmEvents.map(event => [event.sampleTime, event.source, event.timbre.suggestedProgram]), [
+    [100, 'ym2413-patch', 16],
+    [200, 'ym2413-patch', 80],
+    [200, 'ym2413-custom-patch', 80],
+  ]);
+  assert.equal(entry.fmEvents[2].timbre.ym2413CarrierMultiple, 4);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('YM2151 channel 7 noise operator maps to percussion without a phantom FM note', () => {
   const converter = new MidiConverter({
     header: createHeader(),

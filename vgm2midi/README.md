@@ -87,7 +87,8 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   MIDI track index to its libvgm device, instance, and main/linked channel masks.
   FM tracks also include a first-note snapshot of the detected model, algorithm,
   carrier operators, operator levels, multipliers, key-on mask, and suggested
-  GM program. PCM tracks include their source-specific sample ID, assigned GM
+  GM program. YM2413 derives its initial candidate from the selected patch, and
+  `fmEvents` records later active patch or user-patch changes. PCM tracks include their source-specific sample ID, assigned GM
   note, and start/stop (plus MSM6258 loop) boundaries; `miditrack` remains
   compatible with the existing channel mapping
 
@@ -307,7 +308,8 @@ vgm2midi song.vgz --ch3-special-percussion
   fundamentals remain raw F-Number approximations
 - YM2413 defers reverse `$20`-then-`$10` key-on ordering and models only an
   explicit power-of-two carrier-Multiple correction. Non-power-of-two ratios,
-  envelopes, detune, and the original OPLL timbre remain outside MIDI's model
+  envelopes, detune, and the original OPLL timbre remain outside MIDI's model.
+  Its patch-derived GM program is an audition suggestion, not a timbre reconstruction
 - YM3526/YM3812/Y8950 OPL conversion models F-Number/block, key transitions,
   CNT carrier routing, Total Level, MULTIPLE-based octave correction, and `$BD`
   rhythm keys. KSL, feedback, waveform selection, envelopes, AM/vibrato, and the
