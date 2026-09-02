@@ -78,6 +78,12 @@ export declare class MidiConverter {
     private descriptorForKey;
     /** descriptor IDまたは従来source keyからdescriptorを得る。 */
     private resolveDescriptor;
+    /** FMトラックの初回発音時に使うGM音色候補を返す。 */
+    private suggestedProgramForFMTimbre;
+    /** OPN Ch3 Specialのオペレータトラックから親FMチャンネルを解決する。 */
+    private opnCh3ParentStateForSourceKey;
+    /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
+    private fmTimbreForDescriptor;
     private getTrack;
     private isPercussionKey;
     private isWidePitchBendFMKey;

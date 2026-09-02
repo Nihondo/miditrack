@@ -1425,7 +1425,7 @@ test('YM2612 carrier TL uses relative CC11 mid-note and resets it at the next ke
   assert.equal(expressionValues.at(-1), 127); // The next note is not double-attenuated.
 });
 
-test('GM Program Change uses one stable square lead for every melodic chip track', () => {
+test('GM Program Change keeps PSG neutral and derives OPN/OPM programs from the initial algorithm', () => {
   function programForCommands(commands) {
     const converter = new MidiConverter({
       header: createHeader({
@@ -1438,8 +1438,8 @@ test('GM Program Change uses one stable square lead for every melodic chip track
     return track.events.find(e => e.name === 'ProgramChangeEvent').instrument;
   }
 
-  // Keep every melodic track on the neutral square lead. Chip-specific GM presets can
-  // contain built-in vibrato/tremolo that is not present in the VGM register stream.
+  // PSG and wave-table tracks have no trustworthy timbre model, so they retain the
+  // neutral square lead rather than selecting a preset with unrelated modulation.
   assert.equal(programForCommands([
     { type: 'psg_write', chip: 'SN76489', data: 0x80 | 5 },
     { type: 'psg_write', chip: 'SN76489', data: 0x00 },
@@ -1454,34 +1454,67 @@ test('GM Program Change uses one stable square lead for every melodic chip track
     { type: 'chip_write', chip: 'HuC6280', register: 0x04, data: 0x9F },
   ]), 80);
 
-  // OPN algorithms must not change the fallback instrument.
+  // OPN/OPM share the algorithm-to-program mapping.  This is only an initial GM
+  // suggestion; the sidecar retains the chip state needed to explain the choice.
   assert.equal(programForCommands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x00 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
-  ]), 80);
+  ]), 81);
 
   assert.equal(programForCommands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x05 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
-  ]), 80);
+  ]), 62);
 
   assert.equal(programForCommands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x07 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
-  ]), 80);
+  ]), 16);
 
-  // YM2151 also keeps the same stable fallback regardless of CONNECT.
+  // YM2151 uses the same OPN-style algorithm numbering for this purpose.
   assert.equal(programForCommands([
     { type: 'chip_write', chip: 'YM2151', port: 0, register: 0x20, data: 0x00 },
     { type: 'chip_write', chip: 'YM2151', port: 0, register: 0x28, data: 0x4A },
     { type: 'chip_write', chip: 'YM2151', port: 0, register: 0x08, data: 0x40 },
-  ]), 80);
+  ]), 81);
+});
+
+test('FM track metadata snapshots the first-note timbre state without changing notes', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-fm-metadata-test-'));
+  const metadataPath = path.join(tempDirectory, 'fm.libvgm.json');
+  const { converter, tracks } = convertYM2612Commands([
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x05 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x30, data: 0x01 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x3C, data: 0x02 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x40, data: 0x04 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x4C, data: 0x0C },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA4, data: 0x22 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA0, data: 0x69 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF0 },
+    { type: 'wait', samples: 4410 },
+    { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x00 },
+  ]);
+
+  const noteEvents = tracks[0].events.filter(event => event.name === 'NoteOnEvent' || event.name === 'NoteOffEvent');
+  assert.equal(noteEvents.length, 2);
+  converter.exportTrackMetadata(metadataPath, 4410);
+  const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  const fm = metadata.tracks.find(entry => entry.descriptor.chip === 'YM2612').fm;
+  assert.equal(metadata.version, 1); // Existing miditrack readers remain compatible.
+  assert.equal(fm.model, 'opn');
+  assert.equal(fm.suggestedProgram, 62);
+  assert.equal(fm.algorithm, 5);
+  assert.deepEqual(fm.carrierOperators, [1, 2, 3]);
+  assert.deepEqual(fm.operatorMultipliers, [1, 0, 0, 2]);
+  assert.deepEqual(fm.operatorTotalLevels, [4, 0, 0, 12]);
+  assert.equal(fm.keyOnMask, 15);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
 test('YM2151 channel 7 noise operator maps to percussion without a phantom FM note', () => {

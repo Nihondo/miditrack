@@ -64,8 +64,11 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   pitch bend, avoiding frame-rate note retriggers from software pitch envelopes and arpeggios
 - Applies an initial pitch bend to every melodic note so the source frequency is
   retained instead of being left rounded by as much as half a semitone
-- Every track is sent an explicit General MIDI instrument (program 81,
-  "Lead 1 (square)") so DAWs don't fall back to a random default per track
+- Every melodic track is sent an explicit General MIDI instrument so DAWs do
+  not fall back to a random default. PSG and wavetable tracks use "Lead 1
+  (square)". OPN/OPM and OPL FM tracks select a stable initial GM suggestion
+  from the algorithm at their first note; this is a preview choice, not a
+  reconstruction of the original FM timbre
 - Configurable tempo
 - Expands a VGM loop section by total playback count (`--loops`) or to an exact
   target duration (`--duration`)
@@ -80,8 +83,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   corresponding GM percussion notes by default; add `--keep-dac-midi` for
   A/B comparison
 - `--track-metadata FILE` writes a versioned JSON sidecar that maps each output
-  MIDI track index to its libvgm device, instance, and main/linked channel masks;
-  `miditrack` uses this for its per-track SoundFont/libvgm source selector
+  MIDI track index to its libvgm device, instance, and main/linked channel masks.
+  FM tracks also include a first-note snapshot of the detected model, algorithm,
+  carrier operators, operator levels, multipliers, key-on mask, and suggested
+  GM program; `miditrack` remains compatible with the existing channel mapping
 
 ## Installation
 

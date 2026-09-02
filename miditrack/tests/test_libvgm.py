@@ -29,6 +29,9 @@ class TestLibvgmMetadata(unittest.TestCase):
                     "deviceType": 2, "instance": 0, "mainMask": 64,
                     "linkedMask": 0, "groupId": "2:0:64:0",
                     "suggestedForHardwareMix": True,
+                }, "fm": {
+                    "model": "opn", "algorithm": 5,
+                    "carrierOperators": [1, 2, 3], "suggestedProgram": 62,
                 }},
                 {"trackIndex": 1, "libvgm": {
                     "deviceType": 2, "instance": 0, "mainMask": 64,

@@ -7,6 +7,9 @@ import { CLOCK_MASK } from './vgm-chip-metadata';
 // pulse/square-ish, so every track is given this one consistent voice explicitly rather
 // than leaving each track's instrument to whatever a DAW's MIDI import happens to assign.
 const GM_PROGRAM_LEAD_1_SQUARE = 80;
+const GM_PROGRAM_LEAD_2_SAWTOOTH = 81;
+const GM_PROGRAM_DRAWBAR_ORGAN = 16;
+const GM_PROGRAM_SYNTH_BRASS_1 = 62;
 const GM_PERCUSSION_CHANNEL = 10;
 const GM_CLOSED_HI_HAT_NOTE = 42;
 const GM_PCM_PERCUSSION_FIRST_NOTE = 35;
@@ -292,6 +295,20 @@ interface LibvgmTrackTarget {
   suggestedForHardwareMix: boolean;
 }
 
+/** 最初の発音時点におけるFMトラックの音色解釈。MIDIには表せない値をsidecarへ残す。 */
+interface FMTimbreMetadata {
+  model: 'opn' | 'opm' | 'opl' | 'opll';
+  suggestedProgram: number;
+  algorithm?: number;
+  carrierOperators?: number[];
+  operatorMultipliers?: number[];
+  operatorMultiplierWritten?: boolean[];
+  operatorTotalLevels?: number[];
+  keyOnMask?: number;
+  ym2413Instrument?: number;
+  specialOperator?: number;
+}
+
 interface ActiveNoteInfo {
   note: number;
   startTime: number;
@@ -308,6 +325,7 @@ interface TrackState {
   track: any;
   cursor: number;
   expression: number;
+  fmTimbre?: FMTimbreMetadata;
 }
 
 /** source keyを現在のdescriptor IDへ正規化し、既存handlerのMap APIを保つ。 */
@@ -932,6 +950,62 @@ export class MidiConverter {
     return this.descriptors.get(key) ?? this.descriptorForKey(key);
   }
 
+  /** FMトラックの初回発音時に使うGM音色候補を返す。 */
+  private suggestedProgramForFMTimbre(
+    model: FMTimbreMetadata['model'], algorithm: number | undefined
+  ): number {
+    if (algorithm === undefined || model === 'opll') return GM_PROGRAM_LEAD_1_SQUARE;
+    if (model === 'opl') return algorithm === 0
+      ? GM_PROGRAM_LEAD_2_SAWTOOTH : GM_PROGRAM_DRAWBAR_ORGAN;
+    if (algorithm <= 3) return GM_PROGRAM_LEAD_2_SAWTOOTH;
+    if (algorithm <= 6) return GM_PROGRAM_SYNTH_BRASS_1;
+    return GM_PROGRAM_DRAWBAR_ORGAN;
+  }
+
+  /** OPN Ch3 Specialのオペレータトラックから親FMチャンネルを解決する。 */
+  private opnCh3ParentStateForSourceKey(sourceKey: string): ChannelState | undefined {
+    if (sourceKey.startsWith('ym2612_ch3sp_')) return this.channels.get('ym2612_2');
+    const match = /^(ym2203|ym2608)_(\d+)_ch3sp_\d+$/.exec(sourceKey);
+    return match ? this.channels.get(`${match[1]}_${match[2]}_fm_2`) : undefined;
+  }
+
+  /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
+  private fmTimbreForDescriptor(descriptor: TrackDescriptor): FMTimbreMetadata | undefined {
+    const chip = descriptor.chip;
+    const model = chip === 'YM2151' ? 'opm'
+      : chip === 'YM2413' ? 'opll'
+      : OPL_CHIPS.includes(chip as OPLChip) ? 'opl'
+      : ['YM2203', 'YM2608', 'YM2612'].includes(chip) ? 'opn' : undefined;
+    if (!model) return undefined;
+    const isPrimaryFM = descriptor.section === 'fm'
+      || (descriptor.section === 'tone' && ['YM2151', 'YM2413', 'YM2612'].includes(chip));
+    if (!isPrimaryFM && descriptor.section !== 'ch3-special') return undefined;
+
+    const state = descriptor.section === 'ch3-special'
+      ? this.opnCh3ParentStateForSourceKey(descriptor.sourceKey)
+      : this.channels.get(descriptor.sourceKey);
+    if (!state) return undefined;
+
+    const algorithm = model === 'opll' ? undefined : state.opnAlgorithm ?? 0;
+    const paths = model === 'opl' ? OPL_OPERATOR_PATHS : OPN_OPERATOR_PATHS;
+    const carrierOperators = algorithm === undefined ? undefined
+      : (paths[algorithm] ?? paths[0]).map(path => path.carrier);
+    const specialMatch = /_ch3sp_(\d+)$/.exec(descriptor.sourceKey);
+
+    return {
+      model,
+      suggestedProgram: this.suggestedProgramForFMTimbre(model, algorithm),
+      ...(algorithm === undefined ? {} : { algorithm }),
+      ...(carrierOperators === undefined ? {} : { carrierOperators }),
+      ...(state.opnOperatorMultipliers ? { operatorMultipliers: state.opnOperatorMultipliers.slice() } : {}),
+      ...(state.opnOperatorMultiplierWritten ? { operatorMultiplierWritten: state.opnOperatorMultiplierWritten.slice() } : {}),
+      ...(state.opnOperatorTotalLevels ? { operatorTotalLevels: state.opnOperatorTotalLevels.slice() } : {}),
+      ...(state.keyOnMask === undefined ? {} : { keyOnMask: state.keyOnMask }),
+      ...(state.ym2413Instrument === undefined ? {} : { ym2413Instrument: state.ym2413Instrument }),
+      ...(specialMatch ? { specialOperator: Number(specialMatch[1]) } : {}),
+    };
+  }
+
   private getTrack(key: string): TrackState {
     const descriptor = this.resolveDescriptor(key);
     const storageKey = descriptor.id;
@@ -940,6 +1014,7 @@ export class MidiConverter {
       track.setTempo(this.options.tempo!);
       const sourceKey = descriptor.sourceKey;
       key = sourceKey;
+      const fmTimbre = this.fmTimbreForDescriptor(descriptor);
 
       // Add track name/instrument based on key
       if (key.startsWith('huc6280_')) track.addTrackName(this.huc6280TrackName(key));
@@ -969,7 +1044,7 @@ export class MidiConverter {
       // noteOn()/updateNotePitch() comments on that).
       if (!this.isPercussionKey(key)) {
         track.addEvent(new MidiWriter.ProgramChangeEvent({
-          instrument: GM_PROGRAM_LEAD_1_SQUARE,
+          instrument: fmTimbre?.suggestedProgram ?? GM_PROGRAM_LEAD_1_SQUARE,
           channel: descriptor.midiChannel - 1,
         }));
       }
@@ -993,7 +1068,7 @@ export class MidiConverter {
         }));
       }
 
-      this.tracks.set(storageKey, { descriptor, track, cursor: 0, expression: 127 });
+      this.tracks.set(storageKey, { descriptor, track, cursor: 0, expression: 127, fmTimbre });
     }
     return this.tracks.get(storageKey)!;
   }
@@ -4959,6 +5034,7 @@ export class MidiConverter {
       trackIndex,
       descriptor: state.descriptor,
       libvgm: this.libvgmTargetForDescriptor(state.descriptor),
+      fm: state.fmTimbre,
     }));
     require('fs').writeFileSync(outputPath, JSON.stringify({
       version: 1,
