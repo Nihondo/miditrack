@@ -891,6 +891,15 @@ descriptive signal features, not an instrument classifier, and must not alter
 the assigned GM percussion note or MIDI events. Other PCM and ADPCM codecs need
 their own verified decoders before joining this path.
 
+`c219PCMAnalysisForVoice()` reuses this signed-8-bit analysis only when C140
+type is C219 (`2`) and its mode has none of bit 0 (μ-law), bit 1 (unverified),
+bit 2 (noise), or bit 6 (sign inversion). C219 address registers are words, so
+`c140ROMAddress()` has already converted both start and exclusive end to raw
+byte addresses before analysis. Store the first verified analysis with the
+sample track; never replace it with a later unsupported mode. C140 System 2 and
+System 21 use 12-bit words and may select compressed PCM, so they need their
+own verified decoder and must not enter the signed-8-bit path.
+
 For a finite C140/C219 range, `c140DurationSamples()` adds a sidecar-only
 `durationSamples` estimate. It follows VGMPlay's 16.16 position accumulator:
 the frequency registers advance by `frequency * baseRate * 2 / 65536` ROM

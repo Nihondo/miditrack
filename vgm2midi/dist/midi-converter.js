@@ -973,7 +973,10 @@ class MidiConverter {
             };
         }
         if (sourceKey.startsWith('c140_sample_')) {
-            return { source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events, ...dataBlock };
+            return {
+                source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events, ...dataBlock,
+                ...(state.pcmAnalysis === undefined ? {} : { analysis: state.pcmAnalysis }),
+            };
         }
         if (sourceKey.startsWith('msm6258_sample_')) {
             return { source: 'msm6258', sampleId: sourceKey.slice('msm6258_sample_'.length), gmNote, events, ...dataBlock };
@@ -3243,7 +3246,7 @@ class MidiConverter {
         const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, {
             endAddressExclusive: this.c140ROMAddress(channel, bank, end),
             ...(isLoop ? { loopAddress: this.c140ROMAddress(channel, bank, loop) } : {}),
-        });
+        }, this.c219PCMAnalysisForVoice(dataBlock, startAddress, this.c140ROMAddress(channel, bank, end), this.c140Registers[base + 5]));
         this.c140ActiveVoices[channel] = { descriptorId, note };
     }
     /** C140/C219の非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
@@ -4223,10 +4226,22 @@ class MidiConverter {
         const startEvent = events.find(event => event.type === 'start' && event.endAddressExclusive !== undefined);
         if (startEvent?.endAddressExclusive === undefined)
             return undefined;
-        const endAddress = startEvent.endAddressExclusive;
-        if (endAddress <= dataBlock.bankOffset)
+        return this.signed8BitPCMAnalysisForROMRange(dataBlock, startEvent.endAddressExclusive);
+    }
+    /** C219の生8-bit PCMモードだけを、物理ROM範囲から解析する。 */
+    c219PCMAnalysisForVoice(dataBlock, startAddress, endAddress, mode) {
+        // C219 bit 0 is μ-law, bit 2 is noise, bit 6 inverts the sample sign, and
+        // bit 1 remains unverified. Do not label any of those modes as raw PCM.
+        if (this.vgmData.header.c140Type !== 2 || (mode & 0x47) !== 0 || startAddress !== dataBlock?.bankOffset) {
             return undefined;
-        const block = (this.vgmData.dataBlocks ?? []).find(candidate => candidate.type === 0x80
+        }
+        return this.signed8BitPCMAnalysisForROMRange(dataBlock, endAddress);
+    }
+    /** 単一ROM blockに完全に収まる符号付き8-bit PCMの基本波形特徴量を返す。 */
+    signed8BitPCMAnalysisForROMRange(dataBlock, endAddress) {
+        if (endAddress <= dataBlock.bankOffset || dataBlock.romStartAddress === undefined)
+            return undefined;
+        const block = (this.vgmData.dataBlocks ?? []).find(candidate => candidate.type === dataBlock.bankType
             && (candidate.instance ?? 0) === dataBlock.bankInstance
             && candidate.blockId === dataBlock.blockId);
         if (!block || block.payload.length < 8)
@@ -4456,11 +4471,12 @@ class MidiConverter {
         return false;
     }
     // --- Common Note Helpers ---
-    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false, dataBlock, durationSamples, playbackRange) {
+    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false, dataBlock, durationSamples, playbackRange, analysis) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
         trackState.pcmEvents ?? (trackState.pcmEvents = []);
         trackState.pcmDataBlock ?? (trackState.pcmDataBlock = dataBlock);
+        trackState.pcmAnalysis ?? (trackState.pcmAnalysis = analysis);
         trackState.pcmEvents.push({
             type: 'start',
             sampleTime: currentTime,

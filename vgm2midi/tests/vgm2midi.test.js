@@ -4043,6 +4043,45 @@ test('SegaPCM sidecars analyze complete signed 8-bit PCM ranges only', () => {
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('C219 sidecars analyze only verified complete signed 8-bit PCM ranges', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-c219-analysis-test-'));
+  const convertWaveform = (dataLength, mode, name) => {
+    const metadataPath = path.join(tempDirectory, `${name}.libvgm.json`);
+    const payload = Buffer.alloc(8 + dataLength);
+    payload.writeUInt32LE(0x360000, 0);
+    payload.writeUInt32LE(0x350000, 4);
+    payload.fill(0x00, 8, 8 + Math.floor(dataLength / 2));
+    payload.fill(0xFF, 8 + Math.floor(dataLength / 2));
+    const converter = new MidiConverter({
+      header: createHeader({ c140Clock: 2139000, c140Type: 2, ym2151Clock: 0 }),
+      commands: [
+        { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x35 },
+        { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x00 },
+        // C219 address registers are words; 0x0080 spans 0x100 raw PCM bytes.
+        { type: 'chip_write', chip: 'C140', register: 0x08, data: 0x00 },
+        { type: 'chip_write', chip: 'C140', register: 0x09, data: 0x80 },
+        { type: 'chip_write', chip: 'C140', register: 0x05, data: mode },
+        { type: 'end' },
+      ],
+      dataBlocks: [{ type: 0x8D, blockId: 0, size: payload.length, payload }],
+    });
+    converter.convert();
+    converter.exportTrackMetadata(metadataPath, 0);
+    return JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm;
+  };
+
+  const pcm = convertWaveform(0x100, 0x80, 'raw-complete');
+  const expectedRms = Math.round((Math.sqrt((128 ** 2 + 127 ** 2) / 2) / 128) * 1_000_000) / 1_000_000;
+  assert.deepEqual(pcm.analysis, {
+    format: 'signed-8bit-pcm', sourceByteLength: 0x100, analyzedSampleCount: 0x100,
+    peak: 1, mean: -0.003906, rms: expectedRms, zeroCrossingCount: 1,
+  });
+  assert.equal(convertWaveform(0x80, 0x80, 'raw-partial').analysis, undefined);
+  assert.equal(convertWaveform(0x100, 0x81, 'mulaw').analysis, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('YM2608 ADPCM-B sidecars estimate ROM/RAM duration and preserve repeat mode', () => {
   const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-ym2608-adpcmb-duration-test-'));
   const clock = 7987200;

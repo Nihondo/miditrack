@@ -327,6 +327,10 @@ export declare class MidiConverter {
     private pcmROMDataBlockForAddress;
     /** 単一ROM blockへ完全に収まるSegaPCMの生8-bit PCMを解析する。 */
     private segaPCMAnalysisForTrack;
+    /** C219の生8-bit PCMモードだけを、物理ROM範囲から解析する。 */
+    private c219PCMAnalysisForVoice;
+    /** 単一ROM blockに完全に収まる符号付き8-bit PCMの基本波形特徴量を返す。 */
+    private signed8BitPCMAnalysisForROMRange;
     /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
     private analyzeSigned8BitPCM;
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
