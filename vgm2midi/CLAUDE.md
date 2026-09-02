@@ -1367,11 +1367,10 @@ the converter.
   model, for any chip.
 - A MIDI-channel-budget redesign that would avoid the 14–16-wraps-to-1–3
   collision when multiple chip families are active in the same VGM.
-- YM2151 operator envelopes and total-level-derived velocity — YM2612/YM2203/
-  YM2608 now derive velocity from carrier operator Total Level (see "Added:
-  reproduction-fidelity pass" below), but YM2151's own TL registers
-  (`$60-$7F`) are not read yet, so its FM tracks still use a fixed neutral
-  velocity.
+- Full YM2151 operator-envelope and detune reconstruction. Its `$40-$5F`
+  MULTIPLE and `$60-$7F` Total Level writes are retained in `fmEvents`, and
+  carrier Total Level affects the existing MIDI velocity/CC11 approximation,
+  but the original OPM envelope remains outside MIDI's voice model.
 - Timer-A-driven CSM automatic key-on has register-command-level tests for
   YM2203/YM2608/YM2612 and YM2151. The OPN implementation shares the Ch3
   Special output path, while the OPM implementation attacks all configured
@@ -1386,6 +1385,10 @@ the converter.
   track creation. Later active patch changes and user-patch register writes are
   appended as `fmEvents` sidecar entries with their VGM sample time; they do not
   emit MIDI Program Change events or claim to reproduce the OPLL timbre.
+- Active OPN, OPM, and OPL timbre-register writes are appended as `fmEvents`
+  snapshots with VGM sample time. OPN Ch3 Special tracks additionally expose
+  `opnCh3Mode` as `special` or `special-csm`; these sidecar entries never add
+  MIDI automation or reconstruct the original FM timbre.
 - YM2413 per-operator Multiple (instrument-dependent pitch scaling) and a
   `$20`-before-`$10` key-on write order — see "Added: YM2413 (OPLL) FM and
   rhythm conversion" above; note conversion itself is now implemented.

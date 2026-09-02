@@ -1612,6 +1612,105 @@ test('YM2413 patch selects an initial GM candidate and records active timbre cha
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('OPN, OPM, and OPL record active timbre changes and expose Ch3 Special state', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-fm-event-metadata-test-'));
+
+  const ym2612Path = path.join(tempDirectory, 'ym2612.json');
+  const ym2612 = new MidiConverter({
+    header: createHeader({ ym2612Clock: 7670453, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x27, data: 0x81 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB2, data: 0x05 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA6, data: 0x1A },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA2, data: 0x84 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAD, data: 0x1A },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA9, data: 0x84 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAE, data: 0x1A },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAA, data: 0x84 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAC, data: 0x1A },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA8, data: 0x84 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0xF2 },
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x42, data: 0x20 },
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x02 },
+      { type: 'end' },
+    ],
+  });
+  ym2612.convert();
+  ym2612.exportTrackMetadata(ym2612Path, 200);
+  const ym2612Metadata = JSON.parse(fs.readFileSync(ym2612Path, 'utf8'));
+  const ym2612SpecialTracks = ym2612Metadata.tracks.filter(track => track.descriptor.chip === 'YM2612');
+  assert.equal(ym2612SpecialTracks.length, 4);
+  assert.ok(ym2612SpecialTracks.every(track => track.fm.opnCh3Mode === 'special-csm'));
+  assert.ok(ym2612SpecialTracks.every(track => track.fmEvents.length === 1));
+  assert.deepEqual(ym2612SpecialTracks.map(track => [track.fmEvents[0].sampleTime, track.fmEvents[0].source]), [
+    [100, 'opn-timbre'],
+    [100, 'opn-timbre'],
+    [100, 'opn-timbre'],
+    [100, 'opn-timbre'],
+  ]);
+
+  const ym2151Path = path.join(tempDirectory, 'ym2151.json');
+  const ym2151 = new MidiConverter({
+    header: createHeader(),
+    commands: [
+      { type: 'chip_write', chip: 'YM2151', register: 0x28, data: 0x4A },
+      { type: 'chip_write', chip: 'YM2151', register: 0x08, data: 0x78 },
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2151', register: 0x40, data: 0x03 },
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2151', register: 0x60, data: 0x20 },
+      { type: 'wait', samples: 100 },
+      { type: 'chip_write', chip: 'YM2151', register: 0x20, data: 0x05 },
+      { type: 'end' },
+    ],
+  });
+  ym2151.convert();
+  ym2151.exportTrackMetadata(ym2151Path, 300);
+  const ym2151Entry = JSON.parse(fs.readFileSync(ym2151Path, 'utf8')).tracks.find(
+    track => track.descriptor.sourceKey === 'ym2151_0'
+  );
+  assert.deepEqual(ym2151Entry.fmEvents.map(event => [event.sampleTime, event.source]), [
+    [100, 'opm-timbre'],
+    [200, 'opm-timbre'],
+    [300, 'opm-timbre'],
+  ]);
+  assert.equal(ym2151Entry.fmEvents[0].timbre.operatorMultipliers[0], 3);
+  assert.equal(ym2151Entry.fmEvents[1].timbre.operatorTotalLevels[0], 0x20);
+  assert.equal(ym2151Entry.fmEvents[2].timbre.algorithm, 5);
+
+  const oplPath = path.join(tempDirectory, 'opl.json');
+  const opl = new MidiConverter({
+    header: createHeader({ ym3812Clock: 3579545, ym2151Clock: 0 }),
+    commands: [
+      oplWrite('YM3812', 0xA0, 0x98),
+      oplWrite('YM3812', 0xB0, 0x31),
+      { type: 'wait', samples: 100 },
+      oplWrite('YM3812', 0x20, 0x02),
+      { type: 'wait', samples: 100 },
+      oplWrite('YM3812', 0x40, 0x10),
+      { type: 'wait', samples: 100 },
+      oplWrite('YM3812', 0xC0, 0x01),
+      { type: 'end' },
+    ],
+  });
+  opl.convert();
+  opl.exportTrackMetadata(oplPath, 300);
+  const oplEntry = JSON.parse(fs.readFileSync(oplPath, 'utf8')).tracks.find(
+    track => track.descriptor.sourceKey === 'ym3812_0_fm_0'
+  );
+  assert.deepEqual(oplEntry.fmEvents.map(event => [event.sampleTime, event.source]), [
+    [100, 'opl-timbre'],
+    [200, 'opl-timbre'],
+    [300, 'opl-timbre'],
+  ]);
+  assert.equal(oplEntry.fmEvents[0].timbre.operatorMultipliers[0], 2);
+  assert.equal(oplEntry.fmEvents[1].timbre.operatorTotalLevels[0], 0x10);
+  assert.equal(oplEntry.fmEvents[2].timbre.algorithm, 1);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('YM2151 channel 7 noise operator maps to percussion without a phantom FM note', () => {
   const converter = new MidiConverter({
     header: createHeader(),

@@ -87,8 +87,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   MIDI track index to its libvgm device, instance, and main/linked channel masks.
   FM tracks also include a first-note snapshot of the detected model, algorithm,
   carrier operators, operator levels, multipliers, key-on mask, and suggested
-  GM program. YM2413 derives its initial candidate from the selected patch, and
-  `fmEvents` records later active patch or user-patch changes. PCM tracks include their source-specific sample ID, assigned GM
+  GM program. YM2413 derives its initial candidate from the selected patch.
+  `fmEvents` records later active patch/user-patch changes and active OPN/OPM/OPL
+  algorithm, operator MULTIPLE, and Total Level changes; OPN Ch3 Special tracks
+  also declare whether they are in Special or Special+CSM mode. PCM tracks include their source-specific sample ID, assigned GM
   note, and start/stop (plus MSM6258 loop) boundaries; `miditrack` remains
   compatible with the existing channel mapping
 
@@ -322,6 +324,9 @@ vgm2midi song.vgz --ch3-special-percussion
   interaction. `--ch3-special-percussion` preserves one composite attack and
   maps its carrier base range heuristically to GM drums; it still does not
   synthesize the original FM timbre and can misclassify unusual patches
+- `fmEvents` is an editing sidecar, not additional MIDI automation: it records
+  only timbre-register changes made while an FM track is active. It does not
+  reproduce operator envelopes, detune, feedback, LFO, or the original FM voice
 - CSM mode is converted for YM2612, YM2151, YM2203, and YM2608. Timer A
   overflows become one-tick MIDI attacks: OPN uses the existing Ch3 Special
   representation and OPM attacks all eight configured channels. Multiple

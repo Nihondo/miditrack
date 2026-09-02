@@ -88,10 +88,16 @@ export declare class MidiConverter {
     private ym2413CarrierMultiple;
     /** OPN Ch3 Specialのオペレータトラックから親FMチャンネルを解決する。 */
     private opnCh3ParentStateForSourceKey;
+    /** OPN Ch3の親／オペレータ別トラックなら、現在のSpecial/CSM状態を返す。 */
+    private opnCh3ModeForDescriptor;
     /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
     private fmTimbreForDescriptor;
+    /** 発音中のFMトラックへ、レジスタ変更後の音色スナップショットを追記する。 */
+    private recordFMTimbreEvent;
     /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
     private recordYM2413TimbreEvent;
+    /** OPN Ch3 Special時は親と発音中のオペレータ別トラックをまとめて更新する。 */
+    private recordOPNTimbreEvents;
     /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
     private pcmMetadataForTrack;
     private getTrack;

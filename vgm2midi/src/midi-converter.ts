@@ -320,11 +320,18 @@ interface FMTimbreMetadata {
   ym2413CarrierMultiple?: number;
   ym2413Volume?: number;
   specialOperator?: number;
+  /** OPN Ch3 Specialの出力モード。CSM時はTimer Aによる自動キーオンを伴う。 */
+  opnCh3Mode?: 'special' | 'special-csm';
 }
 
 interface FMTimbreEvent {
   sampleTime: number;
-  source: 'ym2413-patch' | 'ym2413-custom-patch';
+  source:
+    | 'ym2413-patch'
+    | 'ym2413-custom-patch'
+    | 'opn-timbre'
+    | 'opm-timbre'
+    | 'opl-timbre';
   timbre: FMTimbreMetadata;
 }
 
@@ -1031,6 +1038,18 @@ export class MidiConverter {
     return match ? this.channels.get(`${match[1]}_${match[2]}_fm_2`) : undefined;
   }
 
+  /** OPN Ch3の親／オペレータ別トラックなら、現在のSpecial/CSM状態を返す。 */
+  private opnCh3ModeForDescriptor(descriptor: TrackDescriptor): FMTimbreMetadata['opnCh3Mode'] | undefined {
+    const { chip, instance, sourceKey } = descriptor;
+    if (!['YM2203', 'YM2608', 'YM2612'].includes(chip)) return undefined;
+    const context = this.opnCh3Context(chip as OPNCh3Chip, instance);
+    if (sourceKey !== context.parentKey && !context.operatorKeys.includes(sourceKey)) return undefined;
+    if (!this.isOPNCh3SpecialMode(context)) return undefined;
+    return this.opnCsmTimer(context.chip, context.instance).isCSMEnabled
+      ? 'special-csm'
+      : 'special';
+  }
+
   /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
   private fmTimbreForDescriptor(descriptor: TrackDescriptor): FMTimbreMetadata | undefined {
     const chip = descriptor.chip;
@@ -1053,6 +1072,7 @@ export class MidiConverter {
     const carrierOperators = algorithm === undefined ? undefined
       : (paths[algorithm] ?? paths[0]).map(path => path.carrier);
     const specialMatch = /_ch3sp_(\d+)$/.exec(descriptor.sourceKey);
+    const opnCh3Mode = this.opnCh3ModeForDescriptor(descriptor);
 
     const ym2413Instrument = state.ym2413Instrument;
     const suggestedProgram = model === 'opll'
@@ -1073,18 +1093,18 @@ export class MidiConverter {
         ym2413Volume: state.volume,
       }),
       ...(specialMatch ? { specialOperator: Number(specialMatch[1]) } : {}),
+      ...(opnCh3Mode === undefined ? {} : { opnCh3Mode }),
     };
   }
 
-  /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
-  private recordYM2413TimbreEvent(
-    channel: number,
+  /** 発音中のFMトラックへ、レジスタ変更後の音色スナップショットを追記する。 */
+  private recordFMTimbreEvent(
+    key: string,
     currentTime: number,
     source: FMTimbreEvent['source']
   ): void {
-    const key = `ym2413_${channel}`;
-    const state = this.channels.get(key)!;
-    if (!state.active) return;
+    const state = this.channels.get(key);
+    if (!state?.active) return;
     const descriptor = this.resolveDescriptor(key);
     const trackState = this.tracks.get(descriptor.id);
     if (!trackState) return;
@@ -1097,6 +1117,40 @@ export class MidiConverter {
     if (JSON.stringify(prior) === JSON.stringify(timbre)) return;
     trackState.fmEvents ??= [];
     trackState.fmEvents.push({ sampleTime: currentTime, source, timbre });
+  }
+
+  /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
+  private recordYM2413TimbreEvent(
+    channel: number,
+    currentTime: number,
+    source: FMTimbreEvent['source']
+  ): void {
+    const key = `ym2413_${channel}`;
+    this.recordFMTimbreEvent(key, currentTime, source);
+  }
+
+  /** OPN Ch3 Special時は親と発音中のオペレータ別トラックをまとめて更新する。 */
+  private recordOPNTimbreEvents(
+    keyPrefix: string,
+    channel: number,
+    currentTime: number
+  ): void {
+    const parentKey = keyPrefix === 'ym2612'
+      ? `${keyPrefix}_${channel}`
+      : `${keyPrefix}_fm_${channel}`;
+    this.recordFMTimbreEvent(parentKey, currentTime, 'opn-timbre');
+    if (channel !== 2) return;
+
+    const match = /^(ym2203|ym2608)_(\d+)$/.exec(keyPrefix);
+    const context = keyPrefix === 'ym2612'
+      ? this.opnCh3Context('YM2612')
+      : match
+        ? this.opnCh3Context(match[1] as OPNCh3Chip, Number(match[2]))
+        : undefined;
+    if (!context || !this.isOPNCh3SpecialMode(context)) return;
+    for (const key of context.operatorKeys) {
+      if (key !== parentKey) this.recordFMTimbreEvent(key, currentTime, 'opn-timbre');
+    }
   }
 
   /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
@@ -2519,6 +2573,8 @@ export class MidiConverter {
       }
     }
 
+    if (currentTime !== undefined) this.recordOPNTimbreEvents(keyPrefix, channelIndex, currentTime);
+
     return true;
   }
 
@@ -3384,6 +3440,24 @@ export class MidiConverter {
       this.addPan(key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
       const state = this.channels.get(key)!;
       state.opnAlgorithm = data & 0x07;
+      this.recordFMTimbreEvent(key, currentTime, 'opm-timbre');
+      return;
+    }
+
+    // $40-$5f stores DT1 and MULTIPLE, arranged as four 8-register channel groups.
+    // The sidecar preserves the MULTIPLE nibble for later timbre reconstruction; MIDI
+    // itself only uses the existing key-code/fraction pitch representation for OPM.
+    if (reg >= 0x40 && reg <= 0x5F) {
+      const registerSlot = Math.floor((reg - 0x40) / 8);
+      const logicalOperator = YM2151_LOGICAL_OPERATOR_BY_REGISTER_SLOT[registerSlot];
+      const channel = (reg - 0x40) & 0x07;
+      const key = `ym2151_${channel}`;
+      const state = this.channels.get(key)!;
+      state.opnOperatorMultipliers ??= [0, 0, 0, 0];
+      state.opnOperatorMultiplierWritten ??= [false, false, false, false];
+      state.opnOperatorMultipliers[logicalOperator] = data & 0x0F;
+      state.opnOperatorMultiplierWritten[logicalOperator] = true;
+      this.recordFMTimbreEvent(key, currentTime, 'opm-timbre');
       return;
     }
 
@@ -3398,6 +3472,7 @@ export class MidiConverter {
       if (state.active) {
         this.addExpression(`ym2151_${channel}`, this.opnCarrierExpression(state), currentTime);
       }
+      this.recordFMTimbreEvent(`ym2151_${channel}`, currentTime, 'opm-timbre');
       return;
     }
 
@@ -3729,7 +3804,7 @@ export class MidiConverter {
     if (register === 0xBD) {
       this.handleOPLRhythmWrite(chip, instance, data, currentTime, activeNotes);
     } else if (register >= 0x20 && register <= 0x35) {
-      this.setOPLOperatorMultiple(chip, instance, register, data);
+      this.setOPLOperatorMultiple(chip, instance, register, data, currentTime);
     } else if (register >= 0x40 && register <= 0x55) {
       this.setOPLOperatorTotalLevel(chip, instance, register, data, currentTime, activeNotes);
     } else if (register >= 0xA0 && register <= 0xA8) {
@@ -3737,7 +3812,7 @@ export class MidiConverter {
     } else if (register >= 0xB0 && register <= 0xB8) {
       this.updateOPLKeyAndBlock(chip, instance, register - 0xB0, data, currentTime, activeNotes, cmdIndex);
     } else if (register >= 0xC0 && register <= 0xC8) {
-      this.setOPLConnection(chip, instance, register - 0xC0, data);
+      this.setOPLConnection(chip, instance, register - 0xC0, data, currentTime);
     }
   }
 
@@ -3749,13 +3824,20 @@ export class MidiConverter {
     return OPL_SLOT_BY_REGISTER_OFFSET[register - bankStart];
   }
 
-  private setOPLOperatorMultiple(chip: OPLChip, instance: number, register: number, data: number): void {
+  private setOPLOperatorMultiple(
+    chip: OPLChip,
+    instance: number,
+    register: number,
+    data: number,
+    currentTime: number
+  ): void {
     const slot = this.oplOperatorSlot(register, 0x20);
     if (!slot) return;
     const [channel, operator] = slot;
     const state = this.channels.get(this.oplKey(chip, instance, 'fm', channel))!;
     state.opnOperatorMultipliers![operator] = data & 0x0F;
     state.opnOperatorMultiplierWritten![operator] = true;
+    this.recordFMTimbreEvent(this.oplKey(chip, instance, 'fm', channel), currentTime, 'opl-timbre');
   }
 
   private setOPLOperatorTotalLevel(
@@ -3773,6 +3855,7 @@ export class MidiConverter {
     const state = this.channels.get(key)!;
     state.opnOperatorTotalLevels![operator] = data & 0x3F;
     if (state.active) this.addExpression(key, this.oplCarrierExpression(state), currentTime);
+    this.recordFMTimbreEvent(key, currentTime, 'opl-timbre');
     if (!this.oplRhythmModes.get(`${chip}_${instance}`)) return;
 
     for (let index = 0; index < OPL_RHYTHM_SLOTS.length; index++) {
@@ -3785,9 +3868,17 @@ export class MidiConverter {
     }
   }
 
-  private setOPLConnection(chip: OPLChip, instance: number, channel: number, data: number): void {
-    const state = this.channels.get(this.oplKey(chip, instance, 'fm', channel))!;
+  private setOPLConnection(
+    chip: OPLChip,
+    instance: number,
+    channel: number,
+    data: number,
+    currentTime: number
+  ): void {
+    const key = this.oplKey(chip, instance, 'fm', channel);
+    const state = this.channels.get(key)!;
     state.opnAlgorithm = data & 0x01;
+    this.recordFMTimbreEvent(key, currentTime, 'opl-timbre');
   }
 
   private updateOPLFrequencyLow(
