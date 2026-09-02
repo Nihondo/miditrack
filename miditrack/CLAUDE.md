@@ -681,6 +681,51 @@ channels, never requesting a 0% channel. Noise/DAC stems are trimmed with
 `available:false, reason:"chip-warmup"` and lets the browser take the exact
 full-render path rather than starting another expensive emulation synchronously.
 
+**Fixed: preview crashed when `chip_metadata` is absent (legacy `--chip-wav`-only
+converter binaries).** `_preview_chip_stems()`'s per-track hardware-channel
+block (the one that mixes an individually-warmed VGM/NSF channel WAV as a
+volume delta) used to gate only on `web_session.source_format in
+CHIP_HARDWARE_SOURCE_FORMATS`, unlike `_plan_chip_hardware()`'s equivalent
+block, which also requires `web_session.chip_metadata is not None`
+(`_plan_chip_hardware()`'s own `if not selected_chip_indices or not
+web_session.chip_metadata: return ...` guard). A session converted through
+the legacy fallback path — an `nsf2midi`/`vgm2midi` build old enough to
+support only `--chip-wav`/`--noise-wav`/`--dac-wav` and not
+`--track-metadata`, still explicitly supported (see "Added: real chip-noise
+mixing"'s and "Added: NSF per-track hardware selection"'s "Legacy fallback
+preserved" notes) — has `chip_stem_path` set but `chip_metadata` left
+`None`, since there is no sidecar to load. Calling
+`POST /api/render/preview` against such a session unconditionally reached
+`_chip_cache_key(selected_indices)`, which asserts `chip_metadata is not
+None` and raised, turning every preview request into a `500`. Fixed by
+adding the same `and web_session.chip_metadata is not None` guard
+`_preview_chip_stems()`'s sibling function already has; without per-track
+metadata there is no `"game"`-selected channel to preview individually
+regardless, so this is a pure no-op for every session that does have a
+sidecar. `TestWebAppChipStem.test_preview_works_without_chip_metadata_sidecar`
+is the regression guard (this test class's fixture converter always returns
+the legacy `(stem_path, None)` shape, so it previously reproduced the crash
+on every run once a preview test was added).
+
+**Verified: short-preview chip stems stay in sync at non-default speed/
+transpose.** `_preview_chip_stems()` only ever slices the *raw, native-tempo*
+stem via `mix.trim_wav()` (`source_start`/`source_duration` computed by
+scaling the requested output-timeline window by `speed_ratio`, to locate the
+matching span in the untransformed source audio) — it does not itself call
+`rubberband`. That work happens one layer up: whatever
+`chip_render_stems`/`stem`/`dac_stem` `_render_applied_midi()` receives —
+whether from `_plan_chip_hardware()` (full render) or pre-sliced by
+`_preview_chip_stems()` (short preview) — passes through the same
+`has_stem and has_transform` → `_synced_stem()` branch before mixing. This
+means a preview's trimmed clip gets rubberband-stretched by the *same*
+ratio as a full render's whole-song stem, so its short (~14s) duration
+lands correctly on the window's own post-speed length instead of staying at
+its native-tempo length. `TestWebAppChipStem.test_preview_syncs_trimmed_chip_stem_when_transform_active`
+confirms this directly: a non-default `PATCH /api/session/transform`
+followed by `POST /api/render/preview` calls the injected `stem_transformer`
+exactly once, with the *trimmed* clip's own path as input (not the raw
+full-song stem) and the session's speed/transpose values.
+
 A cut window can legitimately contain no note events for a track that is
 editable in the complete song. `validate_volumes()` remains the authoritative
 validation at the session PATCH boundary, against the full source tracks.

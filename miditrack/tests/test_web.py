@@ -2612,6 +2612,96 @@ class TestWebAppChipStem(unittest.TestCase):
         self.assertTrue(inputs[1][0].name.endswith(".synced.wav"))
         app.config["MIDITRACK_SESSION"].clear()
 
+    def test_preview_works_without_chip_metadata_sidecar(self) -> None:
+        """--track-metadataサイドカーを書かない旧nsf2midiバイナリ(chip_stem_path
+        だけを返すconvert_to_midi()の後方互換経路、CLAUDE.mdの「Legacy --chip-wav
+        fallback preserved」参照)でも、短区間プレビューがクラッシュしないこと。
+
+        source_format="nsf"かつchip_stem_pathがあるがchip_metadataが無い
+        (このクラスのfake_converter_with_stemは常にこの形)組み合わせで
+        _preview_chip_stems()がweb_session.chip_metadataへ触れると
+        AssertionErrorになり、/api/render/previewが500を返す回帰があった。
+        速度・移調は既定値のままでも(このテストの主眼)発生していた。
+        """
+        self._upload_source_with_chip_noise()
+        with mock.patch(
+            "miditrack.web.mix.trim_wav",
+            side_effect=lambda _input, output, *_a, **_k: Path(output).write_bytes(b"trimmed"),
+        ):
+            response = self.client.post(
+                "/api/render/preview",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"timelineSeconds": 0.0}),
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["available"])
+
+    def test_preview_syncs_trimmed_chip_stem_when_transform_active(self) -> None:
+        """短区間プレビューでもspeed/transposeが既定値でなければ、切り出した
+        ステムをrubberbandで同期してからミックスへ渡すこと (docs/chip-support.md
+        「NSFのDPCMとVGMのノイズ/DAC」検証項目: 実音声WAVとMIDIを併用する際の
+        開始位置・二重発音抑制のうち、非既定速度でのプレビューが正しく同期
+        されることの回帰ガード)。_preview_chip_stems()はmix.trim_wav()で
+        原曲ステムを素の速度のまま切り出すだけだが、その結果は
+        _render_applied_midi()内の共通処理でstem_transformer(rubberband)へ
+        渡され、フル尺レンダーと同じ経路で速度・ピッチが同期される。
+        """
+        stem_transform_calls: list[tuple[Path, Path, float, int]] = []
+
+        def fake_stem_transformer(input_path, output_path, speed, transpose):
+            stem_transform_calls.append((input_path, output_path, speed, transpose))
+            output_path.write_bytes(b"S" * 120)
+
+        trim_calls: list[tuple[Path, Path]] = []
+
+        def fake_trim(input_path, output_path, *_args, **_kwargs):
+            trim_calls.append((Path(input_path), Path(output_path)))
+            Path(output_path).write_bytes(b"trimmed")
+
+        app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            renderer=self.fake_renderer,
+            list_songs=self.fake_list_songs,
+            converter=self.fake_converter_with_stem,
+            mixer=self.fake_mixer,
+            stem_transformer=fake_stem_transformer,
+        )
+        client = app.test_client()
+        data = {"source": (io.BytesIO(b"fake source bytes"), "chip.nsf")}
+        client.post(
+            "/api/source", headers=AUTH_HEADERS, data=data, content_type="multipart/form-data"
+        )
+        client.post(
+            "/api/source/convert",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"songIndex": 0, "chipNoise": True}),
+        )
+        client.patch(
+            "/api/session/transform",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"speed": 1.2, "transpose": -2}),
+        )
+
+        with mock.patch("miditrack.web.mix.trim_wav", side_effect=fake_trim):
+            response = client.post(
+                "/api/render/preview",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"timelineSeconds": 0.0}),
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["available"])
+
+        self.assertEqual(len(trim_calls), 1)
+        trimmed_output = trim_calls[0][1]
+        self.assertEqual(len(stem_transform_calls), 1)
+        synced_input, _synced_output, speed, transpose = stem_transform_calls[0]
+        self.assertEqual(synced_input, trimmed_output)
+        self.assertEqual(speed, 1.2)
+        self.assertEqual(transpose, -2)
+        app.config["MIDITRACK_SESSION"].clear()
+
     def test_default_transform_never_invokes_stem_transformer_even_with_stem(self) -> None:
         stem_transform_calls: list[Path] = []
 

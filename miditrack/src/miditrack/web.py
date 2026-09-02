@@ -2257,7 +2257,16 @@ def create_app(
         if web_session.dac_stem_path is not None and web_session.dac_stem_path.exists():
             add_trimmed_stem(web_session.dac_stem_path, "dac", mix.STEM_GAIN)
 
-        if web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS:
+        if (
+            web_session.source_format in CHIP_HARDWARE_SOURCE_FORMATS
+            and web_session.chip_metadata is not None
+        ):
+            # chip_metadataが無い場合（--track-metadataサイドカーを書かない
+            # 旧nsf2midiバイナリ経由の、chip_stem_pathだけを使う後方互換経路。
+            # 「Added: NSF per-track hardware選択」参照）はチャンネル単位の
+            # track_sources選択自体が発生し得ないため、_chip_cache_key()が
+            # 前提とするchip_metadataへ触れずに素通りする。_plan_chip_hardware()
+            # の同じガード（`or not web_session.chip_metadata`）と揃えた。
             tracks_by_index = {track.index: track for track in web_session.tracks}
             selected_indices = sorted(
                 index for index, source in web_session.track_sources.items() if source == "game"
