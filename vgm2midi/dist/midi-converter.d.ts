@@ -246,6 +246,8 @@ export declare class MidiConverter {
     private updateHuC6280Pan;
     private handleSegaPCMWrite;
     private triggerSegaPCMVoice;
+    /** SegaPCM interface registerのROMバンク設定を物理アドレスの先頭へ変換する。 */
+    private segaPCMBankBaseAddress;
     /** SegaPCMの非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
     private segaPCMDurationSamples;
     private handleC140Write;

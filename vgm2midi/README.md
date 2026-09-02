@@ -64,9 +64,12 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
 - For non-looping C140/C219 triggers with a valid range and frequency,
   `--track-metadata` records an estimated `durationSamples`. It is sidecar-only,
   never an automatic MIDI Note Off; C219 noise mode has no finite estimate
-- Non-looping SegaPCM triggers likewise record an estimated `durationSamples`
-  from their 16.8 address, end page, frequency, and the standard 16-voice clock
-  divider. This is sidecar-only; looped triggers have no finite estimate
+- SegaPCM derives each sample's physical ROM address from the VGM interface
+  register's bank shift and bank mask. Its data-block link, sample identity,
+  end address, and loop address all use that physical address. Non-looping
+  triggers likewise record an estimated `durationSamples` from their 16.8
+  address, end page, frequency, and clock divider. This is sidecar-only; looped
+  triggers have no finite estimate
 - Non-repeat YM2608 ADPCM-B triggers with a valid range, Delta-N, and clock also
   record an estimated `durationSamples`; ROM/8-bit RAM uses 32-byte address
   units and 1-bit RAM uses 4-byte units. Repeat mode is retained as `isLoop`.
@@ -115,8 +118,9 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   YM2608 ADPCM-B ROM-mode, SegaPCM, and C140 triggers identify a matching VGM
   data-block range. ROM links include the physical sample address, declared ROM
   size, block load address, and payload length. YM2608 ADPCM-B start events
-  retain repeat state and, for finite playback, estimated duration. SegaPCM/C140
-  start events also retain their exclusive end address, loop address, and
+  retain repeat state and, for finite playback, estimated duration. SegaPCM
+  start events use the interface-mapped physical ROM address; SegaPCM/C140 start
+  events also retain their exclusive end address, loop address, and
   loop-enabled state; MSM6258 start events
   carry requested byte length and, when known, planned playback duration. `miditrack` remains
   compatible with the existing channel mapping

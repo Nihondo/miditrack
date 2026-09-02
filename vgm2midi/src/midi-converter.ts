@@ -3805,9 +3805,12 @@ export class MidiConverter {
   ): void {
     this.stopPCMVoice(this.segaPCMActiveVoices, channel, currentTime);
     const base = channel << 3;
-    const address = (this.segaPCMRegisters[base + 0x84] << 8)
-      | (this.segaPCMRegisters[base + 0x85] << 16);
-    const sampleId = `${(control & 0x70).toString(16).padStart(2, '0')}${address.toString(16).padStart(6, '0')}`;
+    // $84/$85 are the 16-bit byte address.  The chip advances it as a 16.8
+    // fixed-point value; the control register selects its physical ROM bank.
+    const address = this.segaPCMRegisters[base + 0x84] | (this.segaPCMRegisters[base + 0x85] << 8);
+    const bankBaseAddress = this.segaPCMBankBaseAddress(control);
+    const physicalAddress = bankBaseAddress + address;
+    const sampleId = physicalAddress.toString(16).padStart(6, '0');
     const trackKey = `segapcm_sample_${sampleId}`;
     // base+2 = left volume, base+3 = right volume.
     const left = this.segaPCMRegisters[base + 2];
@@ -3817,16 +3820,16 @@ export class MidiConverter {
     const note = this.pcmNoteForSample(trackKey);
     const total = left + right;
     this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
-    const dataBlock = this.pcmROMDataBlockForAddress(0x80, instance, address);
+    const dataBlock = this.pcmROMDataBlockForAddress(0x80, instance, physicalAddress);
     // SegaPCM's current/loop address is 16.8 fixed point.  Its end register
     // names the final 256-byte page, therefore the useful end is exclusive.
-    const endAddressExclusive = (this.segaPCMRegisters[base + 0x06] + 1) << 8;
+    const endAddressExclusive = bankBaseAddress + ((this.segaPCMRegisters[base + 0x06] + 1) << 8);
     const isLoop = (control & 0x02) === 0;
     const durationSamples = isLoop
       ? undefined
-      : this.segaPCMDurationSamples(address, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07]);
-    const loopAddress = this.segaPCMRegisters[base + 0x04]
-      | (this.segaPCMRegisters[base + 0x05] << 8);
+      : this.segaPCMDurationSamples(address << 8, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07]);
+    const loopAddress = bankBaseAddress + this.segaPCMRegisters[base + 0x04]
+      + (this.segaPCMRegisters[base + 0x05] << 8);
     const descriptorId = this.noteOnPCMPercussion(
       trackKey,
       note,
@@ -3838,6 +3841,19 @@ export class MidiConverter {
       { endAddressExclusive, ...(isLoop ? { loopAddress } : {}) }
     );
     this.segaPCMActiveVoices[channel] = { descriptorId, note };
+  }
+
+  /** SegaPCM interface registerのROMバンク設定を物理アドレスの先頭へ変換する。 */
+  private segaPCMBankBaseAddress(control: number): number {
+    const interfaceRegister = this.vgmData.header.segaPCMInterface >>> 0;
+    const bankShift = interfaceRegister & 0xFF;
+    const interfaceBankMask = (interfaceRegister >>> 16) & 0xFF;
+    // libvgm defaults a zero mask to the conventional 315-5218 $70 mask.
+    const requestedMask = interfaceBankMask === 0 ? 0x70 : interfaceBankMask;
+    if (bankShift > 20) return 0;
+    const addressableBankMask = Math.floor(0x1FFFFF / 2 ** bankShift);
+    const bankMask = requestedMask & addressableBankMask;
+    return (control & bankMask) * 2 ** bankShift;
   }
 
   /** SegaPCMの非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */

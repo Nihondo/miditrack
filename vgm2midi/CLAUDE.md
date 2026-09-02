@@ -864,16 +864,22 @@ not estimate a zero Delta-N, reverse range, or missing clock, and never schedule
 MIDI Note Off from this estimate. The conversion still does not decode ADPCM-B
 audio or translate Delta-N into MIDI pitch.
 
+For SegaPCM, `segaPCMBankBaseAddress()` interprets the VGM interface register
+as libvgm does: byte 0 is the ROM-bank shift and byte 2 is the control-register
+bank mask (a zero mask defaults to `$70`). Apply the selected control bits and
+shift to the `$84/$85` 16-bit byte address before deriving the sample identity,
+ROM data-block link, and physical end/loop addresses. This fixes configurations
+such as shift `$0D` with mask `$F8`, not just the usual `$0C`/`$70` mapping.
+Invalid shifts above 20 do not produce a bank base.
+
 For a non-looping SegaPCM voice, `segaPCMDurationSamples()` adds the same
-sidecar-only `durationSamples` field. SegaPCM advances its 16.8 current address
-by the `$07` frequency each audio tick. The standard 16-voice 315-5218 output
+sidecar-only `durationSamples` field. SegaPCM advances the byte address as a
+16.8 current-address value by the `$07` frequency each audio tick. The output
 rate is `clock / 128`, so calculate the modular 24-bit distance to the page
 after `$06` and convert it to the VGM 44.1 kHz time base. The page comparison
 wraps from `0xFF` to `0x00`, so retain that wrap in the distance calculation.
 Do not estimate looped voices, a zero frequency, an empty range, or a missing
-clock. The header interface register can describe board-specific arrangements;
-the converter's existing 16-voice model is the supported duration model.
-Never schedule MIDI Note Off from this estimate.
+clock. Never schedule MIDI Note Off from this estimate.
 
 For a finite C140/C219 range, `c140DurationSamples()` adds a sidecar-only
 `durationSamples` estimate. It follows VGMPlay's 16.16 position accumulator:

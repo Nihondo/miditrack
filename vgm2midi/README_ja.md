@@ -32,7 +32,7 @@ VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイ�
 - SegaPCMとC140の開始イベントには、排他的な終了アドレス、ループアドレス、ループ有効状態も保持する。再生速度とチップ動作が固有であるため、これらの値からMIDIノートオフ時刻は推定しない
 - C140のROM参照と範囲アドレスは、VGM headerのC140 type 0（System 2）、1（System 21）、2（NA-1/NA-2のC219）に従って変換する。未定義のtypeはSystem 2アドレスとして扱う
 - 非ループで範囲と周波数が有効なC140/C219トリガーでは、`--track-metadata`に概算の`durationSamples`を記録する。この値はsidecar専用であり、MIDI Note Offを自動配置しない。C219のノイズモードには有限長の推定を行わない
-- 非ループのSegaPCMトリガーでも、16.8アドレス、終了ページ、周波数、標準16音声構成のクロック分周から概算の`durationSamples`を記録する。この値はsidecar専用であり、ループ発音には有限長の推定を行わない
+- SegaPCMはVGM interface registerのbank shiftとbank maskからサンプルの物理ROMアドレスを求め、data block参照、サンプルID、終了位置、ループ位置に同じ物理アドレスを用いる。非ループ発音では、16.8アドレス、終了ページ、周波数、クロック分周から概算の`durationSamples`も記録する。この値はsidecar専用であり、ループ発音には有限長の推定を行わない
 - 非repeatのYM2608 ADPCM-Bトリガーでも、有効な範囲、Delta-N、クロックから概算の`durationSamples`を記録する。ROM/8-bit RAMは32 byte、1-bit RAMは4 byteのアドレス単位を用い、repeat状態は`isLoop`として保持する。いずれもsidecar専用であり、MIDI Note Offを自動配置しない
 - 発音中のYM2203/YM2608/YM2612アルゴリズム経路に、明示的に書き込まれた明確な2の累乗の共通オペレータ倍率がある場合、`MULTI=0`の実効0.5倍を含めてノートをオクターブ単位で補正。補正値はキーオン時に固定するため、キーオフ直前の音色設定による瞬間的な余分なノートを防止
 - SN76489およびAY/YM2149のクロック分周・periodフラグを反映し、チップ種別・dual-chipビットをクロック値から除外。dual AY8910/HuC6280は別々のMIDIトラックへ変換
@@ -46,7 +46,7 @@ VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイ�
 - MIDI音符を生成できない場合は成功扱いや出力の上書きをせず、14バイトの空MIDIヘッダーを作る代わりにエラー終了
 - `--noise-wav FILE`でSN76489/HuC6280ノイズを16bit・44.1kHz・ステレオの独立したLFSRステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-noise-midi`を追加可能
 - `--dac-wav FILE`で実際のYM2612 DAC/PCMサンプル音声（メガドライブのドラムチャンネル）を16bit・44.1kHz・ステレオの独立したステムへレンダリングし、対応するGMパーカッションノートを既定で抑制。A/B比較では`--keep-dac-midi`を追加可能
-- `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。FMトラックには最初のノート時点の音源モデル、アルゴリズム、carrier、オペレータレベル、倍率、キーオンマスク、GM音色候補を出力する。YM2413は選択patchから初期候補を選ぶ。`fmEvents`には発音中のpatch/user patch変更に加え、OPN/OPM/OPLのアルゴリズム、オペレータMULTIPLE、Total Level変更を記録する。OPN Ch3 SpecialトラックにはSpecialまたはSpecial+CSM状態も記録する。PCMトラックには音源固有のサンプルID、割当先GMノート、開始／停止境界とMSM6258のループ境界を出力する。YM2612 DAC、MSM6258、YM2608 ADPCM-BのROMモード、SegaPCM、C140は、該当するVGM data blockの範囲も記録する。ROM参照には物理サンプルアドレス、宣言されたROM size、blockのロード開始アドレス、payload長を含める。YM2608 ADPCM-B開始イベントにはrepeat状態と、有限再生時の概算長も記録する。SegaPCMとC140の開始イベントには排他的な終了アドレス、ループアドレス、ループ有効状態も記録する。MSM6258開始イベントには要求byte長と、解決できる場合の再生予定長を記録する。既存のチャンネル対応を使う`miditrack`との互換性は維持する
+- `--track-metadata FILE`で、出力MIDIの各トラック番号とlibvgmのdevice／instance／main・linkedチャンネルマスクを対応付けたversioned JSON sidecarを書き出す。FMトラックには最初のノート時点の音源モデル、アルゴリズム、carrier、オペレータレベル、倍率、キーオンマスク、GM音色候補を出力する。YM2413は選択patchから初期候補を選ぶ。`fmEvents`には発音中のpatch/user patch変更に加え、OPN/OPM/OPLのアルゴリズム、オペレータMULTIPLE、Total Level変更を記録する。OPN Ch3 SpecialトラックにはSpecialまたはSpecial+CSM状態も記録する。PCMトラックには音源固有のサンプルID、割当先GMノート、開始／停止境界とMSM6258のループ境界を出力する。YM2612 DAC、MSM6258、YM2608 ADPCM-BのROMモード、SegaPCM、C140は、該当するVGM data blockの範囲も記録する。ROM参照には物理サンプルアドレス、宣言されたROM size、blockのロード開始アドレス、payload長を含める。YM2608 ADPCM-B開始イベントにはrepeat状態と、有限再生時の概算長も記録する。SegaPCM開始イベントにはinterface変換後の物理ROMアドレスを用いる。SegaPCMとC140の開始イベントには排他的な終了アドレス、ループアドレス、ループ有効状態も記録する。MSM6258開始イベントには要求byte長と、解決できる場合の再生予定長を記録する。既存のチャンネル対応を使う`miditrack`との互換性は維持する
 
 ## インストール
 

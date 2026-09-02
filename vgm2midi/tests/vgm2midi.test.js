@@ -3777,7 +3777,10 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
     return { type, blockId, size: payload.length, payload };
   };
   const converter = new MidiConverter({
-    header: createHeader({ ym2608Clock: 7987200, segaPCMClock: 4000000, c140Clock: 2139000, ym2151Clock: 0 }),
+    header: createHeader({
+      ym2608Clock: 7987200, segaPCMClock: 4000000, segaPCMInterface: 0x0070000C,
+      c140Clock: 2139000, ym2151Clock: 0,
+    }),
     commands: [
       // YM2608 ADPCM-B: ROM mode, start=0x0002/end=0x0003 in 32-byte units.
       { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x01, data: 0x01 },
@@ -3786,13 +3789,13 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
       { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x04, data: 0x03 },
       { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x05, data: 0x00 },
       { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x00, data: 0x80 },
-      // SegaPCM reads a 24-bit ROM address.  The second block must be selected.
+      // SegaPCM's standard interface maps control bank $20 to physical $20000.
       { type: 'chip_write', chip: 'SegaPCM', register: 0x04, data: 0x34 },
       { type: 'chip_write', chip: 'SegaPCM', register: 0x05, data: 0x12 },
       { type: 'chip_write', chip: 'SegaPCM', register: 0x06, data: 0x02 },
       { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x00 },
-      { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x02 },
-      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x20 },
       // C140 samples use bank:16-bit start.  A second trigger has no matching block.
       { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x01 },
       { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
@@ -3835,7 +3838,7 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
     romSizeBytes: 0x40000, romStartAddress: 0x20000, romDataLengthBytes: 0x80,
   });
   assert.deepEqual(segaPCM.pcm.events[0], {
-    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x300, loopAddress: 0x1234,
+    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x20300, loopAddress: 0x21234,
   });
   assert.deepEqual(c140.pcm.dataBlock, {
     bankType: 0x8D, bankInstance: 0, blockId: 0, bankOffset: 0x10020, blockOffset: 0x20,
@@ -3967,6 +3970,41 @@ test('SegaPCM sidecars estimate finite duration across the 24-bit end-page wrap'
   loopConverter.exportTrackMetadata(loopMetadataPath, 0);
   const loopEvent = JSON.parse(fs.readFileSync(loopMetadataPath, 'utf8')).tracks.find(track => track.pcm).pcm.events[0];
   assert.equal(loopEvent.durationSamples, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
+test('SegaPCM interface maps non-standard ROM bank shifts and masks into sidecars', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-segapcm-interface-test-'));
+  const metadataPath = path.join(tempDirectory, 'segapcm.libvgm.json');
+  const payload = Buffer.alloc(0x408);
+  payload.writeUInt32LE(0x200000, 0);
+  payload.writeUInt32LE(0x1E1000, 4);
+  const converter = new MidiConverter({
+    // Interface bytes: bank shift $0D and bank mask $F8.
+    header: createHeader({ segaPCMClock: 4000000, segaPCMInterface: 0x00F8000D, ym2151Clock: 0 }),
+    commands: [
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x04, data: 0x00 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x05, data: 0x10 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x06, data: 0x13 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x34 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x12 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0xF4 },
+      { type: 'end' },
+    ],
+    dataBlocks: [{ type: 0x80, blockId: 0, size: payload.length, payload }],
+  });
+
+  converter.convert();
+  converter.exportTrackMetadata(metadataPath, 0);
+  const pcm = JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm;
+  assert.equal(pcm.sampleId, '1e1234');
+  assert.deepEqual(pcm.dataBlock, {
+    bankType: 0x80, bankInstance: 0, blockId: 0, bankOffset: 0x1E1234, blockOffset: 0x234,
+    romSizeBytes: 0x200000, romStartAddress: 0x1E1000, romDataLengthBytes: 0x400,
+  });
+  assert.deepEqual(pcm.events[0], {
+    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x1E1400, loopAddress: 0x1E1000,
+  });
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
