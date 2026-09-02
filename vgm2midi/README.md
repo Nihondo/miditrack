@@ -55,6 +55,9 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   YM2612 DAC, MSM6258, YM2608 ADPCM-B ROM-mode, SegaPCM, and C140 triggers to
   the source bank/block and offset. ROM links include the declared ROM size,
   load address, and payload length; they do not decode sample audio
+- SegaPCM and C140 start events also retain their exclusive end address, loop
+  address, and loop-enabled state. These fields do not infer a MIDI note-off
+  time because playback rate and chip behaviour remain chip-specific
 - Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
   an explicitly written, unambiguous power-of-two operator multiplier, including
   `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch
@@ -98,7 +101,9 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   note, and start/stop (plus MSM6258 loop) boundaries. YM2612 DAC, MSM6258,
   YM2608 ADPCM-B ROM-mode, SegaPCM, and C140 triggers identify a matching VGM
   data-block range. ROM links include the physical sample address, declared ROM
-  size, block load address, and payload length; MSM6258 start events
+  size, block load address, and payload length. SegaPCM/C140 start events also
+  retain their exclusive end address, loop address, and loop-enabled state;
+  MSM6258 start events
   carry requested byte length and, when known, planned playback duration. `miditrack` remains
   compatible with the existing channel mapping
 

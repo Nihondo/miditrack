@@ -3784,6 +3784,9 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
       { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x05, data: 0x00 },
       { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x00, data: 0x80 },
       // SegaPCM reads a 24-bit ROM address.  The second block must be selected.
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x04, data: 0x34 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x05, data: 0x12 },
+      { type: 'chip_write', chip: 'SegaPCM', register: 0x06, data: 0x02 },
       { type: 'chip_write', chip: 'SegaPCM', register: 0x84, data: 0x00 },
       { type: 'chip_write', chip: 'SegaPCM', register: 0x85, data: 0x02 },
       { type: 'chip_write', chip: 'SegaPCM', register: 0x86, data: 0x00 },
@@ -3791,7 +3794,11 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
       { type: 'chip_write', chip: 'C140', register: 0x04, data: 0x01 },
       { type: 'chip_write', chip: 'C140', register: 0x06, data: 0x00 },
       { type: 'chip_write', chip: 'C140', register: 0x07, data: 0x20 },
-      { type: 'chip_write', chip: 'C140', register: 0x05, data: 0x80 },
+      { type: 'chip_write', chip: 'C140', register: 0x08, data: 0x00 },
+      { type: 'chip_write', chip: 'C140', register: 0x09, data: 0x60 },
+      { type: 'chip_write', chip: 'C140', register: 0x0A, data: 0x00 },
+      { type: 'chip_write', chip: 'C140', register: 0x0B, data: 0x30 },
+      { type: 'chip_write', chip: 'C140', register: 0x05, data: 0x90 },
       { type: 'chip_write', chip: 'C140', register: 0x14, data: 0x02 },
       { type: 'chip_write', chip: 'C140', register: 0x16, data: 0x00 },
       { type: 'chip_write', chip: 'C140', register: 0x17, data: 0x00 },
@@ -3824,9 +3831,15 @@ test('PCM ROM triggers resolve YM2608 ADPCM-B, SegaPCM, and C140 data blocks', (
     bankType: 0x80, bankInstance: 0, blockId: 1, bankOffset: 0x20000, blockOffset: 0,
     romSizeBytes: 0x40000, romStartAddress: 0x20000, romDataLengthBytes: 0x80,
   });
+  assert.deepEqual(segaPCM.pcm.events[0], {
+    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x300, loopAddress: 0x1234,
+  });
   assert.deepEqual(c140.pcm.dataBlock, {
     bankType: 0x8D, bankInstance: 0, blockId: 0, bankOffset: 0x10020, blockOffset: 0x20,
     romSizeBytes: 0x40000, romStartAddress: 0x10000, romDataLengthBytes: 0x80,
+  });
+  assert.deepEqual(c140.pcm.events[0], {
+    type: 'start', sampleTime: 0, isLoop: true, endAddressExclusive: 0x10060, loopAddress: 0x10030,
   });
   assert.equal(unmatchedC140.pcm.dataBlock, undefined);
   fs.rmSync(tempDirectory, { recursive: true, force: true });

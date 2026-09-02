@@ -837,10 +837,15 @@ FM notes:
   and gets its own named track on MIDI channel 10. After 47 identities the note
   range wraps, so the sample ID in the track name remains the authoritative
   distinction.
-- PCM ROM data blocks are intentionally skipped after preserving their command
-  boundaries. The converter does not decode audio, determine sample duration,
-  or classify kick/snare/hat timbre; MIDI note numbers are stable identity
-  labels within the file, not semantic GM instrument claims.
+- Matching PCM ROM data blocks are retained as sidecar references. SegaPCM type
+  `$80` and C140 type `$8D` links retain the source block/offset but do not
+  decode audio. Each SegaPCM start event records its bank-relative exclusive
+  end address, optional loop address, and control-bit-1 loop state. Each C140
+  start event records bank-applied exclusive end/loop addresses and mode-bit-4
+  loop state. These range fields deliberately do not schedule MIDI note-off:
+  calculating audible duration still needs chip-specific pitch and playback
+  behavior. MIDI note numbers remain stable identity labels within the file,
+  not semantic GM instrument claims.
 
 `segaPCMActiveVoices` and `c140ActiveVoices` associate each hardware voice with
 its currently sounding sample track and note, so overlapping voices that use

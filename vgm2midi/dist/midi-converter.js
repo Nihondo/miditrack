@@ -3131,7 +3131,13 @@ class MidiConverter {
         const total = left + right;
         this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
         const dataBlock = this.pcmROMDataBlockForAddress(0x80, instance, address);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, false, dataBlock);
+        // SegaPCM's current/loop address is 16.8 fixed point.  Its end register
+        // names the final 256-byte page, therefore the useful end is exclusive.
+        const endAddressExclusive = (this.segaPCMRegisters[base + 0x06] + 1) << 8;
+        const isLoop = (control & 0x02) === 0;
+        const loopAddress = this.segaPCMRegisters[base + 0x04]
+            | (this.segaPCMRegisters[base + 0x05] << 8);
+        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, isLoop, dataBlock, undefined, { endAddressExclusive, ...(isLoop ? { loopAddress } : {}) });
         this.segaPCMActiveVoices[channel] = { descriptorId, note };
     }
     handleC140Write(cmd, currentTime) {
@@ -3167,7 +3173,13 @@ class MidiConverter {
         const total = left + right;
         this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
         const dataBlock = this.pcmROMDataBlockForAddress(0x8D, instance, (bank << 16) | start);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, false, dataBlock);
+        const end = (this.c140Registers[base + 8] << 8) | this.c140Registers[base + 9];
+        const isLoop = (this.c140Registers[base + 5] & 0x10) !== 0;
+        const loop = (this.c140Registers[base + 10] << 8) | this.c140Registers[base + 11];
+        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, isLoop, dataBlock, undefined, {
+            endAddressExclusive: (bank << 16) | end,
+            ...(isLoop ? { loopAddress: (bank << 16) | loop } : {}),
+        });
         this.c140ActiveVoices[channel] = { descriptorId, note };
     }
     handleOPLWrite(cmd, currentTime, activeNotes, cmdIndex) {
@@ -4298,7 +4310,7 @@ class MidiConverter {
         return false;
     }
     // --- Common Note Helpers ---
-    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false, dataBlock, durationSamples) {
+    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false, dataBlock, durationSamples, playbackRange) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
         trackState.pcmEvents ?? (trackState.pcmEvents = []);
@@ -4307,6 +4319,8 @@ class MidiConverter {
             type: 'start',
             sampleTime: currentTime,
             ...(isLoop ? { isLoop: true } : {}),
+            ...(playbackRange === undefined ? {} : { endAddressExclusive: playbackRange.endAddressExclusive }),
+            ...(playbackRange?.loopAddress === undefined ? {} : { loopAddress: playbackRange.loopAddress }),
             ...(isLoop || durationSamples === undefined ? {} : { durationSamples }),
             ...(dataBlock?.lengthBytes === undefined ? {} : { dataLengthBytes: dataBlock.lengthBytes }),
         });
