@@ -3213,6 +3213,9 @@ export class MidiConverter {
     // ADPCM-B's ROM start/end registers address 32-byte units.  RAM mode has
     // no VGM ROM data-block equivalent, so preserve the trigger without a link.
     const isROMMode = (registers[0x01] & 0x01) !== 0;
+    const isEightBitRAMMode = (registers[0x01] & 0x02) !== 0;
+    const addressUnitBytes = isROMMode || isEightBitRAMMode ? 32 : 4;
+    const isLoop = (data & 0x10) !== 0;
     const dataLengthBytes = endAddress >= address ? (endAddress - address + 1) << 5 : undefined;
     const dataBlock = isROMMode
       ? this.pcmROMDataBlockForAddress(0x81, instance, address << 5, dataLengthBytes)
@@ -3221,8 +3224,30 @@ export class MidiConverter {
     const trackKey = `ym2608_${instance}_adpcmb_sample_${sampleId}`;
     const note = this.pcmNoteForSample(trackKey);
     const velocity = Math.max(1, Math.round((registers[0x0B] / 255) * 100));
-    const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, false, dataBlock);
+    const deltaN = registers[0x09] | (registers[0x0A] << 8);
+    const durationSamples = isLoop
+      ? undefined
+      : this.ym2608ADPCMDurationSamples(address, endAddress, deltaN, addressUnitBytes);
+    const descriptorId = this.noteOnPCMPercussion(
+      trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples
+    );
     this.ym2608ADPCMActiveVoices[instance] = { descriptorId, note };
+  }
+
+  /** YM2608 ADPCM-Bの非repeat範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
+  private ym2608ADPCMDurationSamples(
+    startAddress: number,
+    endAddress: number,
+    deltaN: number,
+    addressUnitBytes: number
+  ): number | undefined {
+    if (endAddress < startAddress || deltaN === 0) return undefined;
+    const clock = this.vgmData.header.ym2608Clock & CLOCK_MASK;
+    if (clock === 0) return undefined;
+    const byteLength = (endAddress - startAddress + 1) * addressUnitBytes;
+    // The ADPCM-B phase accumulator advances once per master-clock/144 tick.
+    // Each encoded byte contains two 4-bit ADPCM samples.
+    return Math.round((byteLength * 2 * this.sampleRate * 144 * 0x10000) / (deltaN * clock));
   }
 
   private stopYM2608ADPCMBVoice(instance: number, currentTime: number): void {

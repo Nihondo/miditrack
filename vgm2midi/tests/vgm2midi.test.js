@@ -3970,6 +3970,42 @@ test('SegaPCM sidecars estimate finite duration across the 24-bit end-page wrap'
   fs.rmSync(tempDirectory, { recursive: true, force: true });
 });
 
+test('YM2608 ADPCM-B sidecars estimate ROM/RAM duration and preserve repeat mode', () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'vgm2midi-ym2608-adpcmb-duration-test-'));
+  const clock = 7987200;
+  const deltaN = 0x1000;
+  const convertADPCMB = (memoryMode, control, name) => {
+    const metadataPath = path.join(tempDirectory, `${name}.libvgm.json`);
+    const converter = new MidiConverter({
+      header: createHeader({ ym2608Clock: clock, ym2151Clock: 0 }),
+      commands: [
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x01, data: memoryMode },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x02, data: 0x02 },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x03, data: 0x00 },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x04, data: 0x03 },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x05, data: 0x00 },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x09, data: deltaN & 0xFF },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x0A, data: deltaN >> 8 },
+        { type: 'chip_write', chip: 'YM2608', port: 1, register: 0x00, data: control },
+        { type: 'end' },
+      ],
+    });
+    converter.convert();
+    converter.exportTrackMetadata(metadataPath, 0);
+    return JSON.parse(fs.readFileSync(metadataPath, 'utf8')).tracks.find(track => track.pcm).pcm.events[0];
+  };
+  const expectedDuration = (byteLength) => Math.round(
+    (byteLength * 2 * 44100 * 144 * 0x10000) / (deltaN * clock)
+  );
+
+  assert.equal(convertADPCMB(0x01, 0x80, 'rom').durationSamples, expectedDuration(0x40));
+  assert.equal(convertADPCMB(0x00, 0x80, 'ram').durationSamples, expectedDuration(0x08));
+  const repeatEvent = convertADPCMB(0x01, 0x90, 'repeat');
+  assert.equal(repeatEvent.isLoop, true);
+  assert.equal(repeatEvent.durationSamples, undefined);
+  fs.rmSync(tempDirectory, { recursive: true, force: true });
+});
+
 test('MSM6258 0x93 length modes convert commands, milliseconds, end-of-bank and raw bytes to duration', () => {
   const bank = [{ type: 4, blockId: 0, size: 40, payload: Buffer.alloc(40) }];
   const cases = [

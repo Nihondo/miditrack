@@ -851,7 +851,18 @@ FM notes:
   deliberately do not schedule MIDI note-off: calculating audible duration
   still needs chip-specific pitch and playback behavior. MIDI note numbers
   remain stable identity labels within the file, not semantic GM instrument
-  claims.
+claims.
+
+For a non-repeat YM2608 ADPCM-B trigger, `ym2608ADPCMDurationSamples()` adds a
+sidecar-only `durationSamples` field. The Delta-N phase accumulator advances at
+the master clock divided by 144; a carry processes one 4-bit ADPCM sample, so
+the duration is the inclusive address range multiplied by its byte granularity
+and two nibbles per byte, divided by that Delta-N rate. ROM and 8-bit DRAM use
+32-byte address units; 1-bit DRAM uses 4-byte units. Control bit 4 is retained
+as `isLoop`, and repeat triggers deliberately receive no finite estimate. Do
+not estimate a zero Delta-N, reverse range, or missing clock, and never schedule
+MIDI Note Off from this estimate. The conversion still does not decode ADPCM-B
+audio or translate Delta-N into MIDI pitch.
 
 For a non-looping SegaPCM voice, `segaPCMDurationSamples()` adds the same
 sidecar-only `durationSamples` field. SegaPCM advances its 16.8 current address

@@ -67,6 +67,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
 - Non-looping SegaPCM triggers likewise record an estimated `durationSamples`
   from their 16.8 address, end page, frequency, and the standard 16-voice clock
   divider. This is sidecar-only; looped triggers have no finite estimate
+- Non-repeat YM2608 ADPCM-B triggers with a valid range, Delta-N, and clock also
+  record an estimated `durationSamples`; ROM/8-bit RAM uses 32-byte address
+  units and 1-bit RAM uses 4-byte units. Repeat mode is retained as `isLoop`.
+  These fields are sidecar-only and never schedule a MIDI Note Off
 - Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
   an explicitly written, unambiguous power-of-two operator multiplier, including
   `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch
@@ -110,9 +114,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   note, and start/stop (plus MSM6258 loop) boundaries. YM2612 DAC, MSM6258,
   YM2608 ADPCM-B ROM-mode, SegaPCM, and C140 triggers identify a matching VGM
   data-block range. ROM links include the physical sample address, declared ROM
-  size, block load address, and payload length. SegaPCM/C140 start events also
-  retain their exclusive end address, loop address, and loop-enabled state;
-  MSM6258 start events
+  size, block load address, and payload length. YM2608 ADPCM-B start events
+  retain repeat state and, for finite playback, estimated duration. SegaPCM/C140
+  start events also retain their exclusive end address, loop address, and
+  loop-enabled state; MSM6258 start events
   carry requested byte length and, when known, planned playback duration. `miditrack` remains
   compatible with the existing channel mapping
 
@@ -371,9 +376,10 @@ vgm2midi song.vgz --ch3-special-percussion
   47 identities. A YM2612 seek followed by DAC output is treated as an onset,
   so a source that seeks only to continue silence or a partial sample may create
   an extra percussion hit
-- YM2608 ADPCM-B Delta-N pitch, repeat mode, and sample end timing are not
-  reconstructed; start-address writes identify sample-trigger tracks, and the
-  next start/reset or end of conversion closes the MIDI note
+- YM2608 ADPCM-B retains repeat mode and estimates finite playback duration in
+  sidecar metadata from Delta-N, range, and clock. It does not reconstruct
+  Delta-N as MIDI pitch, decode sample audio, or use the estimate to schedule a
+  MIDI note-off; the next start/reset or end of conversion closes the MIDI note
 - HuC6280 Direct D/A (raw sample playback) is not converted to notes
 - Stereo panning and LFO/vibrato are not modeled for any chip
 - With more than 13 simultaneous PSG/FM/PSG channels active across chip

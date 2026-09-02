@@ -224,6 +224,8 @@ export declare class MidiConverter {
     private updateYM2608RhythmExpression;
     private ym2608RhythmVelocity;
     private handleYM2608ADPCMBWrite;
+    /** YM2608 ADPCM-Bの非repeat範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
+    private ym2608ADPCMDurationSamples;
     private stopYM2608ADPCMBVoice;
     private handleAY8910Write;
     private handleSSGWrite;
