@@ -44,6 +44,7 @@ SoundFont探索を上書きするには`MIDI2WAV_SOUNDFONT`を設定します。
 ```text
 miditrack/
   miditrack.sh             パッケージ仮想環境の安定したランチャー
+  miditrack_app.swift      ~/Applications/miditrack.app（Dock/ダブルクリック起動）が実行するWKWebViewシェル
   midi2wav.sh              レンダラーが使うFluidSynthラッパー
   src/miditrack/
     cli.py                 CLI解析とサーバー起動
@@ -91,6 +92,8 @@ miditrack/
 
 サーバーはローカルにバインドし、起動ごとのトークンでAPIリクエストを認証します。アップロードはローカルユーザーの入力として扱いますが、ZIP展開の上限とパス検証を維持してください。任意のファイルシステム読み取りやシェルコマンド文字列を許すルートを追加しないでください。
 
+`~/Applications/miditrack.app`は通常の起動ごとのトークン認証をそのまま使います（`--no-token`は渡しません）。`miditrack_app.swift`自身がバックエンドを起動し（`Process()`経由、ウィンドウ表示後——タイミングが重要な理由は`miditrack/CLAUDE.md`参照）、その標準出力を解析して`miditrack Web UI: http://127.0.0.1:PORT/?token=...`という起動行から、そのURLを直接`WKWebView`にロードします——トークンは親子プロセス間のパイプの外に出ることも、外部ブラウザに渡ることもありません。`/api/audio`のクエリ文字列トークン特例だけが引き続きヘッダー認証の唯一の例外です。
+
 ## 検証
 
 リポジトリルートからPythonテストを実行します。
@@ -104,6 +107,8 @@ miditrack/.venv/bin/python -m pytest -q miditrack/tests
 ```bash
 bash -n miditrack/midi2wav.sh
 miditrack/midi2wav.sh --help
+xcrun swiftc -typecheck miditrack/miditrack_app.swift
+plutil -lint "$HOME/Applications/miditrack.app/Contents/Info.plist"
 ```
 
 コンバーター境界をまたぐ変更では、影響するコンバーターもビルド・テストします。

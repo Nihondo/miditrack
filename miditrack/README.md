@@ -44,6 +44,7 @@ Set `MIDI2WAV_SOUNDFONT` to override SoundFont discovery. The optional `VGM2MIDI
 ```text
 miditrack/
   miditrack.sh             stable launcher for the package virtual environment
+  miditrack_app.swift      WKWebView shell run by ~/Applications/miditrack.app (Dock/double-click)
   midi2wav.sh              FluidSynth wrapper used by the renderer
   src/miditrack/
     cli.py                 CLI parsing and server startup
@@ -91,6 +92,8 @@ An override that is set but unusable must fail clearly rather than silently fall
 
 The server binds locally and uses a launch-scoped token for API requests. Treat uploads as local-user inputs, but keep ZIP extraction limits and path validation intact. Do not expose a route that allows arbitrary filesystem reads or a shell command string.
 
+`~/Applications/miditrack.app` keeps normal per-launch token authentication (it does not pass `--no-token`). `miditrack_app.swift` starts the backend itself (via `Process()`, after its window is shown — see `miditrack/CLAUDE.md` for why the timing matters) and pipes its stdout, parsing the `miditrack Web UI: http://127.0.0.1:PORT/?token=...` startup line and loading that URL directly into its `WKWebView` — the token never leaves the parent-child pipe or reaches an external browser. `/api/audio`'s query-string token fallback remains the only exception to header-based auth.
+
 ## Verification
 
 Run the Python suite from the repository root:
@@ -104,6 +107,8 @@ Before submitting a renderer or wrapper change, also check:
 ```bash
 bash -n miditrack/midi2wav.sh
 miditrack/midi2wav.sh --help
+xcrun swiftc -typecheck miditrack/miditrack_app.swift
+plutil -lint "$HOME/Applications/miditrack.app/Contents/Info.plist"
 ```
 
 When a change crosses a converter boundary, build and test the affected converter as well:

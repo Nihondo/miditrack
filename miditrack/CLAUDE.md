@@ -38,6 +38,16 @@ runtime command on `PATH` before continuing to the Python and Node.js setup.
 Use cyan `▶` and `✓` status lines for installer progress only when stdout is a TTY; keep
 redirected output free of ANSI escape sequences.
 
+It also generates `~/Applications/miditrack.app`, a WKWebView shell whose
+executable is compiled ahead of time (`xcrun swiftc -O`) from the tracked
+`miditrack/miditrack_app.swift` (see "Added: `miditrack.app`..." below for
+the full design, including why it must be a compiled binary rather than a
+symlink to the source). It must not overwrite a bundle it did not create
+itself, and stays idempotent by overwriting the three generated items
+(`Info.plist`, the compiled `Contents/MacOS/miditrack` binary, the `.icns`)
+in place on every re-run rather than removing and recreating the bundle
+directory.
+
 ## Architecture
 
 ```
@@ -3260,6 +3270,8 @@ cd miditrack
 PYTHONPATH=src python -m unittest discover -s tests -v
 python -m compileall -q src tests
 bash -n miditrack.sh
+xcrun swiftc -typecheck miditrack_app.swift
+plutil -lint "$HOME/Applications/miditrack.app/Contents/Info.plist"
 ```
 
 `test_web.py`'s `TestWebAppAudioSourceHistory` covers the `?v=<render_id>`
@@ -3836,3 +3848,262 @@ entry point. `README.md`/`README_ja.md`'s "Saving miditrack as a browser
 the three is new code beyond what's already described above — this is a
 usage pattern this project's own PWA `manifest.json` (predating this
 feature) already implied it would eventually need.
+
+## Superseded: the bash launcher + browser-heartbeat design (removed)
+
+An earlier iteration of double-click launch used a bash-script `.app`
+(`~/Applications/miditrack Launcher.app`) that polled a running server with
+`curl`, detected a saved Chrome/Safari PWA by scanning `Info.plist` for a
+matching `start_url` (Safari's app-shim carries it under a `Manifest` key;
+Chromium's under `CrAppModeShortcutURL`, confirmed against Chromium's own
+`chrome/app_shim/app_mode-Info.plist` source), and relied on a 60-second
+browser heartbeat (`POST /api/heartbeat`) with a 180-second grace period
+(`--idle-timeout`) to shut the backend down, since a GUI launch has no
+terminal to Ctrl-C. It was replaced by the WKWebView design below, whose
+`applicationWillTerminate` gives an exact "the app quit" signal instead of
+an approximate "no keep-alive arrived" one — the whole heartbeat mechanism,
+`--idle-timeout`, and PWA detection became unnecessary. Two pieces of that
+design's reasoning are still worth knowing if this ever comes up again:
+`pagehide`+`sendBeacon` was considered and rejected for instant
+shutdown-on-tab-close, because closing one of several open tabs fires
+`pagehide` even while a sibling tab is still in active use, and because
+`sendBeacon` cannot carry a custom auth header; and calling
+`server.shutdown()` from *inside* a `make_server(..., threaded=True)`
+request-handler thread deadlocks, because `shutdown()` waits for
+`serve_forever()`'s loop to exit while that loop won't finish the current
+request until the handler itself returns.
+
+## Added: `miditrack.app` — a WKWebView shell compiled from a Swift script
+
+`install.sh` generates `~/Applications/miditrack.app`, a normal Dock
+application whose executable (`Contents/MacOS/miditrack`) is a compiled
+binary — `xcrun swiftc -O` run once by `install.sh` against the tracked
+`miditrack/miditrack_app.swift`, no Xcode project involved. The binary opens
+a `WKWebView` window and starts the backend. Closing the window (or Cmd+Q)
+quits the backend at the same instant, through
+`NSApplicationDelegate.applicationWillTerminate` — replacing the entire
+heartbeat-polling mechanism above with one line, since an app-quit event is
+exact where a keep-alive timeout was only approximate.
+
+**Why the source keeps its `#!/usr/bin/swift` shebang even though it's
+never executed that way in production**: `xcrun swiftc -typecheck
+miditrack_app.swift` still gives a `bash -n`-equivalent check (measured
+0.33s), and `./miditrack_app.swift --self-test` still runs the pure-function
+unit checks directly from the shebang during development, both wired into
+`test_app_launcher.py`. The shebang costs nothing and keeps the file
+runnable standalone for iteration; only `install.sh`'s generated bundle
+compiles it ahead of time.
+
+**Why the executable is a compiled binary, not a symlink to the shebang
+script or a bash stub that execs it — the actual root cause behind two
+rounds of TCC failures, found by reproducing each on a real machine rather
+than guessing**: this repository's checkout lives under
+`~/Library/CloudStorage/Dropbox/...`, a TCC-protected location. Two earlier
+designs both failed at the point where something under that Dropbox path
+got `execve()`'d as a new process image:
+
+1. A bash stub in the bundle started `miditrack.sh --no-browser` before
+   `exec`ing the Swift script. Double-clicking from Finder failed with
+   `Operation not permitted`, and `log show` pinpointed it exactly:
+   `(Sandbox) sandboxd rejected approval request from bash for
+   kTCCServiceFileProviderDomain (.../miditrack.sh): would require prompt`.
+   The working hypothesis at the time was launch-sequence *timing* — the app
+   was still in `LSStoppedState`, with no AppKit event loop or foreground UI
+   established yet, so TCC couldn't display its permission dialog and denied
+   instead. Moving the backend launch to *after*
+   `window.makeKeyAndOrderFront(nil)`/`NSApp.activate(...)` was implemented
+   on that theory.
+2. Separately, `Contents/MacOS/miditrack` was made a direct symlink to
+   `miditrack_app.swift` so LaunchServices could exec it via its shebang.
+   This failed identically, but *earlier* in the sequence — before
+   `applicationDidFinishLaunching` ever ran, before any window existed to
+   show: `(Sandbox) sandboxd rejected approval request from swift for
+   kTCCServiceFileProviderDomain (.../miditrack_app.swift): would require
+   prompt`. This is what falsified the timing hypothesis: there was no later
+   point to move the access to, because the *very first* step of the
+   process — the `swift` interpreter opening its own source file to compile
+   it — was itself the denied access, and that source file was inside
+   Dropbox.
+
+Both failures share one shape: whatever the kernel `execve()`s as the new
+process image was itself under the Dropbox path. The fix is to make sure
+nothing is — `install.sh` compiles `miditrack_app.swift` to a real Mach-O
+binary and places *that* under `$HOME/Applications` (not TCC-protected),
+so the thing LaunchServices execs is never inside Dropbox at all. Running
+the identical unsigned/compiled binary from Terminal had always worked in
+every variant, because Terminal itself already holds the Dropbox grant and
+inherits it into whatever it execs — which is what made the earlier
+theories plausible for as long as they were only tested that way.
+Confirmed on a real machine after switching to a compiled binary: the app
+launches from Finder, the backend (`miditrack.sh`, itself inside Dropbox,
+then the venv Python inside Dropbox) starts and serves requests
+successfully, and `WKWebView` loads the token URL and completes API calls —
+**the constraint only applies to the top-level process image LaunchServices
+execs, not to child processes that already-running binary execs
+afterward.** This is the generalizable lesson: verify a permission fix
+against the actual denial (`log show`'s `kTCCServiceX ... would require
+prompt`/`denied` lines, which name the exact path and requesting process),
+not against a plausible-sounding theory that merely stops reproducing once
+something else also changed.
+
+**The backend-launch-timing fix (delaying `BackendController.start()` until
+after the window is shown) turned out not to be the real fix, but is kept
+anyway** as a defensive ordering with no real cost — `test_app_launcher.py`'s
+`test_starts_the_backend_only_after_the_window_is_shown` still pins it. The
+`--backend-pid`/`--backend-output` hand-off and the `set -m` job-control fix
+for the bash `&`'s `SIGINT` problem belonged only to the bash-stub design and
+were removed along with it once `BackendController` went back to spawning
+the backend itself.
+
+**`BackendController` therefore spawns the backend itself, via `Process()`**,
+rather than watching an already-running one: `executableURL` is
+`miditrack.sh` (resolved relative to `miditrack_app.swift`'s own location —
+see `#filePath` below), `arguments` is `["--no-browser"]`, `standardOutput`
+is a `Pipe()` whose `readabilityHandler` feeds `LineAccumulator` to find the
+`miditrack Web UI: ` line, and `standardError` is a `FileHandle` opened on
+`~/Library/Logs/miditrack/miditrack-app.log`. `PATH` is rebuilt in
+`makeChildEnvironment()` for the same reason it always had to be rebuilt
+somewhere: a process Finder/Dock launches inherits launchd's default `PATH`
+(`/usr/bin:/bin:/usr/sbin:/sbin` — confirmed via `launchctl getenv PATH`
+returning empty), which does **not** include `/opt/homebrew/bin`. Every
+external tool this project depends on is resolved via `PATH`
+(`midi2wav.sh`'s `fluidsynth`, `mix.py`'s `shutil.which("ffmpeg")`,
+`rubberband.py`'s bare `"rubberband"` argv[0], `convert.py`'s
+`shutil.which("node")`), so without this the server starts fine and every
+render/convert/mix then fails silently with no terminal to show the error.
+`test_app_launcher.py`'s `test_rebuilds_the_path_with_homebrew` is the
+regression guard — this contract now lives on the Swift side, not
+`install.sh`, since `install.sh` no longer generates any executable text.
+
+**Why termination sends `SIGINT` (`process.interrupt()`), not `SIGTERM`**:
+`run_server()`'s temp-directory cleanup lives in `except KeyboardInterrupt:
+... finally: session.clear()`. `SIGINT` is exactly the signal a terminal's
+Ctrl-C sends, so it reaches that same path; `SIGTERM`'s default disposition
+kills the process before Python's `finally` block ever runs.
+`BackendController.terminate()` sends `SIGINT` first, waits
+`backendTerminationGraceSeconds`, then escalates to `SIGTERM` and finally
+`SIGKILL` only if the process still hasn't exited — this ladder is the
+safety net for a backend that's wedged, not the normal path. Because
+`Process()` execs the backend directly (no shell, no `&`), the bash
+job-control `SIGINT`-gets-ignored problem the earlier design had to work
+around with `set -m` doesn't exist here in the first place — one more thing
+that got simpler by removing the bash stub, not just by removing the
+early-launch code path.
+
+**Why `CFProcessPath` is no longer needed**: the earlier bash-stub and
+symlink-shebang designs both ran the app as `/usr/bin/swift`'s process
+image, so `Bundle.main` resolved to the Swift toolchain rather than the
+`.app` unless `CFProcessPath` was exported first to point CoreFoundation at
+the real bundle. A compiled binary living at its own
+`Contents/MacOS/miditrack` doesn't have this problem — it *is* the process
+image LaunchServices launched, inside the bundle it belongs to, so
+`Bundle.main` should resolve correctly without any help (this specific
+point wasn't re-verified after switching to a compiled binary, since the
+app already builds its menu bar with an explicit `"miditrack"` string and
+sets its Dock icon directly from the repository's `images/miditrack_icon.png`
+— neither depends on `Bundle.main` either way, so there was nothing
+user-visible left to check). The one thing that would still depend on
+`Bundle.main` if it were ever wrong is `UserDefaults.standard` (used by
+`setFrameAutosaveName` for window-size persistence) landing in a domain
+other than `com.nihondo.miditrack` — cosmetic, not functional, if it
+happens.
+
+**Why `#filePath` locates the backend script, never
+`CommandLine.arguments[0]`, and why `.resolvingSymlinksInPath()` is kept as
+a defensive no-op**: `arguments[0]` becomes `"-"` when the script is fed via
+stdin (measured directly), so it cannot be trusted to always be a real
+path; `#filePath` is resolved at compile time — for the compiled bundle
+binary, `install.sh` passes `miditrack_app.swift`'s own absolute path
+(inside the repository) to `swiftc`, so `#filePath` bakes in that path
+directly, and `packageDirectoryURL`/`backendScriptURL`
+(`.appendingPathComponent("miditrack.sh")`)/`applicationIconURL` all resolve
+correctly with no symlink involved. `.resolvingSymlinksInPath()` no longer
+does real work in the shipped bundle (there is no symlink to walk back
+through), but it's left in place — it's a no-op on an already-resolved path
+and costs nothing, while still doing its original job if the file is ever
+run through a symlink again (e.g. during development from a different
+checkout layout). `test_app_launcher.py`'s
+`test_resolves_symlinks_defensively` and
+`test_resolves_the_backend_script_relative_to_itself` cover this.
+
+**Why `run_server()`'s stdout is parsed for the token URL instead of
+passing `--no-token`**: `run_server()` already prints exactly one line,
+`miditrack Web UI: http://127.0.0.1:PORT/?token=...`, before entering
+`serve_forever()`. `BackendController` connects the backend's `standardOutput`
+to a `Pipe()` it owns and hands each line to `extractWebUiUrl(from:)`
+(`hasPrefix` + `URL(string:)` +
+`scheme == "http" && host == "127.0.0.1"`, deliberately not a regex — the
+format is one fixed prefix plus a URL, not a pattern worth a parser for).
+The token therefore never leaves the parent-child pipe, which is what lets
+this design drop `--no-token` entirely and go back to normal per-launch
+token auth — the fixed-port/`--no-token` combination the standalone-browser
+workflow still documents (see "Saving miditrack as a browser app" in the
+root README) was only ever needed because a bookmarked URL or PWA icon has
+no way to carry a fresh token; a self-hosting shell that reads the token
+itself has no such constraint. This is also why the port went back to
+automatic (`0`) — fixing it at 51888 existed solely so an external browser
+bookmark/PWA could target a stable URL, which no longer applies here.
+
+**The four things a bare `WKWebView` silently breaks, and why each needs an
+explicit delegate method** (none of these fail loudly — they just stop
+working, which is why `MiditrackWebDelegate` implements all four):
+downloads (`app.js`'s `anchor.download`/blob pattern needs
+`WKNavigationDelegate` to recognize `shouldPerformDownload` and hand off to
+`WKDownloadDelegate`, whose `decideDestinationUsing` opens an `NSSavePanel`
+so downloads still prompt for a save location the way a browser's "Save
+As" would); file selection (`<input type="file">` needs
+`WKUIDelegate.runOpenPanelWith` to show an `NSOpenPanel` at all — Safari and
+Chrome do this automatically, a bare `WKWebView` does not); `window.confirm()`
+(the preset-delete and session-replace flows in `app.js` depend on it —
+needs `runJavaScriptConfirmPanelWithMessage`); and every keyboard shortcut
+including Cmd+Q (a `WKWebView` window has no menu bar unless the app builds
+one itself — `installMainMenu()` constructs Application/Edit/View/Window
+menus with the standard `#selector` bindings by hand).
+
+**`CFBundleIdentifier` is now `com.nihondo.miditrack`** (dropped the
+`.launcher` suffix along with the rename from "miditrack Launcher" back to
+"miditrack" — the name collision with a Safari-saved PWA that motivated the
+old split no longer applies now that the Dock app is a full replacement for
+a browser tab, not a thing meant to coexist with one). This identifier must
+not change again once users have it pinned to their Dock, for the same
+LaunchServices-stable-key reason as before. A user who separately saves
+miditrack as a PWA via Safari's "Add to Dock" should still give it a name
+other than "miditrack", since Safari places saved apps directly under
+`~/Applications/` — the same directory `install.sh` uses — and
+`validate_app_bundle()`'s marker check will refuse to overwrite a bundle it
+didn't create rather than silently clobbering either one.
+
+**Why `install_app_bundle()` signs the bundle ad hoc
+(`codesign --force --deep --sign -`), reversing an earlier decision not to
+sign at all — and why signing alone turned out not to be the real fix**:
+this repository's checkout lives under `~/Library/CloudStorage/Dropbox/...`,
+a TCC-protected location (the same category as Desktop/Documents/Downloads/
+iCloud Drive). The first hypothesis, when the unsigned bundle failed with
+`Operation not permitted` execing `miditrack.sh` from Finder, was that TCC
+couldn't stably identify an unsigned app across launches and so denied
+without prompting. Ad hoc signing was added on that theory — and the
+earlier "no signature" decision was never about TCC in the first place, it
+was about Gatekeeper's quarantine check (still correct: a locally-built
+bundle never acquires `com.apple.quarantine`, so Gatekeeper's own
+verification never runs against it regardless of signing; quarantine and
+TCC are different subsystems). Signing the bundle did **not** fix the
+failure — a second real-machine test after signing reproduced the identical
+`Operation not permitted`, with the actual permission-grant UI (System
+Settings → Privacy & Security → Files and Folders) never even listing
+`miditrack`. The real cause, found afterward via `log show` across two more
+rounds of failures, was that whatever `execve()`'d as the process image was
+itself under the Dropbox path — not a timing or identity problem at all —
+see "Why the executable is a compiled binary" above for the actual fix. Ad
+hoc signing is kept anyway because it's independently good practice for a
+bundle whose
+identity should stay stable across `install.sh` re-runs (no Apple Developer
+ID or network access needed, just a local `CDHash`), but it is not sufficient
+on its own for any future TCC-gated resource this app might touch — the
+lesson generalizes: verify a fix against the actual failure (`log show`'s
+`kTCCServiceX ... would require prompt`/`denied` lines), don't stop at the
+first plausible-sounding theory. It must be re-applied on every `install.sh`
+run since it re-signs the bundle's contents each time (`codesign` errors are
+swallowed with `|| true` rather than failing the whole install, since a
+`codesign`-less environment — unlikely given the earlier Xcode Command Line
+Tools check, but not impossible — should still produce a working bundle
+rather than blocking setup entirely).

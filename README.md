@@ -187,9 +187,15 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 | `--no-browser` | Do not open a browser tab automatically. |
 | `--version` | Show the version and exit. |
 
+### Launching miditrack from the Dock
+
+`install.sh` creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it's a normal Dock app, not a background helper. It starts its own backend server and shows the whole UI inside its own window, so no separate browser tab ever opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time, so nothing keeps running once you're done. The first launch takes a few seconds to appear while the app itself compiles and the backend starts, both in the background.
+
+Downloads (MIDI, WAV, ZIP, `.miditrack` projects) prompt for a save location, the same as a browser's "Save As."
+
 ### Saving miditrack as a browser "app"
 
-miditrack can be saved as a PWA (Chrome's "Install app," Safari's "Add to Dock," and similar). A saved app icon always opens `http://127.0.0.1:<port>/` with no token, so combine these three options for that workflow:
+This is an independent way to run miditrack — it doesn't interact with the Dock app above. miditrack can be saved as a PWA (Chrome's "Install app," Safari's "Add to Dock," and similar). A saved app icon always opens `http://127.0.0.1:<port>/` with no token, so combine these three options for that workflow:
 
 - **`--port`** — pins the port so the app icon opens the same URL every time.
 - **`--no-token`** — a saved app icon has no way to carry a token in its URL, so this disables token authentication entirely (only use this in a trusted environment).
@@ -199,7 +205,7 @@ miditrack can be saved as a PWA (Chrome's "Install app," Safari's "Add to Dock,"
 miditrack --port 51888 --no-token --no-browser
 ```
 
-Start the server with this command, then open it from the saved app icon.
+Start the server with this command, then open it from the saved app icon. If you save it with Safari's "Add to Dock," give it a name other than "miditrack" — Safari places saved apps directly under `~/Applications/`, the same folder as the Dock app above.
 
 ## Using the Command-line Tools
 
