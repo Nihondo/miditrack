@@ -4019,7 +4019,7 @@ image LaunchServices launched, inside the bundle it belongs to, so
 `Bundle.main` should resolve correctly without any help (this specific
 point wasn't re-verified after switching to a compiled binary, since the
 app already builds its menu bar with an explicit `"miditrack"` string and
-sets its Dock icon directly from the repository's `images/miditrack_icon.png`
+sets its Dock icon directly from the packaged `Resources/miditrack.icns`
 — neither depends on `Bundle.main` either way, so there was nothing
 user-visible left to check). The one thing that would still depend on
 `Bundle.main` if it were ever wrong is `UserDefaults.standard` (used by
@@ -4288,6 +4288,30 @@ actually opening dialogs/dialogs prompting for a save location, the flat
 browser-launched path keeping its toggle and Escape behavior intact) was
 verified by hand against the compiled `~/Applications/miditrack.app`.
 
+## Finder compact icons use the original 1024px artwork only
+
+`scripts/build_app_bundle.sh` creates `miditrack.icns` as a single `ic10`
+ chunk containing `images/miditrack_icon.png` without generating the usual
+16px–512px iconset. Finder otherwise selects a separately downsampled
+representation in compact list views; that representation produced a
+visible light frame around the artwork. With just the 1024px (`ic10`)
+source, macOS performs the size-specific scaling itself, keeping the large
+and compact Finder appearances consistent.
+
+`iconutil` cannot generate an ICNS from a one-item iconset, so the build
+script writes the minimal ICNS header and its one PNG chunk directly. The
+outer ICNS length is the PNG byte length plus 16 bytes; the `ic10` chunk
+length is the PNG byte length plus 8 bytes. Do not restore the per-size
+`sips` loop or replace this with `iconutil` unless every representation is
+visually validated in Finder's compact list view. `tests/test_build_app_bundle.py`
+locks both the 1024px source size and this one-representation contract.
+
+The native launcher resolves the generated icon from `Resources/miditrack.icns`
+and its splash artwork from the packaged `web_assets` directory beneath
+`Resources/project`. The repository-level `images/` directory retains the ICNS
+source and documentation images, but it must not be added to the app-bundle
+`rsync` step.
+
 ## Fixed: `images/miditrack_icon.png` had no padding, so macOS added its own border
 
 The Dock icon showed a visible light bezel/frame wrapped around the note
@@ -4398,6 +4422,49 @@ non-secret identifiers. Never commit credentials, Apple ID passwords, or App
 Store Connect private keys; the notary credential remains in the Keychain.
 `MIDITRACK_RELEASE_CONFIG` may select an alternative local shell file for CI
 or a separate signing machine.
+
+The bundled Node executable is a V8 runtime, not a passive helper. When it is
+signed with Hardened Runtime it must receive the narrowly scoped
+`com.apple.security.cs.allow-jit` entitlement from
+`scripts/entitlements-node.plist`; otherwise even `node -e` fails before the
+VGM converter starts with V8's "Failed to reserve virtual memory for
+CodeRange" fatal error. Both the ad-hoc bundle build and Developer ID release
+loop apply that entitlement only to `Contents/Helpers/node`. Do not add it to
+the outer app or unrelated helper binaries.
+
+## Finder file opening and the local-open boundary (2026-09)
+
+`miditrack.app` owns `.miditrack` through an exported UTI, while MIDI, NSF,
+SPC, VGM, and ZIP are alternate Viewer handlers only. Keep these declarations
+in `scripts/build_app_bundle.sh`'s `Info.plist` heredoc synchronized with
+`convert.SOURCE_FORMATS`, `ALLOWED_MIDI_EXTENSIONS`, and `PROJECT_EXTENSION`.
+The heredoc intentionally expands `$version`; do not quote its delimiter or
+add shell-expanding text to the plist block. `install.sh` refreshes
+LaunchServices after a successful build, but deliberately never overwrites an
+existing app bundle.
+
+Finder/Dock URL events are received by `MiditrackAppDelegate` before the Web
+UI may exist. Queue them, copy each file from Swift into
+`MIDITRACK_LOCAL_OPEN_DIR` (a per-process `0700` temporary directory), and
+only then call the page-world `window.__miditrackOpenLocalFiles()` function.
+Never pass a Finder-selected original path to Python: the native application
+owns the TCC/security-scoped read permission, whereas the backend must only
+read its own staging directory. `onWebUiReady` intentionally differs from the
+one-shot splash callback and must be reset by navigation starts so Cmd-R keeps
+subsequent Finder opens working.
+
+After a Finder/Dock source import, `showNativeSourceSelectionDialog()` opens
+the native file-selection modal so the user can choose a source file, song,
+and conversion options before conversion. Keep this limited to `kind: "source"`:
+MIDI imports and project restores are already immediately usable and must not
+be interrupted by a conversion dialog.
+
+`/api/open-local` exists only when `create_app(..., local_open_dir=...)` is
+configured. It requires the normal launch token and a real staging directory,
+resolves every input path before checking containment, rejects symlinks and
+non-regular files, enforces the normal upload size and extension limits, and
+then delegates to the same MIDI/source/project ingestion helpers as multipart
+uploads. Do not relax these checks or introduce a general local-path API.
 
 Notarization is opt-in via `--notarize`. Without it, `release_app.sh` only
 builds and signs `dist/miditrack.app` and does not require

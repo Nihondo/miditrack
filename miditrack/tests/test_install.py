@@ -47,6 +47,10 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn('"$HOME/Library/Audio/Sounds/Banks"', self.installer)
         self.assertIn(".sf2または.sf3", self.installer)
 
+    def test_refreshes_launchservices_after_building_the_app(self) -> None:
+        self.assertIn("lsregister=", self.installer)
+        self.assertIn('"$lsregister" -f "$app_dir"', self.installer)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -31,6 +31,7 @@ const isTokenRequired =
 // 全画面レイアウトを固定する。WKUserScriptはbody生成時にもクラスを付与し、
 // init()でもDOM操作を完了するため、通常レイアウトが一瞬描画されない。
 const isNativeApp = window.__miditrackNative === true;
+let nativeLocalOpenPromise = Promise.resolve();
 
 const KEEP_ORIGINAL = "__keep__";
 const DEFAULT_GM_PROGRAM = "80";
@@ -3956,28 +3957,31 @@ async function handleOpenProject(file) {
   formData.append("project", file);
   try {
     const response = await apiFetch("/api/project/import", { method: "POST", body: formData });
-    const payload = await response.json();
-    const renderMode = payload.uiState?.renderMode;
-    if (["fast", "quality"].includes(renderMode)) {
-      state.renderMode = renderMode;
-      const modeInput = $(`#render-mode-${renderMode}`);
-      if (modeInput) modeInput.checked = true;
-    }
-    resetPlayer();
-    await refreshFromSession(payload.session, {
-      restoreConvertedOptions: true,
-      uiState: payload.uiState,
-    });
-    await loadSoundfonts();
-    if (payload.warnings?.length) showStatus(payload.warnings.join(" "));
-    else showStatus("プロジェクトを読み込みました。", "success");
-    showUploadCard();
+    await applyProjectImportPayload(await response.json());
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
     $("#project-input").value = "";
     setBusy(false);
   }
+}
+
+async function applyProjectImportPayload(payload) {
+  const renderMode = payload.uiState?.renderMode;
+  if (["fast", "quality"].includes(renderMode)) {
+    state.renderMode = renderMode;
+    const modeInput = $(`#render-mode-${renderMode}`);
+    if (modeInput) modeInput.checked = true;
+  }
+  resetPlayer();
+  await refreshFromSession(payload.session, {
+    restoreConvertedOptions: true,
+    uiState: payload.uiState,
+  });
+  await loadSoundfonts();
+  if (payload.warnings?.length) showStatus(payload.warnings.join(" "));
+  else showStatus("プロジェクトを読み込みました。", "success");
+  showUploadCard();
 }
 
 // "1.2, 0.8" のようなカンマ区切りテキストを数値配列にパースする。
@@ -4155,6 +4159,18 @@ function showUploadCard() {
   if (!document.body.classList.contains("is-fullscreen")) $("#upload-card").open = true;
 }
 
+// Finder/Dockから音源を開いた直後は、変換オプションや曲選択をすぐ操作できる
+// ようにネイティブ版のファイル選択モーダルを開く。MIDI単体とプロジェクト復元は
+// 変換操作を必要としないため、この関数を呼ばない。
+function showNativeSourceSelectionDialog() {
+  showUploadCard();
+  if (!document.body.classList.contains("is-fullscreen")) return;
+  const dialog = $("#open-dialog");
+  $("#upload-card").open = true;
+  if (!dialog.open) dialog.showModal();
+  dialog.focus({ preventScroll: true });
+}
+
 // 表示モードに応じて、変換完了後にファイル選択UIを閉じる。
 function hideUploadCard() {
   if (document.body.classList.contains("is-fullscreen")) closeOpenDialog();
@@ -4312,6 +4328,48 @@ async function notifyNativeAppReady() {
   if (!isNativeApp || !messageHandler) return;
   await waitForNextPaint();
   messageHandler.postMessage({});
+}
+
+if (isNativeApp) {
+  window.__miditrackOpenLocalFiles = (paths) => {
+    nativeLocalOpenPromise = nativeLocalOpenPromise.then(() => openNativeLocalFiles(paths));
+    return nativeLocalOpenPromise;
+  };
+}
+
+async function openNativeLocalFiles(paths) {
+  if (!Array.isArray(paths) || paths.length === 0) return;
+  if (canReplaceCurrentSession() && !window.confirm("現在のセッションを置き換えます。保存していない変更は失われます。続けますか？")) {
+    return;
+  }
+  setBusy(true, "読み込み中…");
+  try {
+    const response = await apiFetch("/api/open-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+    const payload = await response.json();
+    if (payload.kind === "project") {
+      await applyProjectImportPayload(payload);
+    } else if (payload.kind === "midi") {
+      resetPlayer();
+      await refreshFromSession(payload.session);
+      showUploadCard();
+      showStatus("MIDIを読み込みました。", "success");
+    } else if (payload.kind === "source") {
+      resetPlayer();
+      await refreshFromSession(payload.session);
+      showNativeSourceSelectionDialog();
+      showStatus("音源を読み込みました。曲とオプションを選んで変換してください。", "success");
+    } else {
+      throw new Error("ローカルファイル読み込みの応答が不正です");
+    }
+  } catch (error) {
+    showStatus(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function init() {

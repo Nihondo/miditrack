@@ -51,8 +51,9 @@ let spcConverterURL = applicationBundleURL
 let vgmStemsHelperURL = applicationBundleURL
     .appendingPathComponent("Contents/Helpers/vgm2midi_stems")
 let midiToWavURL = projectResourceURL.appendingPathComponent("miditrack/midi2wav.sh")
-let applicationIconURL = resourceDirectoryURL.appendingPathComponent("images/miditrack_icon.png")
-let splashImageURL = resourceDirectoryURL.appendingPathComponent("images/miditrack_lead.png")
+let webAssetsURL = projectResourceURL.appendingPathComponent("miditrack/src/miditrack/web_assets")
+let applicationIconURL = resourceDirectoryURL.appendingPathComponent("miditrack.icns")
+let splashImageURL = webAssetsURL.appendingPathComponent("miditrack_lead.png")
 
 let webUiLinePrefix = "miditrack Web UI: "
 let serverStartupTimeoutSeconds: TimeInterval = 40
@@ -65,6 +66,12 @@ let initialWindowSize = NSSize(width: 1280, height: 860)
 // MIDITRACK_APP_PATHはテストが偽コマンドを差し込むためのシーム
 // （MIDITRACK_PREFERENCES_PATH/MIDI2WAV_BINと同じ慣習）。
 let defaultToolPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+let supportedOpenExtensions: Set<String> = [
+    "mid", "midi", "nsf", "nsfe", "spc", "spc2", "vgm", "vgz", "zip", "m3u", "m3u8", "miditrack",
+]
+let maxOpenBatchCount = 64
+let localOpenStagingURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    .appendingPathComponent("miditrack-open-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
 
 // MARK: - B. 純粋関数（--self-test で検証可能）
 
@@ -79,6 +86,21 @@ func extractWebUiUrl(from line: String) -> URL? {
     guard let url = URL(string: urlString) else { return nil }
     guard url.scheme == "http", url.host == "127.0.0.1" else { return nil }
     return url
+}
+
+struct LocalOpenBatch: Equatable {
+    var accepted: [URL]
+    var rejected: [URL]
+}
+
+/// Finderから渡されたURL群を、対応拡張子だけに絞り込む。
+func classifyLocalOpenBatch(_ urls: [URL]) -> LocalOpenBatch {
+    let acceptedURLs = urls.filter { supportedOpenExtensions.contains($0.pathExtension.lowercased()) }
+    let rejectedURLs = urls.filter { !supportedOpenExtensions.contains($0.pathExtension.lowercased()) }
+    if let projectURL = acceptedURLs.first(where: { $0.pathExtension.lowercased() == "miditrack" }) {
+        return LocalOpenBatch(accepted: [projectURL], rejected: rejectedURLs)
+    }
+    return LocalOpenBatch(accepted: Array(acceptedURLs.prefix(maxOpenBatchCount)), rejected: rejectedURLs)
 }
 
 /// ダウンロード保存先が既存ファイルと衝突しないよう " 2", " 3" を付ける。
@@ -122,6 +144,15 @@ func runSelfTest() {
         extractWebUiUrl(from: "miditrack Web UI: https://127.0.0.1:1/") == nil,
         "extractWebUiUrl should reject non-http schemes"
     )
+    let unsupportedURL = URL(fileURLWithPath: "/tmp/readme.txt")
+    let upperCaseVgmURL = URL(fileURLWithPath: "/tmp/FOO.VGM")
+    let projectURL = URL(fileURLWithPath: "/tmp/song.miditrack")
+    let batch = classifyLocalOpenBatch([unsupportedURL, upperCaseVgmURL, projectURL])
+    check(batch.accepted == [projectURL], "classifyLocalOpenBatch should prioritize a project")
+    check(batch.rejected == [unsupportedURL], "classifyLocalOpenBatch should reject unsupported files")
+    let manyMids = (0..<100).map { URL(fileURLWithPath: "/tmp/\($0).mid") }
+    check(classifyLocalOpenBatch(manyMids).accepted.count == maxOpenBatchCount, "classifyLocalOpenBatch should cap the batch")
+    check(classifyLocalOpenBatch([]) == LocalOpenBatch(accepted: [], rejected: []), "classifyLocalOpenBatch should accept an empty batch")
 
     if failureCount == 0 {
         print("self-test: OK")
@@ -261,6 +292,7 @@ final class BackendController {
         environment["NSF2MIDI_BIN"] = nsfConverterURL.path
         environment["SPC2MIDI_BIN"] = spcConverterURL.path
         environment["VGM2MIDI_STEMS_HELPER"] = vgmStemsHelperURL.path
+        environment["MIDITRACK_LOCAL_OPEN_DIR"] = localOpenStagingURL.path
         return environment
     }
 
@@ -318,6 +350,10 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
     /// 諦めて解除する）。didFail/didFailProvisionalNavigationはナビゲーション
     /// 自体が失敗した場合の即時フォールバック。
     var onInitialLoadFinished: (() -> Void)?
+    /// miditrackReadyが届くたび（初回だけでなく再読み込み後も）呼ばれる。
+    var onWebUiReady: (() -> Void)?
+    /// Web UIのナビゲーション開始時に呼ばれ、Finder取り込みのゲートを閉じる。
+    var onNavigationStarted: (() -> Void)?
     private var hasFinishedInitialLoad = false
 
     private func notifyInitialLoadFinishedOnce() {
@@ -328,7 +364,12 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "miditrackReady" else { return }
+        onWebUiReady?()
         notifyInitialLoadFinishedOnce()
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        onNavigationStarted?()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -736,6 +777,10 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
     private var backend: BackendController?
     private var startupTimeoutWorkItem: DispatchWorkItem?
     private var splashStartedAt = Date()
+    private var pendingOpenURLs: [URL] = []
+    private var isWebUiReady = false
+    private var isLocalOpenFlushScheduled = false
+    private var isLocalOpenInFlight = false
 
     // メインウィンドウ自体は起動直後から表示し、その上にスプラッシュカードを
     // 重ねる（別ウィンドウにはしない）。
@@ -771,11 +816,24 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         delegate.onInitialLoadFinished = { [weak self] in
             self?.revealMainContent()
         }
+        delegate.onWebUiReady = { [weak self] in
+            self?.isWebUiReady = true
+            self?.scheduleLocalOpenFlush()
+        }
+        delegate.onNavigationStarted = { [weak self] in
+            self?.isWebUiReady = false
+        }
 
         mainWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         prepareLogFile()
+
+        try? FileManager.default.createDirectory(
+            at: localOpenStagingURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
 
         // バックエンド起動はここまで（ウィンドウ表示・NSApp.activate後）意図的に
         // 遅らせている。AppKitのイベントループがまだ回っていない起動直後に
@@ -796,6 +854,113 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         backend?.terminate()
+        try? FileManager.default.removeItem(at: localOpenStagingURL)
+    }
+
+    func application(_ sender: NSApplication, open urls: [URL]) {
+        let batch = classifyLocalOpenBatch(urls)
+        if !batch.rejected.isEmpty {
+            let names = batch.rejected.map(\.lastPathComponent).joined(separator: ", ")
+            appendToLog("対応していないファイルを無視しました: \(names)")
+        }
+        guard !batch.accepted.isEmpty else { return }
+        pendingOpenURLs.append(contentsOf: batch.accepted)
+        scheduleLocalOpenFlush()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag, let window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
+    /// Web UIの準備完了後、同一ランループで届いたFinderオープンを1回にまとめる。
+    private func scheduleLocalOpenFlush() {
+        guard isWebUiReady, !isLocalOpenFlushScheduled, !isLocalOpenInFlight,
+              !pendingOpenURLs.isEmpty else { return }
+        isLocalOpenFlushScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isLocalOpenFlushScheduled = false
+            self.flushPendingOpenURLs()
+        }
+    }
+
+    /// Finderから渡されたファイルをアプリ専用の一時領域へ複製してWeb UIへ渡す。
+    private func flushPendingOpenURLs() {
+        guard isWebUiReady, !isLocalOpenInFlight, !pendingOpenURLs.isEmpty else { return }
+        let openURLs = pendingOpenURLs
+        pendingOpenURLs.removeAll()
+        isLocalOpenInFlight = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fileManager = FileManager.default
+            var stagedURLs: [URL] = []
+            var stagingDirectories: [URL] = []
+            for sourceURL in openURLs {
+                let stagingDirectory = localOpenStagingURL
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                let destinationURL = stagingDirectory.appendingPathComponent(sourceURL.lastPathComponent)
+                let didAccessSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didAccessSecurityScope {
+                        sourceURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    try fileManager.createDirectory(
+                        at: stagingDirectory,
+                        withIntermediateDirectories: true,
+                        attributes: [.posixPermissions: 0o700]
+                    )
+                    try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                    stagingDirectories.append(stagingDirectory)
+                    stagedURLs.append(destinationURL)
+                } catch {
+                    try? fileManager.removeItem(at: stagingDirectory)
+                    appendToLog("Finderファイルを一時領域へコピーできませんでした: \(sourceURL.path) (\(error.localizedDescription))")
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self else {
+                    for directory in stagingDirectories {
+                        try? fileManager.removeItem(at: directory)
+                    }
+                    return
+                }
+                self.submitStagedOpenURLs(stagedURLs, cleanupDirectories: stagingDirectories)
+            }
+        }
+    }
+
+    /// ステージング済みパスを文字列補間せず、ページワールドの非同期関数へ渡す。
+    private func submitStagedOpenURLs(_ stagedURLs: [URL], cleanupDirectories: [URL]) {
+        guard !stagedURLs.isEmpty, let webView else {
+            cleanupLocalOpenDirectories(cleanupDirectories)
+            return
+        }
+        webView.callAsyncJavaScript(
+            "return await window.__miditrackOpenLocalFiles(paths);",
+            arguments: ["paths": stagedURLs.map(\.path)],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            if case let .failure(error) = result {
+                appendToLog("FinderファイルをWeb UIへ渡せませんでした: \(error.localizedDescription)")
+            }
+            self?.cleanupLocalOpenDirectories(cleanupDirectories)
+        }
+    }
+
+    /// Web UIが取り込みを完了した後に、そのバッチだけを確実に片付ける。
+    private func cleanupLocalOpenDirectories(_ directories: [URL]) {
+        for directory in directories {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        isLocalOpenInFlight = false
+        scheduleLocalOpenFlush()
     }
 
     // MARK: メニューアクション（Web側の既存ボタンをクリックするだけの薄い実装）

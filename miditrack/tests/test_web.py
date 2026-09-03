@@ -418,6 +418,19 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("messageHandler.postMessage({});", notify_block)
         self.assertEqual(javascript.count("await notifyNativeAppReady();"), 2)
 
+    def test_native_source_opening_immediately_shows_the_conversion_dialog(self) -> None:
+        """Finder経由の音源だけは曲・変換設定を選べるモーダルを自動表示する。"""
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+        dialog_block = javascript.split("function showNativeSourceSelectionDialog()", 1)[1].split(
+            "// 表示モードに応じて、変換完了後", 1
+        )[0]
+        native_open_block = javascript.split('payload.kind === "source"', 1)[1].split(
+            "} else {", 1
+        )[0]
+        self.assertIn('if (!dialog.open) dialog.showModal();', dialog_block)
+        self.assertIn('dialog.focus({ preventScroll: true });', dialog_block)
+        self.assertIn("showNativeSourceSelectionDialog();", native_open_block)
+
     def test_pianoroll_draws_pitchwheel_paths(self) -> None:
         """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
@@ -2107,6 +2120,111 @@ class TestWebApp(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(len(payload["source"]["files"]), 1)
         self.assertFalse(payload["source"]["hasPlaylist"])
+
+
+class TestOpenLocalEndpoint(unittest.TestCase):
+    """miditrack.app専用のステージング取り込み口を検証する。"""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.staging_root = Path(self.tmp.name) / "staging"
+        self.staging_root.mkdir()
+        self.app = create_app(
+            token=TOKEN,
+            session=WebSession(),
+            local_open_dir=self.staging_root,
+            renderer=lambda _midi, output, _soundfont: output.write_bytes(b"0" * 200),
+        )
+        self.app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
+        self.client = self.app.test_client()
+        self.addCleanup(self.app.config["MIDITRACK_SESSION"].clear)
+
+    def _post(self, paths: list[Path], headers: dict[str, str] = AUTH_HEADERS):
+        return self.client.post(
+            "/api/open-local",
+            headers=headers,
+            json={"paths": [str(path) for path in paths]},
+        )
+
+    def test_route_is_absent_without_a_staging_directory(self) -> None:
+        app = create_app(token=TOKEN, session=WebSession())
+        response = app.test_client().post("/api/open-local", headers=AUTH_HEADERS, json={"paths": []})
+        self.assertEqual(response.status_code, 404)
+
+    def test_requires_the_launch_token_even_when_the_route_exists(self) -> None:
+        midi_path = self.staging_root / "song.mid"
+        midi_path.write_bytes(build_fixture_bytes())
+        self.assertEqual(self._post([midi_path], headers={}).status_code, 403)
+
+    def test_rejects_the_route_when_no_token_mode_is_enabled(self) -> None:
+        app = create_app(token=TOKEN, session=WebSession(), local_open_dir=self.staging_root, require_token=False)
+        midi_path = self.staging_root / "song.mid"
+        midi_path.write_bytes(build_fixture_bytes())
+        response = app.test_client().post("/api/open-local", json={"paths": [str(midi_path)]})
+        self.assertEqual(response.status_code, 403)
+
+    def test_imports_midi_and_source_with_the_normalized_payload_shape(self) -> None:
+        midi_path = self.staging_root / "song.MID"
+        midi_path.write_bytes(build_fixture_bytes())
+        midi_response = self._post([midi_path])
+        self.assertEqual(midi_response.status_code, 201)
+        self.assertEqual(midi_response.get_json()["kind"], "midi")
+        self.assertIn("session", midi_response.get_json())
+
+        source_path = self.staging_root / "chip.vgm"
+        source_path.write_bytes(b"Vgm ")
+        source_response = self._post([source_path])
+        self.assertEqual(source_response.status_code, 201)
+        self.assertEqual(source_response.get_json()["kind"], "source")
+        self.assertEqual(source_response.get_json()["session"]["source"]["format"], "vgm")
+
+    def test_imports_a_project_without_changing_the_response_shape(self) -> None:
+        midi_path = self.staging_root / "song.mid"
+        midi_path.write_bytes(build_fixture_bytes())
+        self.assertEqual(self._post([midi_path]).status_code, 201)
+        exported = self.client.post("/api/project/export", headers=AUTH_HEADERS, json={})
+        self.assertEqual(exported.status_code, 200)
+        try:
+            project_bytes = exported.data
+        finally:
+            exported.close()
+        project_path = self.staging_root / "song.miditrack"
+        project_path.write_bytes(project_bytes)
+
+        response = self._post([project_path])
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["kind"], "project")
+        self.assertIn("session", payload)
+        self.assertIn("uiState", payload)
+        self.assertIn("warnings", payload)
+
+    def test_rejects_outside_paths_symlinks_invalid_extensions_and_oversize_files(self) -> None:
+        outside_path = Path(self.tmp.name) / "outside.mid"
+        outside_path.write_bytes(build_fixture_bytes())
+        self.assertEqual(self._post([outside_path]).status_code, 400)
+
+        symlink_path = self.staging_root / "link.mid"
+        symlink_path.symlink_to(outside_path)
+        self.assertEqual(self._post([symlink_path]).status_code, 400)
+
+        text_path = self.staging_root / "readme.txt"
+        text_path.write_text("not a MIDI", encoding="utf-8")
+        self.assertEqual(self._post([text_path]).status_code, 400)
+
+        oversized_path = self.staging_root / "large.vgm"
+        with oversized_path.open("wb") as file:
+            file.truncate(64 * 1024 * 1024 + 1)
+        self.assertEqual(self._post([oversized_path]).status_code, 400)
+
+    def test_rejects_more_than_64_paths(self) -> None:
+        paths = []
+        for index in range(65):
+            path = self.staging_root / f"{index}.mid"
+            path.write_bytes(build_fixture_bytes())
+            paths.append(path)
+        self.assertEqual(self._post(paths).status_code, 400)
 
 
 class TestWebAppAudioSourceHistory(unittest.TestCase):

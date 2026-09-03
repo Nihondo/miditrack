@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
 repo_dir="$(cd -P "$script_dir/.." >/dev/null 2>&1 && pwd)"
 credentials_path="${MIDITRACK_RELEASE_CONFIG:-$script_dir/release_credentials.sh}"
+node_entitlements="$script_dir/entitlements-node.plist"
 
 notarize=0
 for arg in "$@"; do
@@ -27,11 +28,13 @@ fi
 source "$credentials_path"
 
 identity="${MIDITRACK_SIGNING_IDENTITY:?set MIDITRACK_SIGNING_IDENTITY to a Developer ID Application identity}"
+[[ -f "$node_entitlements" ]] || { echo "Node entitlements file is missing: $node_entitlements" >&2; exit 1; }
 if [[ "$notarize" -eq 1 ]]; then
   profile="${MIDITRACK_NOTARY_PROFILE:?set MIDITRACK_NOTARY_PROFILE to a notarytool keychain profile}"
 fi
 version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo_dir/miditrack/src/miditrack/__init__.py")"
-dist_dir="$repo_dir/dist"
+# dist_dir="$repo_dir/dist"
+dist_dir="$HOME/Desktop/dist"
 app_path="$dist_dir/miditrack.app"
 zip_path="$dist_dir/miditrack-${version}-macos-arm64.zip"
 
@@ -43,7 +46,11 @@ mkdir -p "$dist_dir"
 # Resources are sealed by the app signature and do not receive xattr signatures.
 while IFS= read -r -d '' candidate; do
   if file -b "$candidate" | grep -q 'Mach-O'; then
-    codesign --force --options runtime --timestamp --sign "$identity" "$candidate"
+    if [[ "$candidate" == "$app_path/Contents/Helpers/node" ]]; then
+      codesign --force --options runtime --entitlements "$node_entitlements" --timestamp --sign "$identity" "$candidate"
+    else
+      codesign --force --options runtime --timestamp --sign "$identity" "$candidate"
+    fi
   fi
 done < <(find "$app_path/Contents" -type f -print0)
 codesign --force --options runtime --timestamp --sign "$identity" "$app_path"

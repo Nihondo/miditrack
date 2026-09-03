@@ -55,6 +55,9 @@ class TestSwiftLauncherContract(unittest.TestCase):
         self.assertIn("runtime/backend/miditrack-backend", self.source)
         self.assertIn("Contents/Helpers/node", self.source)
         self.assertIn("Contents/Helpers/spc2midi", self.source)
+        self.assertIn('webAssetsURL = projectResourceURL.appendingPathComponent("miditrack/src/miditrack/web_assets")', self.source)
+        self.assertIn('resourceDirectoryURL.appendingPathComponent("miditrack.icns")', self.source)
+        self.assertIn('webAssetsURL.appendingPathComponent("miditrack_lead.png")', self.source)
         self.assertNotIn("#filePath", self.source)
 
     def test_passes_the_bundle_paths_to_the_backend(self) -> None:
@@ -65,6 +68,7 @@ class TestSwiftLauncherContract(unittest.TestCase):
             "NSF2MIDI_BIN",
             "SPC2MIDI_BIN",
             "VGM2MIDI_STEMS_HELPER",
+            "MIDITRACK_LOCAL_OPEN_DIR",
         ):
             self.assertIn(name, self.source)
 
@@ -142,6 +146,26 @@ class TestSwiftLauncherContract(unittest.TestCase):
             "#settings-open",
         ):
             self.assertIn(required_symbol, self.source)
+
+    def test_accepts_finder_open_events_only_after_the_web_ui_is_ready(self) -> None:
+        for required_symbol in (
+            "func application(_ sender: NSApplication, open urls: [URL])",
+            "pendingOpenURLs",
+            "applicationShouldHandleReopen",
+            "classifyLocalOpenBatch",
+            "startAccessingSecurityScopedResource",
+            "onWebUiReady",
+            "onNavigationStarted",
+            "callAsyncJavaScript",
+            "in: .page",
+        ):
+            self.assertIn(required_symbol, self.source)
+        self.assertNotIn("onInitialLoadFinished = { [weak self] in\n            self?.isWebUiReady", self.source)
+
+    def test_creates_the_staging_directory_before_starting_the_backend(self) -> None:
+        staging_directory_index = self.source.index("at: localOpenStagingURL")
+        backend_start_index = self.source.index("controller.start(")
+        self.assertLess(staging_directory_index, backend_start_index)
 
 
 if __name__ == "__main__":  # pragma: no cover

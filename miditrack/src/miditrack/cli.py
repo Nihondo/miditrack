@@ -8,6 +8,7 @@ pixelart.pyの `--web` のような「他のモードと排他的なフラグ」
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from . import __version__
@@ -88,6 +89,11 @@ def main(argv: list[str] | None = None) -> None:
         open_browser=not args.no_browser,
         port=args.port,
         require_token=not args.no_token,
+        local_open_dir=(
+            Path(local_open_dir)
+            if (local_open_dir := os.environ.get("MIDITRACK_LOCAL_OPEN_DIR"))
+            else None
+        ),
     )
 
 

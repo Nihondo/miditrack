@@ -74,6 +74,12 @@ The converter binaries, the pinned Python and Node.js runtimes, and the Apple Si
 
 Drop a source file or a `.mid` onto the upload area and work with the tracks and piano roll together on the single main screen. **Save project** downloads a `.miditrack` archive with the editable MIDI, conversion settings, track choices, speed/pitch, loop, and preset. **Open project** restores that state without re-converting the source. Rendered audio and generated ZIPs are not stored in a project.
 
+### Opening Files from Finder
+
+`miditrack.app` can open `.miditrack`, `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.vgm`, `.vgz`, and `.zip` directly from Finder or by dropping files on its Dock icon. Opening a `.miditrack` project restores it; a single MIDI file opens as MIDI; the other formats open as source files. When a current session would be replaced, the app asks for confirmation.
+
+miditrack is the default handler for `.miditrack` projects. For other formats it is an alternate handler so it does not replace your existing player or DAW. In Finder, choose **Get Info → Open with → miditrack → Change All** if you want to make it the default for one of those formats. Existing installations created by `install.sh` are intentionally not overwritten; move the old app aside, then reinstall to refresh Finder's file associations.
+
 ### File Selection
 
 ![File Selection](images/miditrack_file.png)

@@ -6,6 +6,7 @@ set -euo pipefail
 script_dir="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
 repo_dir="$(cd -P "$script_dir/.." >/dev/null 2>&1 && pwd)"
 source "$script_dir/runtime-manifest.env"
+node_entitlements="$script_dir/entitlements-node.plist"
 output_dir=""
 
 usage() {
@@ -24,6 +25,7 @@ done
 command -v uv >/dev/null 2>&1 || { echo "uv is required to assemble the pinned Python runtime" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
 command -v xcrun >/dev/null 2>&1 || { echo "Xcode Command Line Tools are required" >&2; exit 1; }
+[[ -f "$node_entitlements" ]] || { echo "Node entitlements file is missing: $node_entitlements" >&2; exit 1; }
 [[ ! -e "$output_dir" ]] || { echo "output already exists: $output_dir" >&2; exit 1; }
 
 version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$repo_dir/miditrack/src/miditrack/__init__.py")"
@@ -66,7 +68,6 @@ rsync -a --delete --exclude node_modules --exclude build \
   "$repo_dir/vgm2midi/" "$project_root/vgm2midi/"
 rsync -a --delete --exclude build "$repo_dir/nsf2midi/" "$project_root/nsf2midi/"
 rsync -a --delete --exclude build "$repo_dir/spc2midi/" "$project_root/spc2midi/"
-rsync -a "$repo_dir/images/" "$bundle_contents/Resources/images/"
 (cd "$project_root/vgm2midi" && "$node_root/bin/npm" ci --omit=dev)
 
 pyinstaller_args=(--noconfirm --clean --onedir --name miditrack-backend
@@ -102,17 +103,40 @@ cat > "$bundle_contents/Info.plist" <<PLIST
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+<key>CFBundleDocumentTypes</key><array>
+<dict><key>CFBundleTypeName</key><string>miditrack Project</string><key>CFBundleTypeRole</key><string>Editor</string><key>LSHandlerRank</key><string>Owner</string><key>LSItemContentTypes</key><array><string>com.nihondo.miditrack.project</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>MIDI File</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.midi-audio</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>Chiptune Source File</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>com.nihondo.miditrack.nsf</string><string>com.nihondo.miditrack.nsfe</string><string>com.nihondo.miditrack.spc</string><string>com.nihondo.miditrack.spc2</string><string>com.nihondo.miditrack.vgm</string><string>com.nihondo.miditrack.vgz</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>ZIP Archive</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.zip-archive</string></array></dict>
+</array>
+<key>UTExportedTypeDeclarations</key><array>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.project</string><key>UTTypeDescription</key><string>miditrack Project</string><key>UTTypeConformsTo</key><array><string>public.data</string><string>public.archive</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>miditrack</string></array><key>public.mime-type</key><string>application/vnd.miditrack.project+zip</string></dict></dict>
+</array>
+<key>UTImportedTypeDeclarations</key><array>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.nsf</string><key>UTTypeDescription</key><string>NSF File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>nsf</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.nsfe</string><key>UTTypeDescription</key><string>NSFE File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>nsfe</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.spc</string><key>UTTypeDescription</key><string>SPC File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spc</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.spc2</string><key>UTTypeDescription</key><string>SPC2 File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spc2</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.vgm</string><key>UTTypeDescription</key><string>VGM File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>vgm</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.vgz</string><key>UTTypeDescription</key><string>VGZ File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>vgz</string></array></dict></dict>
+</array>
 </dict></plist>
 PLIST
 
-iconset="$work_dir/miditrack.iconset"
-mkdir -p "$iconset"
-for size in 16 32 128 256 512; do
-  sips -z "$size" "$size" "$repo_dir/images/miditrack_icon.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
-  doubled=$((size * 2))
-  sips -z "$doubled" "$doubled" "$repo_dir/images/miditrack_icon.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil --convert icns "$iconset" --output "$bundle_contents/Resources/miditrack.icns"
+# Embed only the 1024px source (the ICNS `ic10` representation). Finder then
+# scales the same artwork for compact list views instead of selecting a
+# separately downsampled representation with a visible light frame.
+icon_source="$repo_dir/images/miditrack_icon.png"
+icon_output="$bundle_contents/Resources/miditrack.icns"
+icon_png_bytes="$(stat -f %z "$icon_source")"
+icon_total_bytes=$((icon_png_bytes + 16))
+{
+  printf 'icns'
+  printf '%08x' "$icon_total_bytes" | /usr/bin/xxd -r -p
+  printf 'ic10'
+  printf '%08x' $((icon_png_bytes + 8)) | /usr/bin/xxd -r -p
+  cat "$icon_source"
+} > "$icon_output"
 
 git_commit="$(git -C "$repo_dir" rev-parse HEAD)"
 python_lock_hash="$(shasum -a 256 "$repo_dir/miditrack/uv.lock" | awk '{print $1}')"
@@ -126,7 +150,11 @@ JSON
 printf '%s\n' 'miditrack app bundle (generated by build_app_bundle.sh)' > "$bundle_contents/Resources/.installed-by-install-sh"
 while IFS= read -r -d '' candidate; do
   if file -b "$candidate" | grep -q 'Mach-O'; then
-    codesign --force --sign - "$candidate"
+    if [[ "$candidate" == "$bundle_contents/Helpers/node" ]]; then
+      codesign --force --options runtime --entitlements "$node_entitlements" --sign - "$candidate"
+    else
+      codesign --force --sign - "$candidate"
+    fi
   fi
 done < <(find "$bundle_contents" -type f -print0)
 codesign --force --sign - "$output_dir"

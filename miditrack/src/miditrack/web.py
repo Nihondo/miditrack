@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -104,6 +105,9 @@ LibvgmRendererFunc = Callable[
 NsfChipRendererFunc = Callable[
     [Path, Path, int, "list[nsf_chip.NsfChipTarget]", int], None
 ]
+# multipartのFileStorage.save()と、Finderからステージング済みのファイルを
+# copyfile()する経路で共有する保存操作。
+UploadSaver = Callable[[Path], None]
 
 
 @dataclass(frozen=True)
@@ -750,6 +754,7 @@ def create_app(
     libvgm_renderer: LibvgmRendererFunc | None = None,
     nsf_chip_renderer: NsfChipRendererFunc | None = None,
     require_token: bool = True,
+    local_open_dir: Path | None = None,
 ) -> Flask:
     """テスト可能なmiditrackローカルWebアプリを生成する。
 
@@ -757,6 +762,9 @@ def create_app(
     そのものを無効化する（127.0.0.1限定バインドとOrigin検証のみに頼る）。
     固定ポート起動時にブックマークからトークン無しで開けるようにするための、
     ユーザーが明示的に選ぶセキュリティ低下トレードオフ。
+    local_open_dirはmiditrack.appだけが作成する一時ステージング領域である。
+    指定時のみFinder/Dock用の`/api/open-local`を有効にし、ほかのローカル
+    ファイルをWeb APIから読めないようにする。
     """
     launch_token = token or secrets.token_urlsafe(32)
     web_session = session or WebSession()
@@ -765,6 +773,7 @@ def create_app(
     transform_stem: StemTransformerFunc = stem_transformer or rubberband.transform_stem
     render_libvgm: LibvgmRendererFunc = libvgm_renderer or libvgm.render_selection
     render_nsf_chip: NsfChipRendererFunc = nsf_chip_renderer or nsf_chip.render_selection
+    local_open_root = local_open_dir.resolve() if local_open_dir is not None else None
 
     def render_wav(
         midi_path: Path,
@@ -1195,6 +1204,102 @@ def create_app(
             shutil.rmtree(project_root, ignore_errors=True)
             raise
 
+    def _ingest_midi_upload(original_name: str, save: UploadSaver) -> dict[str, Any]:
+        """保存方法を問わずMIDIを新しいセッションへ取り込む。"""
+        if not original_name.lower().endswith(ALLOWED_MIDI_EXTENSIONS):
+            raise WebValidationError("拡張子が .mid または .midi のファイルを選択してください")
+
+        temp_root = Path(tempfile.mkdtemp(prefix="miditrack-"))
+        try:
+            original_path = temp_root / "original.mid"
+            save(original_path)
+            midi_file, tracks = midi.analyze_midi_file(original_path)
+            web_session.replace(
+                root=temp_root,
+                original_path=original_path,
+                original_name=sanitize_stem(original_name),
+                ticks_per_beat=midi_file.ticks_per_beat,
+                tracks=tracks,
+            )
+        except Exception:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            raise
+        return session_payload(web_session)
+
+    def _ingest_source_uploads(entries: list[tuple[str, UploadSaver]]) -> dict[str, Any]:
+        """保存方法を問わず音源・ZIP・m3uを新しい音源セッションへ取り込む。"""
+        if not entries:
+            raise WebValidationError("音源ファイルを選択してください")
+
+        # resolve()しておかないと、extract_zip_members()内部のdest_dir.resolve()
+        # （macOSの/var -> /private/var シンボリックリンク解決）と食い違い、
+        # 展開後メンバーパスへの後段のrelative_to(temp_root)がValueErrorになる。
+        temp_root = Path(tempfile.mkdtemp(prefix="miditrack-")).resolve()
+        try:
+            uploads_dir = temp_root / "uploads"
+            uploads_dir.mkdir()
+            archive_dir = temp_root / "archive"
+
+            candidates: list[Path] = []
+            m3u_texts: list[str] = []
+
+            for index, (original_name, save) in enumerate(entries):
+                if convert.is_zip_filename(original_name):
+                    zip_path = uploads_dir / f"upload_{index}.zip"
+                    save(zip_path)
+                    for member in convert.extract_zip_members(zip_path, archive_dir):
+                        if convert.is_hidden_member_name(member.name):
+                            pass
+                        elif convert.is_m3u_filename(member.name):
+                            m3u_texts.append(member.read_text(encoding="utf-8", errors="replace"))
+                        elif convert.try_detect_format(member.name) is not None:
+                            candidates.append(member)
+                elif convert.is_hidden_member_name(original_name):
+                    pass
+                elif convert.is_m3u_filename(original_name):
+                    saved = _unique_upload_path(uploads_dir, original_name)
+                    save(saved)
+                    m3u_texts.append(saved.read_text(encoding="utf-8", errors="replace"))
+                elif convert.try_detect_format(original_name) is not None:
+                    saved = _unique_upload_path(uploads_dir, original_name)
+                    save(saved)
+                    candidates.append(saved)
+
+            if not candidates:
+                supported = ", ".join(ext for fmt in convert.SOURCE_FORMATS for ext in fmt.extensions)
+                raise WebValidationError(
+                    f"対応する音源ファイルが見つかりません（対応: {supported}。"
+                    "ZIPやm3uだけでは変換できません）"
+                )
+
+            candidates.sort(key=lambda path: path.relative_to(temp_root).as_posix())
+            web_session.clear()
+            web_session.root = temp_root
+            web_session.source_files = [
+                {"path": path.relative_to(temp_root).as_posix(), "name": path.name}
+                for path in candidates
+            ]
+            web_session.source_m3u_texts = m3u_texts
+            _activate_source_file(candidates[0])
+        except Exception:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            raise
+        return session_payload(web_session)
+
+    def _import_project_upload(save: UploadSaver) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+        """保存方法を問わずプロジェクトを検証復元してから現在状態を置換する。"""
+        staging_root = Path(tempfile.mkdtemp(prefix="miditrack-project-upload-"))
+        try:
+            archive_path = staging_root / "project.miditrack"
+            save(archive_path)
+            candidate, ui_state, warnings = load_project_session(archive_path)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+        web_session.clear()
+        web_session.__dict__.update(candidate.__dict__)
+        return session_payload(web_session), ui_state, warnings
+
     @app.get("/")
     def index() -> Response:
         # フロントエンド（app.js）が起動トークン必須かどうかを最初の描画時点
@@ -1283,18 +1388,8 @@ def create_app(
             raise WebValidationError(".miditrackファイルを選択してください")
         if not upload.filename.lower().endswith(PROJECT_EXTENSION):
             raise WebValidationError("拡張子が .miditrack のファイルを選択してください")
-        staging_root = Path(tempfile.mkdtemp(prefix="miditrack-project-upload-"))
-        try:
-            archive_path = staging_root / "project.miditrack"
-            upload.save(archive_path)
-            candidate, ui_state, warnings = load_project_session(archive_path)
-        finally:
-            shutil.rmtree(staging_root, ignore_errors=True)
-
-        # load_project_session()が成功するまで既存セッションへ一切触れない。
-        web_session.clear()
-        web_session.__dict__.update(candidate.__dict__)
-        return jsonify(session=session_payload(web_session), uiState=ui_state, warnings=warnings)
+        payload, ui_state, warnings = _import_project_upload(upload.save)
+        return jsonify(session=payload, uiState=ui_state, warnings=warnings)
 
     @app.get("/api/session")
     def get_session() -> Response:
@@ -1305,26 +1400,7 @@ def create_app(
         upload = request.files.get("midi")
         if upload is None or not upload.filename:
             raise WebValidationError("MIDIファイルを選択してください")
-        original_name = upload.filename
-        if not original_name.lower().endswith(ALLOWED_MIDI_EXTENSIONS):
-            raise WebValidationError("拡張子が .mid または .midi のファイルを選択してください")
-
-        temp_root = Path(tempfile.mkdtemp(prefix="miditrack-"))
-        try:
-            original_path = temp_root / "original.mid"
-            upload.save(original_path)
-            midi_file, tracks = midi.analyze_midi_file(original_path)
-            web_session.replace(
-                root=temp_root,
-                original_path=original_path,
-                original_name=sanitize_stem(original_name),
-                ticks_per_beat=midi_file.ticks_per_beat,
-                tracks=tracks,
-            )
-        except Exception:
-            shutil.rmtree(temp_root, ignore_errors=True)
-            raise
-        return jsonify(**session_payload(web_session)), 201
+        return jsonify(**_ingest_midi_upload(upload.filename, upload.save)), 201
 
     @app.delete("/api/session")
     def delete_session() -> Response:
@@ -2951,66 +3027,57 @@ def create_app(
     @app.post("/api/source")
     def create_source() -> tuple[Response, int]:
         uploads = [f for f in request.files.getlist("source") if f and f.filename]
-        if not uploads:
-            raise WebValidationError("音源ファイルを選択してください")
+        entries = [(upload.filename, upload.save) for upload in uploads]
+        return jsonify(**_ingest_source_uploads(entries)), 201
 
-        # resolve()しておかないと、extract_zip_members()内部のdest_dir.resolve()
-        # （macOSの/var -> /private/var シンボリックリンク解決）と食い違い、
-        # 展開後メンバーパスへの後段のrelative_to(temp_root)がValueErrorになる。
-        temp_root = Path(tempfile.mkdtemp(prefix="miditrack-")).resolve()
-        try:
-            uploads_dir = temp_root / "uploads"
-            uploads_dir.mkdir()
-            archive_dir = temp_root / "archive"
+    if local_open_root is not None:
+        @app.post("/api/open-local")
+        def open_local() -> tuple[Response, int] | Response:
+            """miditrack.appがステージングしたファイルだけを既存の取込処理へ渡す。"""
+            if not require_token:
+                return jsonify(error="Finderからのファイル読み込みには起動トークンが必要です"), 403
+            if not local_open_root.is_dir():
+                raise WebValidationError("ローカルファイル用の一時領域を確認できません")
+            body = request.get_json(silent=True)
+            paths = body.get("paths") if isinstance(body, dict) else None
+            if not isinstance(paths, list) or not paths:
+                raise WebValidationError("読み込むファイルのパスを指定してください")
+            if len(paths) > 64:
+                raise WebValidationError("一度に読み込めるファイルは64件までです")
 
-            candidates: list[Path] = []
-            m3u_texts: list[str] = []
+            allowed_extensions = {
+                *ALLOWED_MIDI_EXTENSIONS,
+                PROJECT_EXTENSION,
+                ".zip", ".m3u", ".m3u8",
+                *(extension for fmt in convert.SOURCE_FORMATS for extension in fmt.extensions),
+            }
+            entries: list[tuple[str, UploadSaver]] = []
+            for raw_path in paths:
+                if not isinstance(raw_path, str) or not raw_path:
+                    raise WebValidationError("ローカルファイルのパスが不正です")
+                source_path = Path(raw_path)
+                try:
+                    resolved_path = source_path.resolve(strict=True)
+                    resolved_path.relative_to(local_open_root)
+                    source_status = source_path.lstat()
+                except (OSError, ValueError):
+                    raise WebValidationError("ローカルファイルはアプリの一時領域内にある必要があります") from None
+                if source_path.is_symlink() or not stat.S_ISREG(source_status.st_mode):
+                    raise WebValidationError("ローカルファイルは通常ファイルで指定してください")
+                if resolved_path.suffix.lower() not in allowed_extensions:
+                    raise WebValidationError(f"対応していない拡張子です: {resolved_path.suffix or '(なし)'}")
+                size_limit = MAX_PROJECT_UPLOAD_BYTES if resolved_path.suffix.lower() == PROJECT_EXTENSION else MAX_UPLOAD_BYTES
+                if source_status.st_size > size_limit:
+                    raise WebValidationError("ローカルファイルのサイズが上限を超えています")
+                entries.append((resolved_path.name, lambda destination, source=resolved_path: shutil.copyfile(source, destination)))
 
-            for index, upload in enumerate(uploads):
-                original_name = upload.filename
-                if convert.is_zip_filename(original_name):
-                    zip_path = uploads_dir / f"upload_{index}.zip"
-                    upload.save(zip_path)
-                    for member in convert.extract_zip_members(zip_path, archive_dir):
-                        if convert.is_hidden_member_name(member.name):
-                            pass  # __MACOSX/._foo.spcや.DS_Store等の隠しファイルは無視する。
-                        elif convert.is_m3u_filename(member.name):
-                            m3u_texts.append(member.read_text(encoding="utf-8", errors="replace"))
-                        elif convert.try_detect_format(member.name) is not None:
-                            candidates.append(member)
-                        # それ以外（readme・カバー画像等）はZIP同梱の付随ファイルとして無視する。
-                elif convert.is_hidden_member_name(original_name):
-                    pass  # 隠しファイルは無視する（ZIP同梱時と同じ扱い）。
-                elif convert.is_m3u_filename(original_name):
-                    saved = _unique_upload_path(uploads_dir, original_name)
-                    upload.save(saved)
-                    m3u_texts.append(saved.read_text(encoding="utf-8", errors="replace"))
-                elif convert.try_detect_format(original_name) is not None:
-                    saved = _unique_upload_path(uploads_dir, original_name)
-                    upload.save(saved)
-                    candidates.append(saved)
-                # else: 未対応拡張子の付随ファイルは無視する（ZIP同梱時と同じ扱い）。
-
-            if not candidates:
-                supported = ", ".join(ext for f in convert.SOURCE_FORMATS for ext in f.extensions)
-                raise WebValidationError(
-                    f"対応する音源ファイルが見つかりません（対応: {supported}。"
-                    "ZIPやm3uだけでは変換できません）"
-                )
-
-            candidates.sort(key=lambda p: p.relative_to(temp_root).as_posix())
-
-            web_session.clear()
-            web_session.root = temp_root
-            web_session.source_files = [
-                {"path": p.relative_to(temp_root).as_posix(), "name": p.name} for p in candidates
-            ]
-            web_session.source_m3u_texts = m3u_texts
-            _activate_source_file(candidates[0])
-        except Exception:
-            shutil.rmtree(temp_root, ignore_errors=True)
-            raise
-        return jsonify(**session_payload(web_session)), 201
+            project_entries = [entry for entry in entries if entry[0].lower().endswith(PROJECT_EXTENSION)]
+            if project_entries:
+                payload, ui_state, warnings = _import_project_upload(project_entries[0][1])
+                return jsonify(kind="project", session=payload, uiState=ui_state, warnings=warnings)
+            if len(entries) == 1 and entries[0][0].lower().endswith(ALLOWED_MIDI_EXTENSIONS):
+                return jsonify(kind="midi", session=_ingest_midi_upload(*entries[0])), 201
+            return jsonify(kind="source", session=_ingest_source_uploads(entries)), 201
 
     @app.post("/api/source/select-file")
     def select_source_file() -> Response:
@@ -3130,6 +3197,7 @@ def run_server(
     open_browser: bool = True,
     port: int = 0,
     require_token: bool = True,
+    local_open_dir: Path | None = None,
 ) -> None:
     """127.0.0.1でWeb UIを起動し、終了時に一時データを消す。
 
@@ -3144,7 +3212,11 @@ def run_server(
     session = WebSession()
     session.soundfont_override = resolve_startup_soundfont_override(soundfont)
     app = create_app(
-        token=token, session=session, soundfont=soundfont, require_token=require_token
+        token=token,
+        session=session,
+        soundfont=soundfont,
+        require_token=require_token,
+        local_open_dir=local_open_dir,
     )
 
     if midi_path is not None:

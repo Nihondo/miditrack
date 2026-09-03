@@ -67,6 +67,9 @@ mkdir -p "$HOME/Applications"
 info "配布版と同じmiditrack.appを組み立てています"
 "$repository_dir/scripts/build_app_bundle.sh" --output "$app_dir"
 
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+[[ -x "$lsregister" ]] && "$lsregister" -f "$app_dir" || true
+
 if [[ ! -e "$command_link" ]]; then
   [[ -w "$(dirname "$command_link")" ]] || fail "コマンドリンクの作成先へ書き込めません: $(dirname "$command_link")"
   ln -s "$cli_path" "$command_link"
