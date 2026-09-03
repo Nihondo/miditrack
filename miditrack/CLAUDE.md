@@ -4268,3 +4268,48 @@ actually opening dialogs/dialogs prompting for a save location, the flat
 "ファイル" menu layout, the five icons actually rendering, and the
 browser-launched path keeping its toggle and Escape behavior intact) was
 verified by hand against the compiled `~/Applications/miditrack.app`.
+
+## Fixed: `images/miditrack_icon.png` had no padding, so macOS added its own border
+
+The Dock icon showed a visible light bezel/frame wrapped around the note
+artwork that nothing in this repository's own pipeline drew. `install.sh`'s
+icon-generation function (`sips -z <size> <size> ... --out ...` per iconset
+slot, then `iconutil --convert icns`) is a pure per-size resize with no
+compositing step, and pixel-sampling the original source PNG directly
+(`magick images/miditrack_icon.png -format "%[pixel:p{x,y}]" info:` at
+several coordinates) confirmed no light-colored pixels existed near its
+edges either — so neither the pipeline nor the source artwork's own pixels
+were drawing the border. The actual cause was the source image's geometry:
+`magick ... -trim -format "%wx%h%O"` showed the opaque content occupied
+1222×1254 of the 1254×1254 canvas — 0px of padding top/bottom and ~16px
+left/right — while the artwork was already pre-masked into a rounded-rect
+alpha shape (confirmed by sampling along the corner diagonal: alpha stayed
+`0` out to roughly 100-150px before becoming opaque, i.e. a real corner
+radius, not merely a few anti-aliased pixels). macOS's own icon-consistency
+enforcement (post-Big Sur; this app's `LSMinimumSystemVersion` is 13.0)
+re-masks and adds a synthetic stroke/backplate/highlight to any icon that
+doesn't already match Apple's expected squircle-plus-padding template —
+which is exactly the frame visible in the Dock, added by the OS at render
+time, not by anything checked into this repository.
+
+The fix was a one-time asset edit, not a build-time transform in
+`install.sh`: adding padding on every `install.sh` run would make the
+padding amount a hidden, hard-to-preview parameter baked into a shell
+script, when it is really a visual design choice that benefits from
+being inspected once, as a file, before being committed. `images/
+miditrack_icon.png` was regenerated with `magick images/miditrack_icon.png
+-resize 824x824 -background none -gravity center -extent 1024x1024
+<output>` — shrinking the *existing*, unmodified artwork (rounded shape,
+colors, and all) to 824×824 and centering it on a new fully-transparent
+1024×1024 canvas. 824-of-1024 (~80%, ~100px margin per side) is the
+widely-cited Apple Big Sur+ icon-template content ratio; this reuses the
+original art byte-for-byte at a smaller scale rather than redrawing or
+re-cropping it, so the shape/colors are unchanged, only the amount of
+transparent breathing room around them. The result was visually confirmed
+(`Read`ing the generated PNG directly, since this environment can render
+image files) before being copied over the tracked file. `install.sh`,
+`miditrack_app.swift`'s `applicationIconURL`, and every existing
+`test_install.py`/`test_app_launcher.py` assertion reference this same
+path unchanged — the fix needed no code change anywhere, only a new PNG
+committed in place of the old one. Re-run `install.sh` to regenerate
+`~/Applications/miditrack.app`'s `.icns` from the updated source.
