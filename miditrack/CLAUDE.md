@@ -4288,6 +4288,63 @@ actually opening dialogs/dialogs prompting for a save location, the flat
 browser-launched path keeping its toggle and Escape behavior intact) was
 verified by hand against the compiled `~/Applications/miditrack.app`.
 
+**Follow-up: a custom About panel and a Help menu, mirroring
+`AgentBooth`'s own SwiftUI `Commands` design.** `AgentBooth/App/AgentBoothApp.swift`
+(a sibling project by the same author) already established the pattern this
+app now copies: a standard `NSApplication.orderFrontStandardAboutPanel`
+gains a `.credits` attributed string naming the product page, and the
+system Help menu is replaced with one item that opens the manual page.
+`miditrack.app` is AppKit-native (`installMainMenu()`), not SwiftUI, so the
+same effect needed the imperative equivalents rather than
+`CommandGroup(replacing: .appInfo)`/`CommandGroup(replacing: .help)`.
+
+`makeApplicationMenu()`'s "miditrack について" item now targets
+`MiditrackAppDelegate.presentAboutPanel()` instead of calling
+`NSApplication.orderFrontStandardAboutPanel(_:)` directly, so a `.credits`
+option can be attached. `presentAboutPanel()` builds an `NSAttributedString`
+of `"<copyright>\nWebsite: <url>"` with an `.link` attribute over the URL
+substring — clicking it in the panel opens the browser via AppKit's own
+link-handling, no explicit `NSWorkspace.shared.open()` needed for that part.
+`aboutWebsiteURLString` is `https://products.desireforwealth.com/products/miditrack`,
+matching `AgentBooth`'s own `.../products/agentbooth` URL shape for its
+sibling product page. `resolveAboutCopyright()` reads
+`NSHumanReadableCopyright` from `Info.plist` and falls back to a literal
+string when absent — `scripts/build_app_bundle.sh`'s Info.plist heredoc does
+not currently set that key, so the fallback is what actually renders today;
+add the key there rather than editing the Swift fallback if a real
+copyright string is ever wanted in `Info.plist` itself.
+
+`makeHelpMenu()` is a new top-level function returning an `NSMenuItem` whose
+submenu holds one item, "miditrack ヘルプ", targeting
+`MiditrackAppDelegate.openHelpFromMenu()` — a one-line
+`NSWorkspace.shared.open(URL(string: helpManualURLString)!)` opening
+`https://products.desireforwealth.com/products/miditrack-manual`.
+**Why this menu is additionally assigned to `NSApp.helpMenu`, not just
+appended to `mainMenu` like every other top-level menu**: AppKit
+automatically prepends a live search field to whichever `NSMenu` is
+registered as `NSApp.helpMenu`, searching every menu item's title across the
+whole app — this is what produces the same "spotlight-style search box above
+a single help item" look `AgentBooth`'s SwiftUI `CommandGroup(replacing:
+.help)` gets for free from the framework. `installMainMenu()` therefore
+keeps a reference to the `NSMenuItem` returned by `makeHelpMenu()` and sets
+`NSApp.helpMenu = helpMenuItem.submenu` right after assigning
+`NSApp.mainMenu` — assigning only the outer `NSMenuItem` (rather than its
+`.submenu`) would not trigger this behavior, since `helpMenu` expects the
+`NSMenu` itself, not the item that carries it in the menu bar.
+
+Both `presentAboutPanel()`/`openHelpFromMenu()` are declared `@objc
+fileprivate` on `MiditrackAppDelegate`, following the same reasoning already
+documented above for `openFileFromMenu()` and friends: `#selector` references
+from the top-level `makeApplicationMenu()`/`makeHelpMenu()` functions need
+`@objc`, and `fileprivate` (not `private`) because those functions are
+top-level, not members of the class. No `--self-test` coverage was added —
+like the pre-existing menu-action tests, this depends on a live `NSApp`/
+`WKWebView` and was instead verified by hand against the compiled
+`~/Applications/miditrack.app`: the About panel shows the app name, version,
+copyright, and a clickable "Website: ..." line that opens the product page,
+and the menu bar's Help menu shows the search field plus "miditrack ヘルプ",
+which opens the manual page in the default browser.
+
 ## Finder compact icons use the original 1024px artwork only
 
 `scripts/build_app_bundle.sh` creates `miditrack.icns` as a single `ic10`

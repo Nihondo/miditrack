@@ -55,6 +55,9 @@ let webAssetsURL = projectResourceURL.appendingPathComponent("miditrack/src/midi
 let applicationIconURL = resourceDirectoryURL.appendingPathComponent("miditrack.icns")
 let splashImageURL = webAssetsURL.appendingPathComponent("miditrack_lead.png")
 
+let aboutWebsiteURLString = "https://products.desireforwealth.com/products/miditrack"
+let helpManualURLString = "https://products.desireforwealth.com/products/miditrack-manual"
+
 let webUiLinePrefix = "miditrack Web UI: "
 let serverStartupTimeoutSeconds: TimeInterval = 40
 let backendTerminationGraceSeconds: TimeInterval = 3
@@ -679,7 +682,8 @@ func addTargetedMenuItem(
 func makeApplicationMenu(applicationName: String, target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
     let menu = NSMenu()
-    menu.addItem(withTitle: "\(applicationName) について", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+    menu.addItem(withTitle: "\(applicationName) について", action: #selector(MiditrackAppDelegate.presentAboutPanel), keyEquivalent: "")
+        .target = target
     menu.addItem(.separator())
     addTargetedMenuItem(
         to: menu, title: "設定…", action: #selector(MiditrackAppDelegate.openSettingsFromMenu),
@@ -757,6 +761,18 @@ func makeWindowMenu() -> NSMenuItem {
     return item
 }
 
+/// 「ヘルプ」メニュー。NSApp.helpMenuに割り当てることで、AppKitがメニュー先頭に
+/// 検索フィールドを自動的に追加する（AgentBoothのCommandGroup(replacing: .help)と
+/// 同等の見た目になる）。
+func makeHelpMenu(applicationName: String, target: AnyObject) -> NSMenuItem {
+    let item = NSMenuItem()
+    let menu = NSMenu(title: "ヘルプ")
+    menu.addItem(withTitle: "\(applicationName) ヘルプ", action: #selector(MiditrackAppDelegate.openHelpFromMenu), keyEquivalent: "")
+        .target = target
+    item.submenu = menu
+    return item
+}
+
 func installMainMenu(applicationName: String, target: AnyObject) {
     let mainMenu = NSMenu()
     mainMenu.addItem(makeApplicationMenu(applicationName: applicationName, target: target))
@@ -764,7 +780,10 @@ func installMainMenu(applicationName: String, target: AnyObject) {
     mainMenu.addItem(makeEditMenu())
     mainMenu.addItem(makeViewMenu())
     mainMenu.addItem(makeWindowMenu())
+    let helpMenuItem = makeHelpMenu(applicationName: applicationName, target: target)
+    mainMenu.addItem(helpMenuItem)
     NSApp.mainMenu = mainMenu
+    NSApp.helpMenu = helpMenuItem.submenu
 }
 
 // MARK: - H. AppDelegate
@@ -961,6 +980,41 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         }
         isLocalOpenInFlight = false
         scheduleLocalOpenFlush()
+    }
+
+    // MARK: About / ヘルプメニュー
+
+    /// 標準Aboutパネルに、プロダクトページへのリンクを含むクレジット文を追加して表示する
+    /// （AgentBoothのpresentAboutPanel()と同じ構成）。
+    @objc fileprivate func presentAboutPanel() {
+        let options: [NSApplication.AboutPanelOptionKey: Any] = [
+            .credits: makeAboutCredits()
+        ]
+        NSApp.orderFrontStandardAboutPanel(options: options)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func makeAboutCredits() -> NSAttributedString {
+        let copyright = resolveAboutCopyright()
+        let creditsText = "\(copyright)\nWebsite: \(aboutWebsiteURLString)"
+        let attributed = NSMutableAttributedString(string: creditsText)
+        let linkRange = (creditsText as NSString).range(of: aboutWebsiteURLString)
+        attributed.addAttribute(.link, value: aboutWebsiteURLString, range: linkRange)
+        return attributed
+    }
+
+    private func resolveAboutCopyright() -> String {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "NSHumanReadableCopyright") as? String,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+        return "Copyright © 2026 Nihondo"
+    }
+
+    @objc fileprivate func openHelpFromMenu() {
+        if let url = URL(string: helpManualURLString) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: メニューアクション（Web側の既存ボタンをクリックするだけの薄い実装）
