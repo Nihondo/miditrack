@@ -4359,9 +4359,16 @@ compile-time repository path (`#filePath`) or `<repository>/soundfonts`.
 SoundFonts belong in the user's Audio Sound Banks directory, and Homebrew is
 only for FluidSynth, ffmpeg, and Rubber Band.
 
-The splash window must be displayed before the backend starts, remain visible
-for at least one second, and only transition once the backend startup URL is
-received. Release signing is inside-out with the Developer ID identity,
+The splash overlay must be displayed before the backend starts, remain visible
+for at least one second, and only transition after the backend startup URL is
+received and the Web UI has initialized. A resolved initialization promise or
+completed DOM mutation is not proof that WebKit has painted the new content:
+`app.js` must await a double `requestAnimationFrame` before posting
+`miditrackReady` to the native shell, which keeps the opaque overlay in place
+through at least one intervening rendering opportunity. The Swift delegate's
+five-second `didFinish` fallback prevents a script failure from leaving the
+splash visible forever. Release signing is inside-out with the Developer ID
+identity,
 followed by the outer app signature with hardened runtime and timestamp;
 notarization staples that same tested app rather than rebuilding it.
 

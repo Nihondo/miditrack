@@ -298,11 +298,25 @@ final class BackendController {
 /// 素のWKWebViewでは以下が無言で動かなくなる。ブラウザなら自動なので
 /// 見落としやすい: ダウンロード、<input type="file">、window.confirm()、
 /// target="_blank"を同一ウィンドウで開くこと。
-final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
-    /// 最初のページ読み込みが完了（成功・失敗いずれか）した時点で一度だけ
-    /// 呼ばれる。スプラッシュからメインウィンドウへの切り替えタイミングに使う
-    /// （AppDelegate側がこれを購読し、白紙のWebViewが一瞬見える前にスプラッシュを
-    /// 閉じてしまうことを防ぐ）。
+final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler {
+    /// Web側のUI要素が実際に描画され終えた時点で一度だけ呼ばれる。
+    /// スプラッシュオーバーレイを消すタイミングに使う。
+    ///
+    /// didFinish（WKNavigationDelegate、HTML/CSS/JSなどのリソース取得完了）
+    /// では早すぎる — app.jsのinit()はその後もloadPreferences/loadSoundfonts/
+    /// セッション取得とトラックリスト描画を非同期に続けており、didFinishの
+    /// 時点ではまだ画面上に実際のUI要素が出ていない（実機で確認済み。
+    /// 「スプラッシュが消えてからメインが表示される」ように見える不具合の
+    /// 原因だった）。app.js側がinit()の全終了経路（早期return・正常終了・
+    /// エラー）でDOM更新後に二重requestAnimationFrameを待ち、少なくとも一度の
+    /// 描画機会を挟んでからpostMessageする"miditrackReady"スクリプトメッセージ
+    /// （WKScriptMessageHandler）を本来のトリガーとする。
+    ///
+    /// didFinishは、万一"miditrackReady"が届かない場合（app.jsの想定外の
+    /// エラーなど）に画面が永久にスプラッシュのままになることを防ぐための
+    /// フォールバックとしてのみ使う（読み込み完了から数秒待っても届かなければ
+    /// 諦めて解除する）。didFail/didFailProvisionalNavigationはナビゲーション
+    /// 自体が失敗した場合の即時フォールバック。
     var onInitialLoadFinished: (() -> Void)?
     private var hasFinishedInitialLoad = false
 
@@ -312,8 +326,15 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
         onInitialLoadFinished?()
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "miditrackReady" else { return }
         notifyInitialLoadFinishedOnce()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.notifyInitialLoadFinishedOnce()
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -449,6 +470,10 @@ func makeWebView(delegate: MiditrackWebDelegate) -> WKWebView {
         forMainFrameOnly: true
     )
     configuration.userContentController.addUserScript(nativeFlagScript)
+    // app.jsのinit()がUI描画まで完了した際に呼ぶnotifyNativeAppReady()の
+    // 受け口。スプラッシュオーバーレイをいつ消すかの本来のトリガーになる
+    // （MiditrackWebDelegate.userContentController(_:didReceive:)参照）。
+    configuration.userContentController.add(delegate, name: "miditrackReady")
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.uiDelegate = delegate
     webView.navigationDelegate = delegate

@@ -95,6 +95,12 @@ class TestSwiftLauncherContract(unittest.TestCase):
         self.assertIn("revealMainContent", self.source)
         self.assertIn("overlay.removeFromSuperview()", self.source)
 
+    def test_waits_for_the_web_ui_ready_message_before_removing_the_splash_overlay(self) -> None:
+        self.assertIn("WKScriptMessageHandler", self.source)
+        self.assertIn('add(delegate, name: "miditrackReady")', self.source)
+        self.assertIn('message.name == "miditrackReady"', self.source)
+        self.assertIn("asyncAfter(deadline: .now() + 5)", self.source)
+
     def test_preserves_the_native_webkit_integration(self) -> None:
         for required_symbol in (
             "miditrack Web UI: ",

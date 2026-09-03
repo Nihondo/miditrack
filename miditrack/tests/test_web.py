@@ -400,6 +400,21 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("body.is-fullscreen #open-dialog > #upload-card > summary .step-number { display: none; }", css)
         self.assertIn("body.is-fullscreen #open-dialog > #upload-card > summary .disclosure-chevron { display: none; }", css)
 
+    def test_native_app_ready_message_waits_for_a_painted_frame(self) -> None:
+        """DOM更新後の描画を待ってからネイティブ側へ準備完了を通知する。"""
+        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+
+        wait_block = javascript.split("function waitForNextPaint()", 1)[1].split(
+            "async function notifyNativeAppReady()", 1
+        )[0]
+        notify_block = javascript.split("async function notifyNativeAppReady()", 1)[1].split(
+            "async function init()", 1
+        )[0]
+        self.assertGreaterEqual(wait_block.count("requestAnimationFrame"), 2)
+        self.assertIn("await waitForNextPaint();", notify_block)
+        self.assertIn("messageHandler.postMessage({});", notify_block)
+        self.assertEqual(javascript.count("await notifyNativeAppReady();"), 2)
+
     def test_pianoroll_draws_pitchwheel_paths(self) -> None:
         """ピッチベンドはノート本体と分離したDAW風オートメーションとして描画する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)

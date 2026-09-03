@@ -4293,9 +4293,29 @@ function setupDropZone() {
   });
 }
 
+// DOM更新後の描画機会を確実に1回挟む。最初のコールバックは描画前に実行される
+// ため、二重requestAnimationFrameにして次のフレームまで待つ。
+function waitForNextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
+// ネイティブアプリ（miditrack.app）のスプラッシュオーバーレイは、WKWebViewの
+// ページ読み込み完了（didFinish）ではなく、この関数の通知を待ってから消える。
+// PromiseやDOM更新の完了だけでは画面への描画は保証されないため、WebKitが更新済み
+// UIを少なくとも1フレーム描画する機会を得てからpostMessageする。
+async function notifyNativeAppReady() {
+  const messageHandler = window.webkit?.messageHandlers?.miditrackReady;
+  if (!isNativeApp || !messageHandler) return;
+  await waitForNextPaint();
+  messageHandler.postMessage({});
+}
+
 async function init() {
   if (isTokenRequired && !token) {
     showStatus("起動トークンがありません。ターミナルに表示されたURLから開いてください。", "error");
+    await notifyNativeAppReady();
     return;
   }
   setupDropZone();
@@ -4346,6 +4366,8 @@ async function init() {
     await refreshFromSession(await response.json());
   } catch (error) {
     showStatus(error.message, "error");
+  } finally {
+    await notifyNativeAppReady();
   }
 }
 
