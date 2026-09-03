@@ -4386,7 +4386,48 @@ session's own sandbox permissions didn't allow writing there, so it wasn't
 regenerated as part of this change — verify the actual Dock appearance
 before considering this closed.
 
-## Distribution bundle invariant (2026-09)
+## `images/miditrack.icon` is now the editable icon source; `miditrack_icon.png` is a derived, committed asset
+
+The two padding rounds above (80% → 92%) existed because the source artwork
+was a flat, hand-cropped PNG with no notion of Apple's actual squircle/
+padding/shadow template — every ratio had to be guessed and visually
+re-checked against the OS's own auto-framing behavior. `images/miditrack.icon`
+is an Xcode 26 Icon Composer document (its own `icon.json` plus the source
+artwork under `Assets/`) that replaces that guesswork: Icon Composer knows
+the real macOS icon template geometry and renders the correct squircle mask,
+margin, and drop shadow itself, the same rendering macOS's own icon pipeline
+uses. It is the file to open and edit (via the Icon Composer.app GUI) for any
+future icon change; `images/miditrack_icon.png` becomes a derived artifact of
+it, not a hand-tuned original.
+
+`images/miditrack_icon.png` is still the single committed file
+`scripts/build_app_bundle.sh` reads (see "Finder compact icons use the
+original 1024px artwork only" above) — that script and
+`tests/test_build_app_bundle.py`'s dimension/one-representation assertions
+are unchanged. Regenerating the PNG from the `.icon` source is a one-time,
+by-hand step (the same "inspect once as a file before committing" posture the
+92%-padding fix above already established), done with `ictool`, the small CLI
+bundled inside Icon Composer.app itself:
+
+```
+"$(dirname "$(dirname "$(xcode-select -p)")")/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
+  images/miditrack.icon --export-image --output-file images/miditrack_icon.png \
+  --platform macOS --rendition Default --width 1024 --height 1024 --scale 1
+```
+
+`ictool` requires the full Xcode.app (Icon Composer.app ships inside
+`Xcode.app/Contents/Applications`, not with the Command Line Tools alone),
+so this step is not part of `scripts/build_app_bundle.sh` and does not add a
+new build-time dependency — only a `git commit`-time one, exactly like the
+`magick`-based regeneration it replaces. `actool`, the asset-catalog compiler
+that would normally compile a `.icon` bundle inside an `.xcassets` into a
+modern layered `Assets.car` icon, was tried first and rejected: compiling a
+standalone `AppIcon.icon` dropped directly into a bare `.xcassets` produced
+no error but also no `Assets.car`/icns output at all (confirmed by inspecting
+`actool --compile`'s output directory directly) — full Liquid Glass icon
+support needs the whole Xcode project build system, not a raw CLI
+invocation, so `ictool`'s flattened-PNG export remains the practical bridge
+into this project's existing single-`ic10` ICNS pipeline.
 
 `scripts/build_app_bundle.sh` is the only app-payload assembler. Both
 `install.sh` and `scripts/release_app.sh` call it, so a locally tested app is
