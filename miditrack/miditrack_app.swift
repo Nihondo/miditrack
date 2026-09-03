@@ -299,6 +299,31 @@ final class BackendController {
 /// 見落としやすい: ダウンロード、<input type="file">、window.confirm()、
 /// target="_blank"を同一ウィンドウで開くこと。
 final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate {
+    /// 最初のページ読み込みが完了（成功・失敗いずれか）した時点で一度だけ
+    /// 呼ばれる。スプラッシュからメインウィンドウへの切り替えタイミングに使う
+    /// （AppDelegate側がこれを購読し、白紙のWebViewが一瞬見える前にスプラッシュを
+    /// 閉じてしまうことを防ぐ）。
+    var onInitialLoadFinished: (() -> Void)?
+    private var hasFinishedInitialLoad = false
+
+    private func notifyInitialLoadFinishedOnce() {
+        guard !hasFinishedInitialLoad else { return }
+        hasFinishedInitialLoad = true
+        onInitialLoadFinished?()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        notifyInitialLoadFinishedOnce()
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        notifyInitialLoadFinishedOnce()
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        notifyInitialLoadFinishedOnce()
+    }
+
     func webView(
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -439,22 +464,58 @@ func makeMainWindow(contentView: NSView) -> NSWindow {
     )
     window.title = "miditrack"
     window.minSize = NSSize(width: 640, height: 480)
+    // setFrameAutosaveName()は、直前に保存済みのフレーム（位置とサイズの
+    // 両方）があればこの呼び出しの時点で即座に復元する。復元の有無を
+    // 事前に判定してからcenter()の要否を決めないと、無条件にcenter()を
+    // 呼んだ場合、位置だけが常に画面中央へ上書きされてしまう（サイズは
+    // center()が変更しないため復元されたままになり、位置だけ復元されない
+    // という非対称な不具合になる — 実機で確認済み）。
+    let frameAutosaveKey = "NSWindow Frame miditrackMainWindow"
+    let hasSavedFrame = UserDefaults.standard.string(forKey: frameAutosaveKey) != nil
     window.setFrameAutosaveName("miditrackMainWindow")
     window.contentView = contentView
-    window.center()
+    if !hasSavedFrame {
+        window.center()
+    }
     return window
 }
 
-func makeSplashWindow() -> NSWindow {
-    let imageView = NSImageView()
+/// 素のNSImageViewは、imageScalingの設定に関わらずAuto Layout上で画像本来の
+/// ピクセルサイズ（miditrack_lead.pngは1672x941）を「望ましいサイズ」として
+/// 主張し続ける。このスプラッシュオーバーレイはメインウィンドウの実サイズ
+/// （ユーザーのリサイズ・前回終了時のサイズ復元により可変）いっぱいに
+/// 常にフィットさせる必要があり、固定の定数制約は使えない。intrinsicContentSize
+/// をnoIntrinsicMetricにして「望ましいサイズなし」と申告することで、
+/// 親ビュー（ひいてはメインウィンドウ自体）がその画像サイズへ膨らんでしまう
+/// 事故を防ぐ（実機で確認済みのバグへの対策）。
+final class NoIntrinsicSizeImageView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+}
+
+/// スプラッシュの見た目を、メインウィンドウのコンテンツ領域いっぱいに重ねる
+/// オーバーレイビューとして構築する。独立したウィンドウにしないのは、
+/// バックエンド起動・WKWebViewの読み込みが完了するまでの間もメインウィンドウ
+/// 自体は最初から画面に出しておきたいため（詳細はAppDelegate側のコメント参照）。
+///
+/// オーバーレイ自体はウィンドウ全体を覆う暗い背景だが、画像とテキストは
+/// メインウィンドウのサイズに関わらず固定サイズ（640x360）の「カード」に
+/// まとめて中央配置する。ウィンドウが（前回終了時のサイズ復元により）
+/// 640x360よりずっと大きいことがあるため、画像をウィンドウいっぱいに
+/// 引き伸ばさないようにするため。
+func makeSplashOverlayView() -> NSView {
+    let cardSize = NSSize(width: 640, height: 360)
+
+    let imageView = NoIntrinsicSizeImageView()
     imageView.image = NSImage(contentsOf: splashImageURL)
     imageView.imageScaling = .scaleProportionallyUpOrDown
     imageView.imageAlignment = .alignCenter
 
-    let overlay = NSStackView()
-    overlay.orientation = .vertical
-    overlay.alignment = .leading
-    overlay.spacing = 4
+    let labelStack = NSStackView()
+    labelStack.orientation = .vertical
+    labelStack.alignment = .leading
+    labelStack.spacing = 4
     let title = NSTextField(labelWithString: "miditrack")
     title.font = NSFont.systemFont(ofSize: 32, weight: .bold)
     title.textColor = .white
@@ -465,35 +526,60 @@ func makeSplashWindow() -> NSWindow {
     let status = NSTextField(labelWithString: "Starting…")
     status.font = NSFont.systemFont(ofSize: 14)
     status.textColor = NSColor.white.withAlphaComponent(0.7)
-    overlay.addArrangedSubview(title)
-    overlay.addArrangedSubview(versionLabel)
-    overlay.addArrangedSubview(status)
+    labelStack.addArrangedSubview(title)
+    labelStack.addArrangedSubview(versionLabel)
+    labelStack.addArrangedSubview(status)
 
-    let content = NSView()
-    content.addSubview(imageView)
-    content.addSubview(overlay)
+    let card = NSView()
+    card.wantsLayer = true
+    card.layer?.backgroundColor = NSColor.black.cgColor
+    card.addSubview(imageView)
+    card.addSubview(labelStack)
+    card.translatesAutoresizingMaskIntoConstraints = false
     imageView.translatesAutoresizingMaskIntoConstraints = false
-    overlay.translatesAutoresizingMaskIntoConstraints = false
+    labelStack.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
-        imageView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-        imageView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-        imageView.topAnchor.constraint(equalTo: content.topAnchor),
-        imageView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-        overlay.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 36),
-        overlay.topAnchor.constraint(equalTo: content.topAnchor, constant: 32),
+        card.widthAnchor.constraint(equalToConstant: cardSize.width),
+        card.heightAnchor.constraint(equalToConstant: cardSize.height),
+        imageView.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+        imageView.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+        imageView.topAnchor.constraint(equalTo: card.topAnchor),
+        imageView.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        labelStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 36),
+        labelStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 32),
     ])
 
-    let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
-        styleMask: [.titled, .closable],
-        backing: .buffered,
-        defer: false
-    )
-    window.title = "miditrack"
-    window.isReleasedWhenClosed = false
-    window.contentView = content
-    window.center()
-    return window
+    let overlay = NSView()
+    overlay.wantsLayer = true
+    overlay.layer?.backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1).cgColor
+    overlay.addSubview(card)
+    NSLayoutConstraint.activate([
+        card.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+        card.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+    ])
+    return overlay
+}
+
+/// WKWebViewとスプラッシュオーバーレイを重ねた、メインウィンドウの
+/// contentView用コンテナを作る。overlayは常に最後に追加してwebViewより
+/// 手前（最前面）に描画されるようにする。
+func makeMainContentContainer(webView: NSView, overlay: NSView) -> NSView {
+    let container = NSView()
+    container.addSubview(webView)
+    container.addSubview(overlay)
+    webView.translatesAutoresizingMaskIntoConstraints = false
+    overlay.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+        webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        webView.topAnchor.constraint(equalTo: container.topAnchor),
+        webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        overlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+        overlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        overlay.topAnchor.constraint(equalTo: container.topAnchor),
+        overlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+    ])
+    return container
 }
 
 func loadingPlaceholderHtml() -> String {
@@ -621,14 +707,26 @@ func installMainMenu(applicationName: String, target: AnyObject) {
 // MARK: - H. AppDelegate
 
 final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
-    private var splashWindow: NSWindow?
     private var window: NSWindow?
     private var webView: WKWebView?
     private var webDelegate: MiditrackWebDelegate?
+    private var splashOverlayView: NSView?
     private var backend: BackendController?
     private var startupTimeoutWorkItem: DispatchWorkItem?
     private var splashStartedAt = Date()
 
+    // メインウィンドウ自体は起動直後から表示し、その上にスプラッシュ画像を
+    // 覆うオーバーレイビューとして重ねる（別ウィンドウにはしない）。
+    //
+    // 以前は「別ウィンドウのスプラッシュ」→「読み込み完了後にメインウィンドウを
+    // 作成してcrossfade」という設計だったが、実機検証でWKWebViewが
+    // 「一度もウィンドウサーバーに乗っていないウィンドウ」の中にいる間は
+    // 実際の描画を後回しにすることが分かり、フェード開始の時点でまだ中身が
+    // 描画されておらず「スプラッシュが消えてから遅れてメインが現れる」ように
+    // しか見えなかった。メインウィンドウ（とその中のWKWebView）を最初から
+    // 本当に画面に出しておけば、WKWebViewは読み込み中もずっと通常どおり描画
+    // され続けるため、スプラッシュオーバーレイを外した瞬間に既に描画済みの
+    // 中身がそのまま見える。
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         if let icon = NSImage(contentsOf: applicationIconURL) {
@@ -637,9 +735,21 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         installMainMenu(applicationName: "miditrack", target: self)
 
         splashStartedAt = Date()
-        let splash = makeSplashWindow()
-        splashWindow = splash
-        splash.makeKeyAndOrderFront(nil)
+
+        let delegate = MiditrackWebDelegate()
+        webDelegate = delegate
+        let webView = makeWebView(delegate: delegate)
+        self.webView = webView
+        let overlay = makeSplashOverlayView()
+        splashOverlayView = overlay
+        let contentContainer = makeMainContentContainer(webView: webView, overlay: overlay)
+        let mainWindow = makeMainWindow(contentView: contentContainer)
+        window = mainWindow
+        delegate.onInitialLoadFinished = { [weak self] in
+            self?.revealMainContent()
+        }
+
+        mainWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         prepareLogFile()
@@ -704,27 +814,33 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + serverStartupTimeoutSeconds, execute: workItem)
     }
 
+    /// バックエンドのURLが分かり次第、WKWebViewの読み込みを開始する。
+    /// メインウィンドウ自体はapplicationDidFinishLaunching()で既に表示済み
+    /// （スプラッシュオーバーレイに覆われた状態）なので、ここではURLを
+    /// 読み込ませるだけでよい。
     private func handleBackendReady(url: URL) {
         startupTimeoutWorkItem?.cancel()
+        webView?.load(URLRequest(url: url))
+    }
+
+    /// WKWebViewの初回読み込み（成功・失敗いずれか）が完了した後に呼ばれる。
+    /// スプラッシュ最低表示時間（起動から1秒）が経過するのを待ってから、
+    /// オーバーレイをフェードアウトさせて取り除き、既に描画済みのメイン
+    /// コンテンツを見せる。
+    private func revealMainContent() {
         let elapsed = Date().timeIntervalSince(splashStartedAt)
         let remaining = max(0, 1 - elapsed)
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
-            self?.showMainWindow(url: url)
+            guard let self, let overlay = self.splashOverlayView else { return }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.35
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                overlay.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                overlay.removeFromSuperview()
+                self?.splashOverlayView = nil
+            })
         }
-    }
-
-    private func showMainWindow(url: URL) {
-        guard window == nil else { return }
-        let delegate = MiditrackWebDelegate()
-        webDelegate = delegate
-        let webView = makeWebView(delegate: delegate)
-        webView.load(URLRequest(url: url))
-        self.webView = webView
-        let mainWindow = makeMainWindow(contentView: webView)
-        window = mainWindow
-        mainWindow.makeKeyAndOrderFront(nil)
-        splashWindow?.orderOut(nil)
-        splashWindow = nil
     }
 
     private func handleBackendFailure(message: String) {
