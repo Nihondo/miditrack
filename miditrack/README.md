@@ -94,6 +94,16 @@ The server binds locally and uses a launch-scoped token for API requests. Treat 
 
 `~/Applications/miditrack.app` keeps normal per-launch token authentication (it does not pass `--no-token`). `miditrack_app.swift` starts the backend itself (via `Process()`, after its window is shown — see `miditrack/CLAUDE.md` for why the timing matters) and pipes its stdout, parsing the `miditrack Web UI: http://127.0.0.1:PORT/?token=...` startup line and loading that URL directly into its `WKWebView` — the token never leaves the parent-child pipe or reaches an external browser. `/api/audio`'s query-string token fallback remains the only exception to header-based auth.
 
+## Versioning
+
+`src/miditrack/__init__.py`'s `__version__` is the single source of truth for the package version. `pyproject.toml` declares `dynamic = ["version"]` and resolves it from that same attribute (`[tool.setuptools.dynamic]`), so it never needs a separate manual edit. `install.sh` reads `__version__` at install time and writes it into `~/Applications/miditrack.app`'s `Info.plist` as both `CFBundleShortVersionString` and `CFBundleVersion`.
+
+To bump the version:
+
+1. Update `__version__` in `src/miditrack/__init__.py`.
+2. Re-run `pip install -e .` (or any build) if you need the installed package metadata to reflect it immediately.
+3. Re-run the repository's `install.sh` if you need `~/Applications/miditrack.app`'s bundle version to reflect it.
+
 ## Verification
 
 Run the Python suite from the repository root:

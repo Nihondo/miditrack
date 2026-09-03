@@ -94,6 +94,16 @@ miditrack/
 
 `~/Applications/miditrack.app`は通常の起動ごとのトークン認証をそのまま使います（`--no-token`は渡しません）。`miditrack_app.swift`自身がバックエンドを起動し（`Process()`経由、ウィンドウ表示後——タイミングが重要な理由は`miditrack/CLAUDE.md`参照）、その標準出力を解析して`miditrack Web UI: http://127.0.0.1:PORT/?token=...`という起動行から、そのURLを直接`WKWebView`にロードします——トークンは親子プロセス間のパイプの外に出ることも、外部ブラウザに渡ることもありません。`/api/audio`のクエリ文字列トークン特例だけが引き続きヘッダー認証の唯一の例外です。
 
+## バージョン管理
+
+パッケージバージョンの正本は`src/miditrack/__init__.py`の`__version__`です。`pyproject.toml`は`dynamic = ["version"]`を宣言し、同じ属性（`[tool.setuptools.dynamic]`）から値を解決するため、手動で二重管理する必要はありません。`install.sh`はインストール時に`__version__`を読み取り、`~/Applications/miditrack.app`の`Info.plist`へ`CFBundleShortVersionString`と`CFBundleVersion`の両方として書き込みます。
+
+バージョンを上げる手順:
+
+1. `src/miditrack/__init__.py`の`__version__`を更新する。
+2. インストール済みパッケージのメタデータへ即座に反映させたい場合は`pip install -e .`（または任意のビルド）を再実行する。
+3. `~/Applications/miditrack.app`のバンドルバージョンへ反映させたい場合は、リポジトリの`install.sh`を再実行する。
+
 ## 検証
 
 リポジトリルートからPythonテストを実行します。

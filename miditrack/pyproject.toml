@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "miditrack"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Assign a General MIDI instrument per track and audition the result"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,6 +25,9 @@ miditrack = "miditrack.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "miditrack.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
