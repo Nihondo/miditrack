@@ -8,29 +8,33 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
 
 ## クイックスタート
 
-1. Apple Silicon Macでこのリポジトリをcloneまたはダウンロードし、ディレクトリへ移動します。
+1. Apple Silicon Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack-*-macos-arm64.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
+
+2. Homebrewでランタイム依存を導入します。Homebrewが未導入の場合は先にインストールしてください。
 
    ```bash
-   git clone https://github.com/Nihondo/miditrack.git
-   cd miditrack
+   # Homebrewが未導入の場合:
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+   brew install fluid-synth ffmpeg rubberband
    ```
 
-2. インストーラを実行します。配布ZIPと同じ固定Python・Node.jsランタイムを組み立て、HomebrewではFluidSynth、ffmpeg、Rubber Bandだけを導入します。
+   - **FluidSynth** — MIDIをWAVへレンダリングするのに使用
+   - **ffmpeg** — WAVのミックスに使用
+   - **Rubber Band** — 原曲の速度・ピッチ変更に使用
 
-   ```bash
-   ./install.sh
-   ```
-
-3. General MIDI SoundFont（`.sf2`/`.sf3`）をユーザーのSound Banksディレクトリへ配置します。SoundFontはインストーラで同梱・ダウンロードしません。
+3. General MIDI SoundFont（`.sf2`/`.sf3`）をユーザーのSound Banksディレクトリへ配置します。SoundFontはアプリに同梱・ダウンロードされません。
 
    ```bash
    mkdir -p ~/Library/Audio/Sounds/Banks
    cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
-4. インストーラは`~/Applications/miditrack.app`も作成します。ダブルクリックするか、Dockへドラッグして起動してください——アプリ全体が専用のウィンドウの中で完結するため、別途ブラウザタブが開くことはありません。詳細は後述の[Dockからmiditrackを起動する](#dockからmiditrackを起動する)を、ターミナルから起動したい場合は[コマンドラインオプション](#コマンドラインオプション)を参照してください。
+4. `miditrack.app`をダブルクリックするか、Dockへドラッグして起動してください——アプリ全体が専用のウィンドウの中で完結するため、別途ブラウザタブが開くことはありません。詳細は後述の[Dockからmiditrackを起動する](#dockからmiditrackを起動する)を、ターミナルから起動したい場合は[コマンドラインオプション](#コマンドラインオプション)を参照してください。
 
 5. 対応する音源ファイルまたは`.mid`ファイルをアップロード枠へ置き、編集・試聴してからMIDIまたはWAVをダウンロードします。
+
+ソースからビルドする方法はコントリビューター向けに別途用意しています——[miditrack/README_ja.md](miditrack/README_ja.md)を参照してください。
 
 ## できること
 
@@ -54,17 +58,15 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
 
 ## 必要環境
 
-- Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回パッケージ取得用のインターネット接続
-- `./install.sh`で固定Python 3.14.7とNode.js 24ランタイムを`~/Applications/miditrack.app`へ組み立て、[FluidSynth](https://www.fluidsynth.org/)、ffmpeg、Rubber BandをHomebrewから導入
+- Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回ダウンロード用のインターネット接続
+- [最新のリリースビルド](https://github.com/Nihondo/miditrack/releases/latest)の`miditrack.app`、および[FluidSynth](https://www.fluidsynth.org/)・ffmpeg・Rubber Band（`brew install fluid-synth ffmpeg rubberband`でHomebrewから導入）
 - カスタムの`.sf2`/`.sf3`は次の探索先へ配置します（先頭を推奨）。
   - `~/Library/Audio/Sounds/Banks`
   - `/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/soundfonts`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
-インストーラはHomebrewの式を1件ずつ処理します。同名の式が別tapに存在して競合した場合も、Homebrewのエラーは表示したままセットアップを続行します。最後に必要なコマンドが`PATH`上で見つからない場合だけ停止します。
-
-コンバーターのバイナリと、Apple Silicon向けVGM原曲音源のネイティブヘルパーは同梱されているため、通常の音源変換とVGM原曲音源にビルドは不要です。実音声ステムのミックス、トラック別出力、速度／ピッチ変更に必要なffmpegとRubber Bandも標準インストーラに含まれます。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
+コンバーターのバイナリ、固定バージョンのPython・Node.jsランタイム、Apple Silicon向けVGM原曲音源のネイティブヘルパーはすべて`miditrack.app`内に同梱されているため、通常の音源変換、VGM原曲音源、実音声ステムのミックス、トラック別出力、速度／ピッチ変更のいずれにもビルドは不要です。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
 
 ## miditrackの使い方
 
@@ -169,6 +171,12 @@ SoundFont、トラック設定、出力ファイル名を変更すると、生�
 
 ### コマンドラインオプション
 
+アプリバンドル内から直接実行するか、一度だけ`miditrack`コマンドを作成します。
+
+```bash
+ln -s ~/Applications/miditrack.app/Contents/Resources/project/miditrack/miditrack.sh /opt/homebrew/bin/miditrack
+```
+
 ```text
 miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browser]
 ```
@@ -184,7 +192,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 
 ### Dockからmiditrackを起動する
 
-`install.sh`は`~/Applications/miditrack.app`を作成します。ダブルクリックするか、Dockへドラッグして使ってください——バックグラウンドの補助ツールではなく、普通のDockアプリです。同梱バックエンドの起動中は少なくとも1秒間スプラッシュ画像を表示し、その後にUI全体を専用ウィンドウへ表示します。別途ブラウザタブは開きません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了します。
+`~/Applications`へ移動した`miditrack.app`は、バックグラウンドの補助ツールではなく普通のDockアプリです。ダブルクリックするか、Dockへドラッグして使ってください。同梱バックエンドの起動中は少なくとも1秒間スプラッシュ画像を表示し、その後にUI全体を専用ウィンドウへ表示します。別途ブラウザタブは開きません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了します。
 
 ダウンロード（MIDI、WAV、ZIP、`.miditrack`プロジェクト）は、ブラウザの「名前を付けて保存」と同じく保存先を尋ねられます。
 
@@ -271,6 +279,6 @@ vgm2midi song.vgz --loops 3
 | miditrack | MIT |
 | nsf2midi | GPL-2.0-or-later |
 | spc2midi | zlib |
-| vgm2midi | MIT |
+| vgm2midi | MIT（同梱のネイティブヘルパー`vgm2midi_stems`は[libvgm](https://github.com/ValleyBell/libvgm)を静的リンクしており、全体としてはGPL-2.0-or-laterとして扱う必要があります——詳細は`vgm2midi/NOTICE.md`を参照） |
 
 完全なライセンスと帰属は、各サブプロジェクトの`README.md`、`LICENSE`、`NOTICE.md`を参照してください。

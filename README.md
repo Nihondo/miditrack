@@ -8,29 +8,33 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.v
 
 ## Quick Start
 
-1. On an Apple Silicon Mac, clone or download this repository and enter its directory.
+1. On an Apple Silicon Mac, download the latest `miditrack-*-macos-arm64.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
+
+2. Install the runtime dependencies through [Homebrew](https://brew.sh/). If Homebrew itself is not installed yet, install it first.
 
    ```bash
-   git clone https://github.com/Nihondo/miditrack.git
-   cd miditrack
+   # If Homebrew is not installed yet:
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+   brew install fluid-synth ffmpeg rubberband
    ```
 
-2. Run the installer. It builds the same fixed Python and Node.js runtime used by the distribution ZIP, then installs only FluidSynth, ffmpeg, and Rubber Band through Homebrew.
+   - **FluidSynth** — used to render MIDI to WAV
+   - **ffmpeg** — used to mix WAVs together
+   - **Rubber Band** — used to change the original audio's speed/pitch
 
-   ```bash
-   ./install.sh
-   ```
-
-3. Put a General MIDI SoundFont (`.sf2`/`.sf3`) in your user Sound Banks directory. SoundFonts are never bundled or downloaded by the installer.
+3. Put a General MIDI SoundFont (`.sf2`/`.sf3`) in your user Sound Banks directory. SoundFonts are never bundled or downloaded with the app.
 
    ```bash
    mkdir -p ~/Library/Audio/Sounds/Banks
    cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
-4. The installer also creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
+4. Double-click `miditrack.app`, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
 
 5. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
+
+Building from source instead is also available for contributors — see [miditrack/README.md](miditrack/README.md).
 
 ## What You Can Do
 
@@ -54,17 +58,15 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.v
 
 ## Requirements
 
-- Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial package download
-- Run `./install.sh` to build the fixed Python 3.14.7 and Node.js 24 runtimes into `~/Applications/miditrack.app`, and install [FluidSynth](https://www.fluidsynth.org/), ffmpeg, and Rubber Band through Homebrew
+- Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial download
+- The [latest release build](https://github.com/Nihondo/miditrack/releases/latest) of `miditrack.app`, plus [FluidSynth](https://www.fluidsynth.org/), ffmpeg, and Rubber Band installed through Homebrew (`brew install fluid-synth ffmpeg rubberband`)
 - Put a custom `.sf2`/`.sf3` in one of these search directories (the first is recommended):
   - `~/Library/Audio/Sounds/Banks`
   - `/Library/Audio/Sounds/Banks`
   - `/opt/homebrew/share/soundfonts`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
-The installer processes Homebrew formulae one at a time. If a formula conflicts with an existing same-named formula from another tap, Homebrew's error remains visible and setup continues. It stops only if the required command is unavailable on `PATH` afterward.
-
-The converter binaries and the Apple Silicon native helper for Original VGM sound are bundled, so ordinary source conversion and Original VGM sound need no build step. ffmpeg and Rubber Band are included in the standard installer for real-audio stem mixing, per-track export, and speed/pitch changes. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
+The converter binaries, the pinned Python and Node.js runtimes, and the Apple Silicon native helper for Original VGM sound are all bundled inside `miditrack.app`, so ordinary source conversion, Original VGM sound, real-audio stem mixing, per-track export, and speed/pitch changes need no build step. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
 
 ## Using miditrack
 
@@ -169,6 +171,12 @@ Open the display settings panel from any screen. Changes take effect immediately
 
 ### Command-line options
 
+Run it directly from the app bundle, or create a `miditrack` command once:
+
+```bash
+ln -s ~/Applications/miditrack.app/Contents/Resources/project/miditrack/miditrack.sh /opt/homebrew/bin/miditrack
+```
+
 ```text
 miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browser]
 ```
@@ -184,7 +192,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 
 ### Launching miditrack from the Dock
 
-`install.sh` creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it's a normal Dock app, not a background helper. It shows a startup image for at least one second while the bundled backend starts, then displays the whole UI in its own window. No separate browser tab opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time.
+`miditrack.app`, once moved to `~/Applications`, is a normal Dock app, not a background helper. Double-click it, or drag it to the Dock. It shows a startup image for at least one second while the bundled backend starts, then displays the whole UI in its own window. No separate browser tab opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time.
 
 Downloads (MIDI, WAV, ZIP, `.miditrack` projects) prompt for a save location, the same as a browser's "Save As."
 
@@ -273,6 +281,6 @@ only when comparing output with FluidSynth's eager-loading behaviour.
 | miditrack | MIT |
 | nsf2midi | GPL-2.0-or-later |
 | spc2midi | zlib |
-| vgm2midi | MIT |
+| vgm2midi | MIT (its bundled native helper, `vgm2midi_stems`, statically links [libvgm](https://github.com/ValleyBell/libvgm) and is GPL-2.0-or-later as a whole — see `vgm2midi/NOTICE.md`) |
 
 See each subproject's `README.md`, `LICENSE`, or `NOTICE.md` for full licensing and attribution.
