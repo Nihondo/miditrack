@@ -19,6 +19,9 @@ _SOUNDFONT_EXTENSIONS = (".sf2", ".sf3")
 
 
 def _repo_root() -> Path:
+    configured = os.environ.get("MIDITRACK_RESOURCE_ROOT")
+    if configured:
+        return Path(configured)
     # src/miditrack/render.py -> src/miditrack -> src -> miditrack -> <repo root>
     return Path(__file__).resolve().parents[3]
 
@@ -26,10 +29,9 @@ def _repo_root() -> Path:
 def default_soundfont_dirs() -> list[Path]:
     """midi2wav.sh の DEFAULT_SOUNDFONT_DIRS と同じ探索順を返す（同じディレクトリ・同じ順序）。"""
     return [
-        _repo_root() / "soundfonts",
         Path.home() / "Library/Audio/Sounds/Banks",
-        Path("/opt/homebrew/share/soundfonts"),
         Path("/Library/Audio/Sounds/Banks"),
+        Path("/opt/homebrew/share/soundfonts"),
         Path("/opt/homebrew/share/fluid-synth/sf2"),
     ]
 

@@ -1,6 +1,6 @@
 # miditrack
 
-NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップチューンを編集可能なMIDIに変換し、ブラウザで試聴できます。一度セットアップすれば、普段の利用にターミナルは必要ありません。
+NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）のチップチューンを編集可能なMIDIに変換し、ブラウザで試聴できます。一度セットアップすれば、普段の利用にターミナルは必要ありません。
 
 `miditrack`はMac上だけで動作します。音源ファイル、MIDI、レンダリングした音声はすべてローカルに残ります。
 
@@ -15,17 +15,17 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
    cd miditrack
    ```
 
-2. インストーラを実行します。Python、FluidSynth、Node.js、ffmpeg、Rubber Band、Python仮想環境、VGM実行時依存を導入します。
+2. インストーラを実行します。配布ZIPと同じ固定Python・Node.jsランタイムを組み立て、HomebrewではFluidSynth、ffmpeg、Rubber Bandだけを導入します。
 
    ```bash
    ./install.sh
    ```
 
-3. 試聴とWAV出力は、初期状態でFluidSynth標準のSoundFontを使えます。カスタムのGeneral MIDI SoundFont（`.sf2`/`.sf3`）を使う場合は、`soundfonts/`へ配置します。
+3. General MIDI SoundFont（`.sf2`/`.sf3`）をユーザーのSound Banksディレクトリへ配置します。SoundFontはインストーラで同梱・ダウンロードしません。
 
    ```bash
-   mkdir -p soundfonts
-   cp /path/to/GeneralMIDI.sf2 soundfonts/
+   mkdir -p ~/Library/Audio/Sounds/Banks
+   cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
 4. インストーラは`~/Applications/miditrack.app`も作成します。ダブルクリックするか、Dockへドラッグして起動してください——アプリ全体が専用のウィンドウの中で完結するため、別途ブラウザタブが開くことはありません。詳細は後述の[Dockからmiditrackを起動する](#dockからmiditrackを起動する)を、ターミナルから起動したい場合は[コマンドラインオプション](#コマンドラインオプション)を参照してください。
@@ -48,19 +48,18 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 |---|---|---|
 | **miditrack** | ブラウザでの変換、編集、試聴、出力 | 普段の利用に推奨 |
 | **nsf2midi** | NES／ファミコンの`.nsf`/`.nsfe`をMIDIへ変換 | CLIから直接、またはmiditrackの変換 |
-| **spc2midi** | SNESの`.spc`/`.spc2`/`.rsn`をMIDIと任意のゲーム用SoundFontへ変換 | CLIから直接、またはmiditrackの変換 |
+| **spc2midi** | SNESの`.spc`/`.spc2`をMIDIと任意のゲーム用SoundFontへ変換 | CLIから直接、またはmiditrackの変換 |
 | **vgm2midi** | VGM/VGZのコマンドログをMIDIへ変換 | CLIから直接、またはmiditrackの変換 |
 | **miditrack/midi2wav.sh** | FluidSynthを使ってMIDIをWAVへ変換 | miditrackから使用、またはターミナルで直接実行 |
 
 ## 必要環境
 
 - Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回パッケージ取得用のインターネット接続
-- `./install.sh`でPython 3.10以上、[FluidSynth](https://www.fluidsynth.org/)、Node.js、ffmpeg、Rubber Bandを導入し、必要なPython／Node.js環境を作成
-- 初期状態ではFluidSynth標準のGeneral MIDI SoundFontを使います。カスタムの`.sf2`/`.sf3`を追加する場合は、`<リポジトリ>/soundfonts`（存在しなければ作成）または次の探索先へ配置します。
-  - `<リポジトリ>/soundfonts`
+- `./install.sh`で固定Python 3.14.7とNode.js 24ランタイムを`~/Applications/miditrack.app`へ組み立て、[FluidSynth](https://www.fluidsynth.org/)、ffmpeg、Rubber BandをHomebrewから導入
+- カスタムの`.sf2`/`.sf3`は次の探索先へ配置します（先頭を推奨）。
   - `~/Library/Audio/Sounds/Banks`
-  - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
+  - `/opt/homebrew/share/soundfonts`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
 インストーラはHomebrewの式を1件ずつ処理します。同名の式が別tapに存在して競合した場合も、Homebrewのエラーは表示したままセットアップを続行します。最後に必要なコマンドが`PATH`上で見つからない場合だけ停止します。
@@ -75,7 +74,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 ![ファイル選択](images/miditrack_s01.png)
 
-**アップロード枠** — 点線枠へファイルをドラッグするか、クリックしてファイルピッカーを開きます。対応形式: `.mid` / `.midi` / `.nsf` / `.nsfe` / `.spc` / `.spc2` / `.rsn` / `.vgm` / `.vgz` / `.zip` / `.m3u`。複数の音源ファイル、ZIPリップパック、音源と`.m3u`プレイリストをまとめてドロップできます。ZIPはファイル数200件まで、展開後512MiBまでです。`.m3u`プレイリストを音源と一緒に読み込むと曲名を取得できます。
+**アップロード枠** — 点線枠へファイルをドラッグするか、クリックしてファイルピッカーを開きます。対応形式: `.mid` / `.midi` / `.nsf` / `.nsfe` / `.spc` / `.spc2` / `.vgm` / `.vgz` / `.zip` / `.m3u`。複数の音源ファイル、ZIPリップパック、音源と`.m3u`プレイリストをまとめてドロップできます。ZIPはファイル数200件まで、展開後512MiBまでです。ZIP内の`.spc`と`.spc2`は変換でき、`.rsn`だけなど対応ファイルがないZIPはその旨を表示します。
 
 **ファイル・曲のピッカー** — 変換可能な音源が複数ある場合はファイルのドロップダウンが表示されます。複数曲を含む形式（NSF、SPCリップパック）ではその下に曲ピッカーが表示されます。
 
@@ -83,7 +82,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 - **VGM/VGZ** — ループ回数または秒数（同時指定不可）。**原曲の音源（実機）を初期選択**はノイズ・DAC・リズム系トラックをチップレンダリングに設定します（変換後も個別に切り替え可能）。**OPN Ch3 SpecialをGMドラムに変換**はYM2203/YM2608/YM2612 Ch3 Specialオペレータをキック・スネア・ハイハット・シンバル・タムへ近似します。
 - **NSF/NSFE** — 秒数と任意のPALタイミング。
-- **SPC/SPC2/RSN** — ループ回数。
+- **SPC/SPC2** — ループ回数。
 
 **MIDIに変換**をクリックして変換を開始します。変換後はMIDIをアップロードした場合と同じように操作できます。
 
@@ -185,7 +184,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 
 ### Dockからmiditrackを起動する
 
-`install.sh`は`~/Applications/miditrack.app`を作成します。ダブルクリックするか、Dockへドラッグして使ってください——バックグラウンドの補助ツールではなく、普通のDockアプリです。自分自身でバックエンドサーバーを起動し、UI全体を自分のウィンドウの中に表示するため、別途ブラウザタブが開くことはありません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了するため、使い終わったあとに何も残りません。初回起動はアプリ自体のコンパイルとバックエンドの起動が裏で並行して進むため、表示まで数秒かかります。
+`install.sh`は`~/Applications/miditrack.app`を作成します。ダブルクリックするか、Dockへドラッグして使ってください——バックグラウンドの補助ツールではなく、普通のDockアプリです。同梱バックエンドの起動中は少なくとも1秒間スプラッシュ画像を表示し、その後にUI全体を専用ウィンドウへ表示します。別途ブラウザタブは開きません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了します。
 
 ダウンロード（MIDI、WAV、ZIP、`.miditrack`プロジェクト）は、ブラウザの「名前を付けて保存」と同じく保存先を尋ねられます。
 
@@ -219,8 +218,8 @@ MDF音色定義、PALタイミング、チップ音声レンダリングは[nsf2
 ### spc2midi
 
 ```bash
-spc2midi song.rsn song.mid
-spc2midi -s 12 --sf2 song.rsn song.mid
+spc2midi song.spc song.mid
+spc2midi --sf2 song.spc song.mid
 ```
 
 SoundFont/DLS出力とループ処理は[spc2midi/README.md](spc2midi/README_ja.md)を参照してください。
@@ -271,7 +270,7 @@ vgm2midi song.vgz --loops 3
 |---|---|
 | miditrack | MIT |
 | nsf2midi | GPL-2.0-or-later |
-| spc2midi | zlib（VGMTransのLGPL-3.0コンポーネントを含む） |
+| spc2midi | zlib |
 | vgm2midi | MIT |
 
 完全なライセンスと帰属は、各サブプロジェクトの`README.md`、`LICENSE`、`NOTICE.md`を参照してください。

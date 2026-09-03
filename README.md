@@ -1,6 +1,6 @@
 # miditrack
 
-Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or VGM (`.vgm`/`.vgz`) — into editable MIDI and listen to the result in your browser. Everyday use needs no terminal after the one-time setup.
+Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.vgm`/`.vgz`) — into editable MIDI and listen to the result in your browser. Everyday use needs no terminal after the one-time setup.
 
 `miditrack` runs only on your Mac. Your source files, MIDI, and rendered audio stay local.
 
@@ -15,17 +15,17 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
    cd miditrack
    ```
 
-2. Run the installer. It installs Python, FluidSynth, Node.js, ffmpeg, Rubber Band, the Python virtual environment, and the VGM runtime dependencies.
+2. Run the installer. It builds the same fixed Python and Node.js runtime used by the distribution ZIP, then installs only FluidSynth, ffmpeg, and Rubber Band through Homebrew.
 
    ```bash
    ./install.sh
    ```
 
-3. FluidSynth's standard SoundFont is used immediately for auditioning and WAV export. To use a custom General MIDI SoundFont (`.sf2`/`.sf3`), place it in `soundfonts/`.
+3. Put a General MIDI SoundFont (`.sf2`/`.sf3`) in your user Sound Banks directory. SoundFonts are never bundled or downloaded by the installer.
 
    ```bash
-   mkdir -p soundfonts
-   cp /path/to/GeneralMIDI.sf2 soundfonts/
+   mkdir -p ~/Library/Audio/Sounds/Banks
+   cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
 4. The installer also creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
@@ -48,19 +48,18 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
 |---|---|---|
 | **miditrack** | Browser-based conversion, editing, auditioning, and export | Recommended for everyday work |
 | **nsf2midi** | NES/Famicom `.nsf`/`.nsfe` to MIDI | Direct CLI or bundled conversion |
-| **spc2midi** | SNES `.spc`/`.spc2`/`.rsn` to MIDI and optional game SoundFont | Direct CLI or bundled conversion |
+| **spc2midi** | SNES `.spc`/`.spc2` to MIDI and optional game SoundFont | Direct CLI or bundled conversion |
 | **vgm2midi** | VGM/VGZ command logs to MIDI | Direct CLI or bundled conversion |
 | **miditrack/midi2wav.sh** | MIDI to WAV through FluidSynth | Used by miditrack or directly from a terminal |
 
 ## Requirements
 
 - Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial package download
-- Run `./install.sh` to install Python 3.10+, [FluidSynth](https://www.fluidsynth.org/), Node.js, ffmpeg, and Rubber Band, then create the required Python and Node.js environments
-- FluidSynth's standard General MIDI SoundFont is used initially. To add a custom `.sf2`/`.sf3`, place it in `<repository>/soundfonts` (create that directory if it does not exist), or use another supported search directory:
-  - `<repository>/soundfonts`
+- Run `./install.sh` to build the fixed Python 3.14.7 and Node.js 24 runtimes into `~/Applications/miditrack.app`, and install [FluidSynth](https://www.fluidsynth.org/), ffmpeg, and Rubber Band through Homebrew
+- Put a custom `.sf2`/`.sf3` in one of these search directories (the first is recommended):
   - `~/Library/Audio/Sounds/Banks`
-  - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
+  - `/opt/homebrew/share/soundfonts`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
 The installer processes Homebrew formulae one at a time. If a formula conflicts with an existing same-named formula from another tap, Homebrew's error remains visible and setup continues. It stops only if the required command is unavailable on `PATH` afterward.
@@ -75,7 +74,7 @@ Drop a source file or a `.mid` onto the upload area and work through the four nu
 
 ![File Selection](images/miditrack_s01.png)
 
-**Upload area** — Drag a file onto the dashed area, or click to open a file picker. Accepted: `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.rsn`, `.vgm`, `.vgz`, `.zip`, `.m3u`. Drop multiple source files, a ZIP rip pack, or a source file together with an `.m3u` playlist at once. ZIP uploads allow up to 200 files and 512 MiB extracted. A playlist loaded alongside a source file supplies song titles.
+**Upload area** — Drag a file onto the dashed area, or click to open a file picker. Accepted: `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.vgm`, `.vgz`, `.zip`, `.m3u`. Drop multiple source files, a ZIP rip pack, or a source file together with an `.m3u` playlist at once. ZIP uploads allow up to 200 files and 512 MiB extracted. ZIPs can contain `.spc` and `.spc2`; a ZIP containing only unsupported files (including `.rsn`) reports that no supported source file was found.
 
 **File and song picker** — When the upload contains multiple convertible sources a file dropdown appears. If the format provides multiple songs (NSF, SPC rip packs) a song picker appears below it.
 
@@ -83,7 +82,7 @@ Drop a source file or a `.mid` onto the upload area and work through the four nu
 
 - **VGM/VGZ** — Loop count or duration (mutually exclusive). **Original game sound by default** pre-selects noise/DAC/rhythm tracks for chip rendering; any track can be changed after conversion. **OPN Ch3 Special to GM drums** maps YM2203/YM2608/YM2612 Ch3 Special operators to kick, snare, hi-hat, cymbal, and tom.
 - **NSF/NSFE** — Duration in seconds and optional PAL timing.
-- **SPC/SPC2/RSN** — Loop count.
+- **SPC/SPC2** — Loop count.
 
 Click **Convert to MIDI** to start. After conversion the remaining screens work identically to starting from an uploaded MIDI.
 
@@ -185,7 +184,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 
 ### Launching miditrack from the Dock
 
-`install.sh` creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it's a normal Dock app, not a background helper. It starts its own backend server and shows the whole UI inside its own window, so no separate browser tab ever opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time, so nothing keeps running once you're done. The first launch takes a few seconds to appear while the app itself compiles and the backend starts, both in the background.
+`install.sh` creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it's a normal Dock app, not a background helper. It shows a startup image for at least one second while the bundled backend starts, then displays the whole UI in its own window. No separate browser tab opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time.
 
 Downloads (MIDI, WAV, ZIP, `.miditrack` projects) prompt for a save location, the same as a browser's "Save As."
 
@@ -219,8 +218,8 @@ See [nsf2midi/README.md](nsf2midi/README.md) for MDF instrument definitions, PAL
 ### spc2midi
 
 ```bash
-spc2midi song.rsn song.mid
-spc2midi -s 12 --sf2 song.rsn song.mid
+spc2midi song.spc song.mid
+spc2midi --sf2 song.spc song.mid
 ```
 
 See [spc2midi/README.md](spc2midi/README.md) for SoundFont/DLS export and loop handling.
@@ -273,7 +272,7 @@ only when comparing output with FluidSynth's eager-loading behaviour.
 |---|---|
 | miditrack | MIT |
 | nsf2midi | GPL-2.0-or-later |
-| spc2midi | zlib, with an LGPL-3.0 component in VGMTrans |
+| spc2midi | zlib |
 | vgm2midi | MIT |
 
 See each subproject's `README.md`, `LICENSE`, or `NOTICE.md` for full licensing and attribution.

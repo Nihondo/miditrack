@@ -16,6 +16,9 @@ RENDER_TIMEOUT_SECONDS = 300
 
 def _repo_root() -> Path:
     """このパッケージを含むリポジトリのルートを返す。"""
+    configured = os.environ.get("MIDITRACK_RESOURCE_ROOT")
+    if configured:
+        return Path(configured)
     # src/miditrack/libvgm.py -> src/miditrack -> src -> miditrack -> <repo root>
     return Path(__file__).resolve().parents[3]
 

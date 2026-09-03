@@ -36,11 +36,23 @@ import WebKit
 
 // MARK: - A. 定数と自己位置解決
 
-let launcherFileURL = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
-let packageDirectoryURL = launcherFileURL.deletingLastPathComponent()
-let backendScriptURL = packageDirectoryURL.appendingPathComponent("miditrack.sh")
-let applicationIconURL = packageDirectoryURL.deletingLastPathComponent()
-    .appendingPathComponent("images/miditrack_icon.png")
+let applicationBundleURL = Bundle.main.bundleURL
+let resourceDirectoryURL = Bundle.main.resourceURL
+    ?? applicationBundleURL.appendingPathComponent("Contents/Resources")
+let projectResourceURL = resourceDirectoryURL.appendingPathComponent("project")
+let backendExecutableURL = resourceDirectoryURL
+    .appendingPathComponent("runtime/backend/miditrack-backend")
+let nodeExecutableURL = applicationBundleURL
+    .appendingPathComponent("Contents/Helpers/node")
+let nsfConverterURL = applicationBundleURL
+    .appendingPathComponent("Contents/Helpers/nsf2midi")
+let spcConverterURL = applicationBundleURL
+    .appendingPathComponent("Contents/Helpers/spc2midi")
+let vgmStemsHelperURL = applicationBundleURL
+    .appendingPathComponent("Contents/Helpers/vgm2midi_stems")
+let midiToWavURL = projectResourceURL.appendingPathComponent("miditrack/midi2wav.sh")
+let applicationIconURL = resourceDirectoryURL.appendingPathComponent("images/miditrack_icon.png")
+let splashImageURL = resourceDirectoryURL.appendingPathComponent("images/miditrack_lead.png")
 
 let webUiLinePrefix = "miditrack Web UI: "
 let serverStartupTimeoutSeconds: TimeInterval = 40
@@ -190,7 +202,7 @@ final class LineAccumulator {
 /// ファイルにアクセスすると、TCCがプロンプトを出せず無言で拒否する
 /// （"would require prompt"というサンドボックスログとともに実機で確認済み）。
 final class BackendController {
-    private let backendScriptURL: URL
+    private let backendExecutableURL: URL
     private let process = Process()
     private let outputPipe = Pipe()
     private lazy var lineAccumulator = LineAccumulator { [weak self] line in
@@ -200,8 +212,8 @@ final class BackendController {
     private var onFailure: ((String) -> Void)?
     private var isUrlDelivered = false
 
-    init(backendScriptURL: URL) {
-        self.backendScriptURL = backendScriptURL
+    init(backendExecutableURL: URL) {
+        self.backendExecutableURL = backendExecutableURL
     }
 
     /// バックエンドを起動し、標準出力の監視を開始する。
@@ -209,12 +221,12 @@ final class BackendController {
         self.onReady = onReady
         self.onFailure = onFailure
 
-        guard FileManager.default.isExecutableFile(atPath: backendScriptURL.path) else {
-            onFailure("miditrackのインストール先が見つかりません: \(backendScriptURL.path)。install.shを再実行してください。")
+        guard FileManager.default.isExecutableFile(atPath: backendExecutableURL.path) else {
+            onFailure("miditrackのバックエンドが見つかりません: \(backendExecutableURL.path)。install.shを再実行してください。")
             return
         }
 
-        process.executableURL = backendScriptURL
+        process.executableURL = backendExecutableURL
         process.arguments = ["--no-browser"]
         process.environment = makeChildEnvironment()
         process.standardOutput = outputPipe
@@ -243,6 +255,12 @@ final class BackendController {
     private func makeChildEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = environment["MIDITRACK_APP_PATH"] ?? defaultToolPath
+        environment["MIDITRACK_RESOURCE_ROOT"] = projectResourceURL.path
+        environment["MIDITRACK_NODE_BIN"] = nodeExecutableURL.path
+        environment["MIDI2WAV_BIN"] = midiToWavURL.path
+        environment["NSF2MIDI_BIN"] = nsfConverterURL.path
+        environment["SPC2MIDI_BIN"] = spcConverterURL.path
+        environment["VGM2MIDI_STEMS_HELPER"] = vgmStemsHelperURL.path
         return environment
     }
 
@@ -427,6 +445,57 @@ func makeMainWindow(contentView: NSView) -> NSWindow {
     return window
 }
 
+func makeSplashWindow() -> NSWindow {
+    let imageView = NSImageView()
+    imageView.image = NSImage(contentsOf: splashImageURL)
+    imageView.imageScaling = .scaleProportionallyUpOrDown
+    imageView.imageAlignment = .alignCenter
+
+    let overlay = NSStackView()
+    overlay.orientation = .vertical
+    overlay.alignment = .leading
+    overlay.spacing = 4
+    let title = NSTextField(labelWithString: "miditrack")
+    title.font = NSFont.systemFont(ofSize: 32, weight: .bold)
+    title.textColor = .white
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    let versionLabel = NSTextField(labelWithString: "Version \(version)")
+    versionLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+    versionLabel.textColor = NSColor.white.withAlphaComponent(0.8)
+    let status = NSTextField(labelWithString: "Starting…")
+    status.font = NSFont.systemFont(ofSize: 14)
+    status.textColor = NSColor.white.withAlphaComponent(0.7)
+    overlay.addArrangedSubview(title)
+    overlay.addArrangedSubview(versionLabel)
+    overlay.addArrangedSubview(status)
+
+    let content = NSView()
+    content.addSubview(imageView)
+    content.addSubview(overlay)
+    imageView.translatesAutoresizingMaskIntoConstraints = false
+    overlay.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+        imageView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+        imageView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+        imageView.topAnchor.constraint(equalTo: content.topAnchor),
+        imageView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        overlay.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 36),
+        overlay.topAnchor.constraint(equalTo: content.topAnchor, constant: 32),
+    ])
+
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+    )
+    window.title = "miditrack"
+    window.isReleasedWhenClosed = false
+    window.contentView = content
+    window.center()
+    return window
+}
+
 func loadingPlaceholderHtml() -> String {
     """
     <!doctype html><html><head><meta charset="utf-8">
@@ -552,11 +621,13 @@ func installMainMenu(applicationName: String, target: AnyObject) {
 // MARK: - H. AppDelegate
 
 final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
+    private var splashWindow: NSWindow?
     private var window: NSWindow?
     private var webView: WKWebView?
     private var webDelegate: MiditrackWebDelegate?
     private var backend: BackendController?
     private var startupTimeoutWorkItem: DispatchWorkItem?
+    private var splashStartedAt = Date()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -565,15 +636,10 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         }
         installMainMenu(applicationName: "miditrack", target: self)
 
-        let delegate = MiditrackWebDelegate()
-        webDelegate = delegate
-        let webView = makeWebView(delegate: delegate)
-        webView.loadHTMLString(loadingPlaceholderHtml(), baseURL: nil)
-        self.webView = webView
-
-        let window = makeMainWindow(contentView: webView)
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
+        splashStartedAt = Date()
+        let splash = makeSplashWindow()
+        splashWindow = splash
+        splash.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         prepareLogFile()
@@ -582,7 +648,7 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         // 遅らせている。AppKitのイベントループがまだ回っていない起動直後に
         // Dropbox配下のファイルへアクセスすると、TCCがプロンプトを表示できず
         // 無言で拒否することを実機で確認したため（詳細はファイル冒頭のコメント）。
-        let controller = BackendController(backendScriptURL: backendScriptURL)
+        let controller = BackendController(backendExecutableURL: backendExecutableURL)
         backend = controller
         controller.start(
             onReady: { [weak self] url in self?.handleBackendReady(url: url) },
@@ -640,7 +706,25 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleBackendReady(url: URL) {
         startupTimeoutWorkItem?.cancel()
-        webView?.load(URLRequest(url: url))
+        let elapsed = Date().timeIntervalSince(splashStartedAt)
+        let remaining = max(0, 1 - elapsed)
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+            self?.showMainWindow(url: url)
+        }
+    }
+
+    private func showMainWindow(url: URL) {
+        guard window == nil else { return }
+        let delegate = MiditrackWebDelegate()
+        webDelegate = delegate
+        let webView = makeWebView(delegate: delegate)
+        webView.load(URLRequest(url: url))
+        self.webView = webView
+        let mainWindow = makeMainWindow(contentView: webView)
+        window = mainWindow
+        mainWindow.makeKeyAndOrderFront(nil)
+        splashWindow?.orderOut(nil)
+        splashWindow = nil
     }
 
     private func handleBackendFailure(message: String) {

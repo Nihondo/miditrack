@@ -1,143 +1,63 @@
 # spc2midi
 
-A macOS command-line tool that converts Super Nintendo (SNES) `.spc` sound
-files to Standard MIDI Files (`.mid`), by parsing the actual sequence data
-of the SNES sound driver the file was recorded from — not by emulating and
-guessing. It can also export the SPC's own instrument samples as a
-SoundFont2 (`.sf2`) or DLS (`.dls`) bank alongside the MIDI, so a DAW can
-play the converted MIDI back with the original game's actual sound.
+`spc2midi` converts Super Nintendo `.spc` and `.spc2` files to Standard MIDI
+Files (`.mid`). It can also export the source instruments as SoundFont2
+(`.sf2`) or DLS (`.dls`). It uses the sequence parsers from
+[VGMTrans](https://github.com/vgmtrans/vgmtrans), rather than emulation.
 
-It is built on top of [VGMTrans](https://github.com/vgmtrans/vgmtrans)
-(zlib license), which ships dedicated sequence parsers for about 20 SNES
-sound driver families (Nintendo's own N-SPC, Square's AKAO, Konami's,
-Rare's, Capcom's, and others). Files using an unrecognized driver are
-reported as such rather than converted.
+## Supported input
 
-## Features
+- `.spc` and `.spc2` are supported and auto-detected.
+- `.rsn` is deliberately unsupported. `RSNLoader` and `unarr` are excluded
+  from every build, including local development, tests, and release builds.
+- A ZIP file is not an input to this CLI. miditrack itself accepts ZIP uploads
+  and selects contained `.spc`/`.spc2` files with its normal ZIP safety limits.
 
-- Converts `.spc`, `.spc2`, and `.rsn` (a RAR archive of multiple `.spc`
-  files, as commonly distributed by SPC archive sites) to General MIDI
-  Standard MIDI Files
-- Optionally exports a matching SoundFont2 (`--sf2`) and/or DLS (`--dls`)
-  instrument bank built from the SPC's own BRR samples
-- `--list` shows every sequence VGMTrans found in the file along with its
-  detected driver, without converting anything
-- `-a`/`--all` converts every sequence found (an `.rsn` commonly holds an
-  entire game's soundtrack)
-- Single arm64 binary; VGMTrans is fetched and statically linked at build
-  time, not required at runtime
+## Build
 
-## Installation
+The committed arm64 binary is rebuilt with the fixed VGMTrans patch:
 
-A prebuilt binary is committed to this repository — just use `./spc2midi`
-directly, or symlink it onto your `PATH`:
-
-```
-ln -s "/path/to/this/repo/spc2midi/spc2midi" /opt/homebrew/bin/spc2midi
-```
-
-To rebuild from source (only needed if you want a newer VGMTrans, or made
-local changes):
-
-```
-brew install cmake ninja   # Qt is NOT required
+```bash
+brew install cmake ninja
 ./build.sh
 ```
 
-The first build downloads and compiles VGMTrans into `~/.cache/spc2midi/`
-(outside this repository, to avoid syncing hundreds of megabytes of build
-output through Dropbox); later runs reuse that cache.
+The first build downloads VGMTrans into `~/.cache/spc2midi/`. The patch at
+`patches/vgmtrans-no-rsn.patch` excludes `RSNLoader.cpp`, `lib/unarr`, its
+include path, and link dependency. Verify a rebuilt binary with:
+
+```bash
+nm -gU spc2midi | rg 'ar_open_rar_archive' && exit 1 || true
+otool -L spc2midi
+```
 
 ## Usage
 
-```
+```text
 spc2midi [options] <input.spc> [output.mid]
 ```
 
-The input format (`.spc`, `.spc2`, or `.rsn`) is auto-detected — the file
-extension is not inspected.
-
-If `output.mid` is omitted, it defaults to the input filename with its
-extension changed to `.mid`. `--sf2`/`--dls` derive their filenames from
-the same base name.
-
-### Options
+The extension is not trusted; VGMTrans auto-detects supported SPC data.
 
 | Option | Description |
 |---|---|
-| `-l, --list` | List every detected sequence (with driver name, track count, instrument-set count) and exit |
-| `-s, --seq <n>` | Zero-based sequence index to convert (default: `0`) |
-| `-a, --all` | Convert every detected sequence; `[output]` is then treated as a directory |
-| `--loops <n>` | Number of times to unroll an infinite loop into the MIDI (default: `1`) |
-| `--sf2` | Also write a SoundFont2 (`.sf2`) file |
-| `--dls` | Also write a DLS (`.dls`) file |
-| `-v, --verbose` | Print VGMTrans's own log messages (info/debug level) to stderr |
+| `-l, --list` | List detected sequences and exit |
+| `-s, --seq <n>` | Convert a zero-based sequence (default: `0`) |
+| `-a, --all` | Convert every detected sequence to an output directory |
+| `--loops <n>` | Unroll an infinite loop this many times (default: `1`) |
+| `--sf2` / `--dls` | Also write a SoundFont2 or DLS bank |
+| `-v, --verbose` | Print VGMTrans log messages |
 | `-h, --help` | Show usage |
 
-If a file contains more than one sequence and neither `-s` nor `-a` is
-given, `spc2midi` converts sequence `0` and prints a warning listing how
-many sequences were found — it will not silently write dozens of files
-from a single `.rsn` archive unless you ask for `-a`.
+Examples:
 
-### Examples
-
-List what's inside an `.rsn` archive:
-
+```bash
+spc2midi song.spc song.mid
+spc2midi --sf2 song.spc song.mid
+mkdir out && spc2midi -a game.spc out
 ```
-spc2midi -l chrono_trigger.rsn
-```
-
-Convert one specific song, with a matching SoundFont2:
-
-```
-spc2midi -s 12 --sf2 chrono_trigger.rsn theme.mid
-```
-
-Convert an entire soundtrack into a directory:
-
-```
-mkdir out && spc2midi -a chrono_trigger.rsn out
-```
-
-Unroll a looping song's loop section 4 times instead of just 1 pass through it:
-
-```
-spc2midi --loops 4 chrono_trigger.rsn theme.mid
-```
-
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Success |
-| `1` | I/O error (input file unreadable, or nothing converted successfully in `-a` mode) |
-| `2` | Usage error (bad/conflicting options) |
-| `3` | The file was read successfully, but none of its sequences use a driver VGMTrans recognizes |
-
-Exit code `3` is deliberately distinct from `1`, so a batch script processing
-a folder of `.spc`/`.rsn` files can tell "this file isn't supported" apart
-from "this file is broken."
-
-For a single `.spc`/`.spc2` file (not a `.rsn` archive), exit code `3` also
-prints the file's ID666 tag — song title, game title, artist, comments,
-dumper name — and its SPC700 entry point address to stderr, as a starting
-point for figuring out whether the driver is a variant of one already
-supported or genuinely new.
-
-## Limitations
-
-- Files using a sound driver outside VGMTrans's ~20 supported SNES formats
-  cannot be converted (exit code `3`, see above). There is no
-  emulation-based fallback (see `CLAUDE.md`'s "Out of scope" section).
-- `ConversionOptions` such as MIDI bank-select style are not exposed on the
-  command line yet (only loop count, via `--loops`); other conversions use
-  VGMTrans's own defaults.
-- Individual BRR sample export (`--export-samples`) is not implemented.
 
 ## License
 
-zlib license — see `LICENSE`. This project fetches and statically links
-[VGMTrans](https://github.com/vgmtrans/vgmtrans) (also zlib) at build
-time; see `NOTICE.md` for the full list of VGMTrans's own bundled
-dependencies and their licenses, including one LGPL-3.0 component
-(`unarr`, used for `.rsn` support).
+spc2midi and VGMTrans are zlib-licensed. See `LICENSE` and `NOTICE.md` for
+the complete, current static-link dependency list.

@@ -80,11 +80,15 @@ class TestListSoundfonts(unittest.TestCase):
     def test_default_dirs_match_midi2wav_sh(self) -> None:
         # midi2wav.sh の DEFAULT_SOUNDFONT_DIRS と1対1で対応させる。
         dirs = render.default_soundfont_dirs()
-        self.assertTrue(str(dirs[0]).endswith("/soundfonts"))
-        self.assertEqual(dirs[1], Path.home() / "Library/Audio/Sounds/Banks")
+        self.assertEqual(dirs[0], Path.home() / "Library/Audio/Sounds/Banks")
+        self.assertEqual(str(dirs[1]), "/Library/Audio/Sounds/Banks")
         self.assertEqual(str(dirs[2]), "/opt/homebrew/share/soundfonts")
-        self.assertEqual(str(dirs[3]), "/Library/Audio/Sounds/Banks")
-        self.assertEqual(str(dirs[4]), "/opt/homebrew/share/fluid-synth/sf2")
+        self.assertEqual(str(dirs[3]), "/opt/homebrew/share/fluid-synth/sf2")
+
+    def test_resource_root_does_not_add_a_project_soundfont_directory(self) -> None:
+        with mock.patch.dict(os.environ, {"MIDITRACK_RESOURCE_ROOT": "/app/project"}):
+            dirs = render.default_soundfont_dirs()
+        self.assertNotIn(Path("/app/project/soundfonts"), dirs)
 
 
 class TestIsSoundfontFile(unittest.TestCase):

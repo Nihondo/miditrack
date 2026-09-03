@@ -35,8 +35,8 @@ _SPC_NO_DRIVER_EXIT_CODE = 3
 # 単体の.spc/.spc2 (SPC700ヘッダ+ID666タグを持つ入力) でだけ付く追加行で、
 # ゲームタイトル・アーティスト・コメント・ダンパー名・SPC700エントリポイントを
 # 含む——対応候補ドライバを後から調べる手がかりになるので、固定の日本語
-# メッセージに続けてそのまま残す。.rsn(複数.spcのRARアーカイブ)や壊れた入力
-# では出ないため、その場合は基本メッセージのみになる。文字列一致でspc2midi
+# メッセージに続けてそのまま残す。壊れた入力では出ないため、その場合は基本
+# メッセージのみになる。文字列一致でspc2midi
 # 側のstderr整形と結合しているため、main.cppのメッセージ文言を変えたら
 # ここも合わせて変更すること(_parse_nsf_list()/_parse_spc_list()と同じ結合)。
 _SPC_NO_DRIVER_HINTS_MARKER = "--- ID666 tag"
@@ -69,8 +69,8 @@ SOURCE_FORMATS: tuple[SourceFormat, ...] = (
     ),
     SourceFormat(
         key="spc",
-        label="SPC / SPC2 / RSN (スーパーファミコン)",
-        extensions=(".spc", ".spc2", ".rsn"),
+        label="SPC / SPC2 (スーパーファミコン)",
+        extensions=(".spc", ".spc2"),
         env_var="SPC2MIDI_BIN",
         supports_song_list=True,
     ),
@@ -351,6 +351,9 @@ def apply_m3u_titles(songs: list[dict[str, Any]], entries: list[M3uEntry]) -> li
 
 
 def _repo_root() -> Path:
+    configured = os.environ.get("MIDITRACK_RESOURCE_ROOT")
+    if configured:
+        return Path(configured)
     # src/miditrack/convert.py -> src/miditrack -> src -> miditrack -> <repo root>
     return Path(__file__).resolve().parents[3]
 
@@ -394,7 +397,7 @@ def resolve_converter_argv0(fmt: SourceFormat) -> list[str]:
 
     if fmt.key == "vgm":
         cli_js = repo_root / "vgm2midi" / "dist" / "cli.js"
-        node_bin = shutil.which("node")
+        node_bin = os.environ.get("MIDITRACK_NODE_BIN") or shutil.which("node")
         if cli_js.is_file() and node_bin:
             return [node_bin, str(cli_js)]
         return ["vgm2midi"]

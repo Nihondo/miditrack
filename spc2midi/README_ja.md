@@ -1,144 +1,55 @@
 # spc2midi
 
-スーパーファミコン (SNES) の `.spc` サウンドファイルを Standard MIDI File
-(`.mid`) に変換する macOS コマンドラインツールです。エミュレートして音を
-推測するのではなく、そのファイルが実際に使っている SNES サウンドドライバの
-シーケンスデータを直接解析します。SPC 内に含まれる楽器サンプルを
-SoundFont2 (`.sf2`) / DLS (`.dls`) バンクとして MIDI と一緒に書き出すことも
-でき、DAW で変換後の MIDI を元ゲームそのままの音で鳴らせます。
+`spc2midi`はスーパーファミコンの`.spc`／`.spc2`をStandard MIDI File（`.mid`）へ変換します。元の音色をSoundFont2（`.sf2`）またはDLS（`.dls`）として出力することもできます。エミュレーションではなく、[VGMTrans](https://github.com/vgmtrans/vgmtrans)のシーケンスパーサーを使います。
 
-内部では [VGMTrans](https://github.com/vgmtrans/vgmtrans) (zlib ライセンス)
-を利用しています。VGMTrans は約20種類の SNES サウンドドライバ系統
-(任天堂自身の N-SPC、スクウェアの AKAO、コナミ、レア社、カプコンなど) に
-対応した専用のシーケンスパーサーを持っています。未対応のドライバを使う
-ファイルは変換されず、その旨がエラーとして報告されます。
+## 対応入力
 
-## 特徴
+- `.spc`と`.spc2`を自動判別して変換します。
+- `.rsn`は意図的に未対応です。`RSNLoader`と`unarr`は、開発・テスト・配布を含むすべてのビルドから除外しています。
+- このCLIはZIPを直接入力しません。miditrack本体はZIPを受け付け、安全なZIP制限の範囲で中の`.spc`／`.spc2`を選択して変換します。
 
-- `.spc`、`.spc2`、そして `.rsn` (SPC アーカイブサイトで一般的に配布されて
-  いる、複数の `.spc` をまとめた RAR アーカイブ) を General MIDI の
-  Standard MIDI File に変換
-- SPC 自身の BRR サンプルから構築した SoundFont2 (`--sf2`) / DLS
-  (`--dls`) 楽器バンクを MIDI と併せて書き出すことも可能
-- `--list` で、そのファイルから VGMTrans が検出した全シーケンスを
-  (検出ドライバ名つきで) 変換せずに一覧表示
-- `-a`/`--all` で検出された全シーケンスを一括変換 (`.rsn` にはゲーム1本分
-  のサウンドトラックがまとめて入っていることが多い)
-- 単一の arm64 バイナリ。VGMTrans はビルド時に取得・静的リンクされ、
-  実行時には不要
+## ビルド
 
-## インストール
+コミット済みのarm64バイナリは、固定VGMTransパッチで再ビルドします。
 
-ビルド済みバイナリがこのリポジトリにコミットされています。そのまま
-`./spc2midi` を使うか、`PATH` にシンボリックリンクしてください:
-
-```
-ln -s "/path/to/this/repo/spc2midi/spc2midi" /opt/homebrew/bin/spc2midi
-```
-
-ソースから再ビルドする場合 (新しい VGMTrans を使いたい場合やローカルに
-変更を加えた場合のみ必要):
-
-```
-brew install cmake ninja   # Qt は不要です
+```bash
+brew install cmake ninja
 ./build.sh
 ```
 
-初回ビルドは VGMTrans を `~/.cache/spc2midi/` (このリポジトリの外側)
-にダウンロード・ビルドします。Dropbox 経由で数百MBのビルド成果物を
-同期しないようにするための措置です。2回目以降はこのキャッシュを再利用
-します。
+初回ビルドではVGMTransを`~/.cache/spc2midi/`へ取得します。`patches/vgmtrans-no-rsn.patch`は`RSNLoader.cpp`、`lib/unarr`、そのincludeとリンク依存を除外します。再ビルド後は次で確認できます。
+
+```bash
+nm -gU spc2midi | rg 'ar_open_rar_archive' && exit 1 || true
+otool -L spc2midi
+```
 
 ## 使い方
 
-```
+```text
 spc2midi [options] <input.spc> [output.mid]
 ```
 
-入力形式 (`.spc` / `.spc2` / `.rsn`) は自動判別されます。拡張子は見て
-いません。
-
-`output.mid` を省略した場合、入力ファイル名の拡張子を `.mid` に変えた
-ものが使われます。`--sf2`/`--dls` も同じベース名から派生します。
-
-### オプション
+拡張子は信頼せず、VGMTransが対応SPCデータを自動判別します。
 
 | オプション | 説明 |
 |---|---|
-| `-l, --list` | 検出された全シーケンスを (ドライバ名・トラック数・音色セット数つきで) 一覧表示して終了 |
-| `-s, --seq <n>` | 変換するシーケンスの0始まりインデックス (既定: `0`) |
-| `-a, --all` | 検出された全シーケンスを変換する。`[output]` はディレクトリとして扱われる |
-| `--loops <n>` | 無限ループ区間を MIDI 上に展開する回数 (既定: `1`) |
-| `--sf2` | 同時に SoundFont2 (`.sf2`) を書き出す |
-| `--dls` | 同時に DLS (`.dls`) を書き出す |
-| `-v, --verbose` | VGMTrans 自身のログ (info/debug レベル) を stderr に表示 |
+| `-l, --list` | 検出したシーケンスを一覧して終了 |
+| `-s, --seq <n>` | 0始まりのシーケンスを変換（既定: `0`） |
+| `-a, --all` | 検出した全シーケンスを出力ディレクトリへ変換 |
+| `--loops <n>` | 無限ループを展開する回数（既定: `1`） |
+| `--sf2` / `--dls` | SoundFont2またはDLSも出力 |
+| `-v, --verbose` | VGMTransのログを表示 |
 | `-h, --help` | 使い方を表示 |
 
-ファイルに複数のシーケンスが含まれていて `-s` も `-a` も指定しなかった
-場合、`spc2midi` はシーケンス `0` を変換し、検出件数を警告として表示
-します。`-a` を明示的に指定しない限り、1つの `.rsn` から何十ファイルも
-黙って書き出すことはありません。
+例:
 
-### 使用例
-
-`.rsn` アーカイブの中身を一覧表示:
-
+```bash
+spc2midi song.spc song.mid
+spc2midi --sf2 song.spc song.mid
+mkdir out && spc2midi -a game.spc out
 ```
-spc2midi -l chrono_trigger.rsn
-```
-
-特定の1曲を SoundFont2 つきで変換:
-
-```
-spc2midi -s 12 --sf2 chrono_trigger.rsn theme.mid
-```
-
-サウンドトラック全体をディレクトリに変換:
-
-```
-mkdir out && spc2midi -a chrono_trigger.rsn out
-```
-
-ループ曲のループ区間を1回だけでなく4回展開する:
-
-```
-spc2midi --loops 4 chrono_trigger.rsn theme.mid
-```
-
-## 終了コード
-
-| コード | 意味 |
-|---|---|
-| `0` | 成功 |
-| `1` | I/O エラー (入力ファイルが読めない、または `-a` モードで1曲も変換できなかった) |
-| `2` | 使い方の誤り (不正/矛盾したオプション) |
-| `3` | ファイルは正常に読み込めたが、いずれのシーケンスも VGMTrans が対応するドライバではなかった |
-
-終了コード `3` を `1` と意図的に区別しているのは、`.spc`/`.rsn` の
-フォルダを一括処理するバッチスクリプトが「このファイルは未対応」と
-「このファイルは壊れている」を区別できるようにするためです。
-
-単体の `.spc`/`.spc2` ファイル (`.rsn` アーカイブではない場合) では、
-終了コード `3` の際にID666タグ (曲名・ゲームタイトル・アーティスト・
-コメント・ダンパー名) とSPC700エントリポイントアドレスもstderrへ
-出力します。そのドライバが既存対応ドライバの亜種なのか、本当に未対応の
-新規ドライバなのかを調べる出発点として使えます。
-
-## 制限事項
-
-- VGMTrans が対応する約20種類の SNES フォーマット以外のサウンドドライバを
-  使うファイルは変換できません (終了コード `3`、上記参照)。エミュレーション
-  によるフォールバックは実装していません (`CLAUDE.md` の "Out of scope"
-  節を参照)。
-- MIDI バンクセレクト方式などの `ConversionOptions` はまだコマンドライン
-  から指定できません (ループ回数のみ `--loops` で指定可能)。それ以外は
-  VGMTrans 自身の既定値のまま変換されます。
-- 個別 BRR サンプルの書き出し (`--export-samples`) は未実装です。
 
 ## ライセンス
 
-zlib ライセンス — `LICENSE` を参照してください。本プロジェクトはビルド時に
-[VGMTrans](https://github.com/vgmtrans/vgmtrans) (同じく zlib) を取得・
-静的リンクします。VGMTrans 自身がバンドルする依存関係とそのライセンスの
-一覧 (`.rsn` 対応に使われる LGPL-3.0 コンポーネント `unarr` を含む) は
-`NOTICE.md` を参照してください。
+spc2midiとVGMTransはzlibライセンスです。現在の静的リンク依存の一覧は`LICENSE`と`NOTICE.md`を参照してください。
