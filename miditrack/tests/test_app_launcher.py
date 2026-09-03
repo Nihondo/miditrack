@@ -76,24 +76,34 @@ class TestSwiftLauncherContract(unittest.TestCase):
         self.assertNotIn("--no-token", self.source)
         self.assertNotIn("--port", self.source)
 
-    def test_shows_the_main_window_with_a_splash_overlay_before_starting_the_backend(self) -> None:
+    def test_shows_the_main_window_with_a_splash_card_before_starting_the_backend(self) -> None:
         # スプラッシュは独立ウィンドウではなく、起動直後から表示されている
-        # メインウィンドウに重ねるオーバーレイビュー（makeSplashOverlayView）
+        # メインウィンドウに重ねる固定サイズのカード（makeSplashCardView）
         # として実装されている。WKWebViewが自分のウィンドウが一度も画面に
         # 出ていない間は描画を後回しにすることがあるため、メインウィンドウ
         # 自体はバックエンド起動より前に表示しておく必要がある。
         main_window_shown_index = self.source.index("mainWindow.makeKeyAndOrderFront")
         backend_start_index = self.source.index("controller.start(")
         self.assertLess(main_window_shown_index, backend_start_index)
-        self.assertIn("makeSplashOverlayView", self.source)
+        self.assertIn("makeSplashCardView", self.source)
         self.assertIn("miditrack_lead.png", self.source)
         self.assertIn('"Starting…"', self.source)
 
-    def test_waits_for_both_the_backend_and_one_second_before_removing_the_splash_overlay(self) -> None:
+    def test_waits_for_both_the_backend_and_one_second_before_removing_the_splash_card(self) -> None:
         self.assertIn("splashStartedAt", self.source)
         self.assertIn("max(0, 1 - elapsed)", self.source)
         self.assertIn("revealMainContent", self.source)
-        self.assertIn("overlay.removeFromSuperview()", self.source)
+        self.assertIn("splashCard.removeFromSuperview()", self.source)
+
+    def test_keeps_the_splash_to_its_card_without_a_full_window_backdrop(self) -> None:
+        self.assertIn("let cardSize = NSSize(width: 640, height: 360)", self.source)
+        self.assertIn("splashCard.centerXAnchor.constraint(equalTo: container.centerXAnchor)", self.source)
+        self.assertIn("splashCard.centerYAnchor.constraint(equalTo: container.centerYAnchor)", self.source)
+        self.assertNotIn("splashCard.leadingAnchor.constraint(equalTo: container.leadingAnchor)", self.source)
+        self.assertNotIn("splashCard.trailingAnchor.constraint(equalTo: container.trailingAnchor)", self.source)
+        self.assertNotIn("splashCard.topAnchor.constraint(equalTo: container.topAnchor)", self.source)
+        self.assertNotIn("splashCard.bottomAnchor.constraint(equalTo: container.bottomAnchor)", self.source)
+        self.assertNotIn("NSColor(calibratedWhite: 0.05, alpha: 1)", self.source)
 
     def test_waits_for_the_web_ui_ready_message_before_removing_the_splash_overlay(self) -> None:
         self.assertIn("WKScriptMessageHandler", self.source)

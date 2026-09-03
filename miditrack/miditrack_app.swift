@@ -507,29 +507,25 @@ func makeMainWindow(contentView: NSView) -> NSWindow {
 
 /// 素のNSImageViewは、imageScalingの設定に関わらずAuto Layout上で画像本来の
 /// ピクセルサイズ（miditrack_lead.pngは1672x941）を「望ましいサイズ」として
-/// 主張し続ける。このスプラッシュオーバーレイはメインウィンドウの実サイズ
-/// （ユーザーのリサイズ・前回終了時のサイズ復元により可変）いっぱいに
-/// 常にフィットさせる必要があり、固定の定数制約は使えない。intrinsicContentSize
-/// をnoIntrinsicMetricにして「望ましいサイズなし」と申告することで、
-/// 親ビュー（ひいてはメインウィンドウ自体）がその画像サイズへ膨らんでしまう
-/// 事故を防ぐ（実機で確認済みのバグへの対策）。
+/// 主張し続ける。このスプラッシュカードは固定サイズの中で画像を
+/// スケーリングする必要がある。intrinsicContentSizeをnoIntrinsicMetricにして
+/// 「望ましいサイズなし」と申告することで、親ビュー（ひいてはメインウィンドウ
+/// 自体）がその画像サイズへ膨らんでしまう事故を防ぐ。
 final class NoIntrinsicSizeImageView: NSImageView {
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }
 }
 
-/// スプラッシュの見た目を、メインウィンドウのコンテンツ領域いっぱいに重ねる
-/// オーバーレイビューとして構築する。独立したウィンドウにしないのは、
+/// スプラッシュの見た目を、固定サイズのカードとして構築する。独立した
+/// ウィンドウにしないのは、
 /// バックエンド起動・WKWebViewの読み込みが完了するまでの間もメインウィンドウ
 /// 自体は最初から画面に出しておきたいため（詳細はAppDelegate側のコメント参照）。
 ///
-/// オーバーレイ自体はウィンドウ全体を覆う暗い背景だが、画像とテキストは
-/// メインウィンドウのサイズに関わらず固定サイズ（640x360）の「カード」に
-/// まとめて中央配置する。ウィンドウが（前回終了時のサイズ復元により）
-/// 640x360よりずっと大きいことがあるため、画像をウィンドウいっぱいに
-/// 引き伸ばさないようにするため。
-func makeSplashOverlayView() -> NSView {
+/// カードだけをフェードするため、カード外のWeb UIはスプラッシュ表示中から
+/// 見えている。ウィンドウが（前回終了時のサイズ復元により）640x360より
+/// 大きくても、画像をウィンドウいっぱいに引き伸ばさない。
+func makeSplashCardView() -> NSView {
     let cardSize = NSSize(width: 640, height: 360)
 
     let imageView = NoIntrinsicSizeImageView()
@@ -574,35 +570,25 @@ func makeSplashOverlayView() -> NSView {
         labelStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 32),
     ])
 
-    let overlay = NSView()
-    overlay.wantsLayer = true
-    overlay.layer?.backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 1).cgColor
-    overlay.addSubview(card)
-    NSLayoutConstraint.activate([
-        card.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
-        card.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
-    ])
-    return overlay
+    return card
 }
 
-/// WKWebViewとスプラッシュオーバーレイを重ねた、メインウィンドウの
-/// contentView用コンテナを作る。overlayは常に最後に追加してwebViewより
-/// 手前（最前面）に描画されるようにする。
-func makeMainContentContainer(webView: NSView, overlay: NSView) -> NSView {
+/// WKWebViewとスプラッシュカードを重ねた、メインウィンドウのcontentView用
+/// コンテナを作る。カードは最後に追加してwebViewより手前に描画するが、
+/// 640x360の領域だけを占める。
+func makeMainContentContainer(webView: NSView, splashCard: NSView) -> NSView {
     let container = NSView()
     container.addSubview(webView)
-    container.addSubview(overlay)
+    container.addSubview(splashCard)
     webView.translatesAutoresizingMaskIntoConstraints = false
-    overlay.translatesAutoresizingMaskIntoConstraints = false
+    splashCard.translatesAutoresizingMaskIntoConstraints = false
     NSLayoutConstraint.activate([
         webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
         webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
         webView.topAnchor.constraint(equalTo: container.topAnchor),
         webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        overlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-        overlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        overlay.topAnchor.constraint(equalTo: container.topAnchor),
-        overlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        splashCard.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+        splashCard.centerYAnchor.constraint(equalTo: container.centerYAnchor),
     ])
     return container
 }
@@ -735,13 +721,13 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
     private var webDelegate: MiditrackWebDelegate?
-    private var splashOverlayView: NSView?
+    private var splashCardView: NSView?
     private var backend: BackendController?
     private var startupTimeoutWorkItem: DispatchWorkItem?
     private var splashStartedAt = Date()
 
-    // メインウィンドウ自体は起動直後から表示し、その上にスプラッシュ画像を
-    // 覆うオーバーレイビューとして重ねる（別ウィンドウにはしない）。
+    // メインウィンドウ自体は起動直後から表示し、その上にスプラッシュカードを
+    // 重ねる（別ウィンドウにはしない）。
     //
     // 以前は「別ウィンドウのスプラッシュ」→「読み込み完了後にメインウィンドウを
     // 作成してcrossfade」という設計だったが、実機検証でWKWebViewが
@@ -750,8 +736,9 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
     // 描画されておらず「スプラッシュが消えてから遅れてメインが現れる」ように
     // しか見えなかった。メインウィンドウ（とその中のWKWebView）を最初から
     // 本当に画面に出しておけば、WKWebViewは読み込み中もずっと通常どおり描画
-    // され続けるため、スプラッシュオーバーレイを外した瞬間に既に描画済みの
-    // 中身がそのまま見える。
+    // され続けるため、スプラッシュカードを外した瞬間に既に描画済みの中身が
+    // そのまま見える。カード外のWeb UIは起動中から見えるため、カードの
+    // フェードでUI全体が暗くなることもない。
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         if let icon = NSImage(contentsOf: applicationIconURL) {
@@ -765,9 +752,9 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         webDelegate = delegate
         let webView = makeWebView(delegate: delegate)
         self.webView = webView
-        let overlay = makeSplashOverlayView()
-        splashOverlayView = overlay
-        let contentContainer = makeMainContentContainer(webView: webView, overlay: overlay)
+        let splashCard = makeSplashCardView()
+        splashCardView = splashCard
+        let contentContainer = makeMainContentContainer(webView: webView, splashCard: splashCard)
         let mainWindow = makeMainWindow(contentView: contentContainer)
         window = mainWindow
         delegate.onInitialLoadFinished = { [weak self] in
@@ -841,7 +828,7 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
     /// バックエンドのURLが分かり次第、WKWebViewの読み込みを開始する。
     /// メインウィンドウ自体はapplicationDidFinishLaunching()で既に表示済み
-    /// （スプラッシュオーバーレイに覆われた状態）なので、ここではURLを
+    /// （スプラッシュカードを重ねた状態）なので、ここではURLを
     /// 読み込ませるだけでよい。
     private func handleBackendReady(url: URL) {
         startupTimeoutWorkItem?.cancel()
@@ -850,20 +837,20 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
     /// WKWebViewの初回読み込み（成功・失敗いずれか）が完了した後に呼ばれる。
     /// スプラッシュ最低表示時間（起動から1秒）が経過するのを待ってから、
-    /// オーバーレイをフェードアウトさせて取り除き、既に描画済みのメイン
-    /// コンテンツを見せる。
+    /// スプラッシュカードだけをフェードアウトさせて取り除く。カード外の
+    /// メインコンテンツはフェード開始時点から表示されたままである。
     private func revealMainContent() {
         let elapsed = Date().timeIntervalSince(splashStartedAt)
         let remaining = max(0, 1 - elapsed)
         DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
-            guard let self, let overlay = self.splashOverlayView else { return }
+            guard let self, let splashCard = self.splashCardView else { return }
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.35
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                overlay.animator().alphaValue = 0
+                splashCard.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
-                overlay.removeFromSuperview()
-                self?.splashOverlayView = nil
+                splashCard.removeFromSuperview()
+                self?.splashCardView = nil
             })
         }
     }
