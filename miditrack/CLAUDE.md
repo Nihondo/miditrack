@@ -4364,3 +4364,18 @@ for at least one second, and only transition once the backend startup URL is
 received. Release signing is inside-out with the Developer ID identity,
 followed by the outer app signature with hardened runtime and timestamp;
 notarization staples that same tested app rather than rebuilding it.
+
+`scripts/release_app.sh` sources the Git-ignored
+`scripts/release_credentials.sh` before it reads `MIDITRACK_SIGNING_IDENTITY`
+and `MIDITRACK_NOTARY_PROFILE`. The tracked `.example` file documents the two
+non-secret identifiers. Never commit credentials, Apple ID passwords, or App
+Store Connect private keys; the notary credential remains in the Keychain.
+`MIDITRACK_RELEASE_CONFIG` may select an alternative local shell file for CI
+or a separate signing machine.
+
+Notarization is opt-in via `--notarize`. Without it, `release_app.sh` only
+builds and signs `dist/miditrack.app` and does not require
+`MIDITRACK_NOTARY_PROFILE` — this is what the README's "before submitting a
+change" checklist runs, so a routine sanity check never submits a real
+notarization request. Only `--notarize` runs `notarytool submit --wait`,
+staples, and archives.

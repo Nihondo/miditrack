@@ -102,6 +102,29 @@ To bump the version:
 2. Re-run `pip install -e .` (or any build) if you need the installed package metadata to reflect it immediately.
 3. Run `scripts/build_app_bundle.sh --output /tmp/miditrack.app` and test that exact app before signing it for distribution.
 
+## Release signing and notarization
+
+The release script reads signing settings from the Git-ignored
+`scripts/release_credentials.sh`. Create it from the tracked template, then
+set the Developer ID Application certificate name and the existing
+`notarytool` Keychain profile name:
+
+```bash
+cp scripts/release_credentials.sh.example scripts/release_credentials.sh
+open -e scripts/release_credentials.sh
+scripts/release_app.sh --notarize
+```
+
+`scripts/release_app.sh` alone (no `--notarize`) only builds and signs
+`dist/miditrack.app`; it never submits to Apple or requires
+`MIDITRACK_NOTARY_PROFILE`. Pass `--notarize` only when producing an actual
+distributable build.
+
+Do not put an Apple ID password, App Store Connect private key, or any other
+secret in the file. The notary profile itself belongs in the Keychain. To use
+a credentials file at another location, set `MIDITRACK_RELEASE_CONFIG` to its
+path before running the release script.
+
 ## Verification
 
 Run the Python suite from the repository root:
@@ -119,6 +142,7 @@ xcrun swiftc -typecheck miditrack/miditrack_app.swift
 plutil -lint "$HOME/Applications/miditrack.app/Contents/Info.plist"
 scripts/build_app_bundle.sh --output /tmp/miditrack.app
 codesign --verify --deep --strict /tmp/miditrack.app
+scripts/release_app.sh # builds and signs only; no --notarize, so this never submits to Apple
 ```
 
 When a change crosses a converter boundary, build and test the affected converter as well:
