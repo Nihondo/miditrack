@@ -53,13 +53,24 @@ function verifyEscapedManifest(helper, input, directory, totalSamples) {
   return parsed;
 }
 
-/** channel selector modeが指定デバイスだけを正確なframe数で描画することを検証する。 */
+/** channel selector modeが指定デバイス（SN76489、MAMEコア。Maximコアからの
+ * 切替後）だけを正確なframe数・正確な周波数で描画することを検証する。
+ * フィクスチャのlatch(0x86)+data(0x00)バイトが10-bit周期を6に設定するので、
+ * freq = clock / (32 * period) = 3579545 / (32*6) ≈ 18643.5Hzが期待値。 */
 function verifySelection(helper, input, directory, totalSamples) {
   const output = path.join(directory, 'selected-sn-channel-0.wav');
   childProcess.execFileSync(helper, ['--selection', input, output, String(totalSamples), '0:0:1:0'], { stdio: 'pipe' });
   assert.equal(readFrames(output), totalSamples);
   assert.ok(measureRms(output) > 0, 'selected SN76489 channel must produce non-silent audio');
-  return output;
+  const samples = readSamples(output);
+  let crossings = 0;
+  for (let index = 2; index < samples.length; index += 2) {
+    if ((samples[index - 2] < 0) !== (samples[index] < 0)) crossings++;
+  }
+  const frequencyHz = crossings / 2 / ((samples.length / 2) / 44100);
+  const expectedHz = 3579545 / (32 * 6);
+  assert.ok(Math.abs(frequencyHz - expectedHz) < 50, `SN76489 tone frequency ${frequencyHz.toFixed(1)}Hz should be ~${expectedHz.toFixed(1)}Hz`);
+  return { output, frequencyHz };
 }
 
 /** HuC6280 (PC Engine PSG) MAMEコア（Ootakeコアからの切替後）の最小VGMを書く。
@@ -125,8 +136,8 @@ function main() {
   assert.ok(deviceStems.length >= 2, 'synthetic fixture must enumerate at least two devices');
   const differenceDbfs = measureDifference(mix, deviceStems); assert.ok(differenceDbfs <= -80, `stem sum difference ${differenceDbfs.toFixed(2)} dBFS exceeds -80 dBFS`);
   const escapedManifest = verifyEscapedManifest(helper, input, directory, results[0][1].sampleCount);
-  const selectionPath = verifySelection(helper, input, directory, results[0][1].sampleCount);
+  const selection = verifySelection(helper, input, directory, results[0][1].sampleCount);
   const huc6280 = verifyHuC6280(helper, directory);
-  console.log(JSON.stringify({ frames: Object.fromEntries(results.map(([label, manifest]) => [label, manifest.sampleCount])), devices: deviceStems.length, differenceDbfs, escapedManifestPath: escapedManifest.stems[0].path, selectionPath, huc6280 }, null, 2));
+  console.log(JSON.stringify({ frames: Object.fromEntries(results.map(([label, manifest]) => [label, manifest.sampleCount])), devices: deviceStems.length, differenceDbfs, escapedManifestPath: escapedManifest.stems[0].path, sn76489: { path: selection.output, frequencyHz: selection.frequencyHz }, huc6280 }, null, 2));
 }
 main();
