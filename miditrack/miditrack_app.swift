@@ -438,13 +438,35 @@ func loadingPlaceholderHtml() -> String {
     """
 }
 
+/// target・SF Symbolsアイコン付きのメニュー項目を1つ追加する共通ヘルパー。
+/// これらの項目はWeb側の既存ボタンをクリックするだけの薄い実装で、有効/無効
+/// の判定をWeb側に委ねて常時有効にする設計のため、targetをAppDelegate自身
+/// （NSObject直系・NSResponderではない）へ明示指定し、AppKitの自動
+/// バリデーション対象から外している。
+@discardableResult
+func addTargetedMenuItem(
+    to menu: NSMenu,
+    title: String,
+    action: Selector,
+    keyEquivalent: String,
+    target: AnyObject,
+    symbolName: String
+) -> NSMenuItem {
+    let item = menu.addItem(withTitle: title, action: action, keyEquivalent: keyEquivalent)
+    item.target = target
+    item.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+    return item
+}
+
 func makeApplicationMenu(applicationName: String, target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
     let menu = NSMenu()
     menu.addItem(withTitle: "\(applicationName) について", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
     menu.addItem(.separator())
-    menu.addItem(withTitle: "設定…", action: #selector(MiditrackAppDelegate.openSettingsFromMenu), keyEquivalent: ",")
-        .target = target
+    addTargetedMenuItem(
+        to: menu, title: "設定…", action: #selector(MiditrackAppDelegate.openSettingsFromMenu),
+        keyEquivalent: ",", target: target, symbolName: "gearshape"
+    )
     menu.addItem(.separator())
     menu.addItem(withTitle: "\(applicationName) を隠す", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
     menu.addItem(withTitle: "ほかを隠す", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -456,27 +478,29 @@ func makeApplicationMenu(applicationName: String, target: AnyObject) -> NSMenuIt
     return item
 }
 
-/// 「ファイルを開く…」と「保存」（MIDI/WAV/プロジェクト）サブメニューを持つ
+/// 「ファイルを開く…」と「MIDI/WAV/プロジェクトを保存…」をフラットに並べた
 /// 「ファイル」メニュー。いずれもWeb側の既存ボタンをクリックするだけの薄い
-/// 実装（clickWebViewElement参照）で、有効/無効の判定はWeb側に委ねるため
-/// 常に有効にしている。
+/// 実装（clickWebViewElement参照）。
 func makeFileMenu(target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
     let menu = NSMenu(title: "ファイル")
-    menu.addItem(withTitle: "ファイルを開く…", action: #selector(MiditrackAppDelegate.openFileFromMenu), keyEquivalent: "o")
-        .target = target
+    addTargetedMenuItem(
+        to: menu, title: "ファイルを開く…", action: #selector(MiditrackAppDelegate.openFileFromMenu),
+        keyEquivalent: "o", target: target, symbolName: "folder"
+    )
     menu.addItem(.separator())
-
-    let saveMenu = NSMenu(title: "保存")
-    saveMenu.addItem(withTitle: "MIDIを保存…", action: #selector(MiditrackAppDelegate.saveMidiFromMenu), keyEquivalent: "")
-        .target = target
-    saveMenu.addItem(withTitle: "WAVを保存…", action: #selector(MiditrackAppDelegate.saveWavFromMenu), keyEquivalent: "e")
-        .target = target
-    saveMenu.addItem(withTitle: "プロジェクトを保存…", action: #selector(MiditrackAppDelegate.saveProjectFromMenu), keyEquivalent: "s")
-        .target = target
-    let saveMenuItem = NSMenuItem(title: "保存", action: nil, keyEquivalent: "")
-    saveMenuItem.submenu = saveMenu
-    menu.addItem(saveMenuItem)
+    addTargetedMenuItem(
+        to: menu, title: "MIDIを保存…", action: #selector(MiditrackAppDelegate.saveMidiFromMenu),
+        keyEquivalent: "", target: target, symbolName: "pianokeys"
+    )
+    addTargetedMenuItem(
+        to: menu, title: "WAVを保存…", action: #selector(MiditrackAppDelegate.saveWavFromMenu),
+        keyEquivalent: "e", target: target, symbolName: "waveform"
+    )
+    addTargetedMenuItem(
+        to: menu, title: "プロジェクトを保存…", action: #selector(MiditrackAppDelegate.saveProjectFromMenu),
+        keyEquivalent: "s", target: target, symbolName: "doc.zipper"
+    )
 
     item.submenu = menu
     return item

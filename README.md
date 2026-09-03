@@ -28,11 +28,7 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
    cp /path/to/GeneralMIDI.sf2 soundfonts/
    ```
 
-4. The installer creates `/opt/homebrew/bin/miditrack`. Start the app from any directory:
-
-   ```bash
-   miditrack
-   ```
+4. The installer also creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
 
 5. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
 

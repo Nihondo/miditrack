@@ -28,11 +28,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
    cp /path/to/GeneralMIDI.sf2 soundfonts/
    ```
 
-4. インストーラが`/opt/homebrew/bin/miditrack`を作成します。任意のディレクトリからアプリを起動できます。
-
-   ```bash
-   miditrack
-   ```
+4. インストーラは`~/Applications/miditrack.app`も作成します。ダブルクリックするか、Dockへドラッグして起動してください——アプリ全体が専用のウィンドウの中で完結するため、別途ブラウザタブが開くことはありません。詳細は後述の[Dockからmiditrackを起動する](#dockからmiditrackを起動する)を、ターミナルから起動したい場合は[コマンドラインオプション](#コマンドラインオプション)を参照してください。
 
 5. 対応する音源ファイルまたは`.mid`ファイルをアップロード枠へ置き、編集・試聴してからMIDIまたはWAVをダウンロードします。
 

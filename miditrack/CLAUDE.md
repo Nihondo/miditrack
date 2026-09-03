@@ -4196,16 +4196,42 @@ its action) never applies to these items — they read as permanently enabled
 by construction, matching the "always enabled" decision without any extra
 code.
 
-**Why the save items live in a "保存" submenu inside "ファイル", not as three
-flat top-level items**: this groups the three related download actions
-(MIDI/WAV/project) under one label the way a conventional macOS app's
-File > Save/Export submenu would, and keeps "ファイルを開く…" as the only
-item directly visible in the top-level "ファイル" menu alongside it.
-Variation-ZIP and per-track-ZIP exports were deliberately left out of this
-submenu (confirmed with the user during planning) — both remain
-browser-only actions reached through the existing `<details>` disclosure
-in the Web UI, since neither has a single obvious default output the way
-MIDI/WAV/project do.
+**Why the save items are flat top-level items in "ファイル", not grouped in
+a "保存" submenu**: the first implementation grouped the three save actions
+(MIDI/WAV/project) under a "保存" submenu, the way a conventional macOS
+app's File > Save/Export submenu would. The user asked for them flattened
+instead — one extra level of menu navigation for three items that are each
+reached often enough (each round-trips through the toolbar's own visible
+download buttons) that a submenu's added click was judged not worth it.
+`makeFileMenu()` now adds "ファイルを開く…" and all three save items
+directly to the "ファイル" `NSMenu`, separated by one `.separator()`.
+Variation-ZIP and per-track-ZIP exports remain deliberately out of scope
+(confirmed with the user during planning) — both stay browser-only actions
+reached through the existing `<details>` disclosure in the Web UI, since
+neither has a single obvious default output the way MIDI/WAV/project do.
+
+**Why every menu item this feature added carries an SF Symbols icon, via
+one shared `addTargetedMenuItem()` helper**: the user asked for icons on
+"開く"/"設定…" and the three save items specifically (the pre-existing
+AppKit-native items — About/Hide/Quit/Edit/View/Window — were left alone,
+matching how sparse icon use already looks in this app's own menu bar
+before this change). `addTargetedMenuItem(to:title:action:keyEquivalent:
+target:symbolName:)` replaces the previous `menu.addItem(...).target =
+target` two-step pattern with one call that also sets `.image =
+NSImage(systemSymbolName:accessibilityDescription:)` — this keeps the
+"target the AppDelegate directly" invariant from the paragraph above in
+one place rather than repeating it five times. Symbol choices:
+"ファイルを開く…" → `folder`; "設定…" → `gearshape`; "MIDIを保存…" →
+`pianokeys` (a literal piano-keyboard glyph, the most on-the-nose choice
+available for a MIDI export); "WAVを保存…" → `waveform`; "プロジェクトを
+保存…" → `doc.zipper`, matching that the `.miditrack` archive really is a
+ZIP container (see "Project session archives" above) rather than a plain
+document — none of these five names are guessed; all are checked against
+this app's own `LSMinimumSystemVersion` (13.0, `install.sh`), which ships
+with an SF Symbols catalog new enough to include all five (`pianokeys` and
+`doc.zipper` are the newest of the five and only need SF Symbols
+2-and-3-era coverage, well under macOS 13's baseline) — no
+`#available`/nil-fallback guard was added because of this.
 
 **Why Cmd+S is bound to "プロジェクトを保存…", not "MIDIを保存…"**: of the
 three, only "プロジェクトを保存…" (`#save-project-button`, `POST
@@ -4230,14 +4256,15 @@ export's own natural mnemonic (`M`) is already the parent "ファイル" menu's
 underlying access-key territory, not worth reserving without a concrete
 need.
 
-`tests/test_app_launcher.py`'s `TestSwiftLauncherContract` gained four
+`tests/test_app_launcher.py`'s `TestSwiftLauncherContract` gained five
 string-literal contract tests matching this file's existing style
 (`test_injects_the_native_app_flag`, `test_has_a_file_menu_with_open_and_save`,
-`test_has_a_settings_menu_item`, `test_menu_actions_target_the_app_delegate`)
-— `clickWebViewElement()` itself is not covered by `--self-test`'s pure-
-function checks (it depends on a live `WKWebView`, unavailable without a
-GUI), so these string checks are the only automated guard for the menu
-wiring; end-to-end behavior (menu clicks actually opening dialogs/dialogs
-prompting for a save location, and the browser-launched path keeping its
-toggle and Escape behavior intact) was verified by hand against the
-compiled `~/Applications/miditrack.app`.
+`test_has_a_settings_menu_item`, `test_menu_actions_target_the_app_delegate`,
+`test_menu_items_have_sf_symbols_icons`) — `clickWebViewElement()` itself is
+not covered by `--self-test`'s pure-function checks (it depends on a live
+`WKWebView`, unavailable without a GUI), so these string checks are the only
+automated guard for the menu wiring; end-to-end behavior (menu clicks
+actually opening dialogs/dialogs prompting for a save location, the flat
+"ファイル" menu layout, the five icons actually rendering, and the
+browser-launched path keeping its toggle and Escape behavior intact) was
+verified by hand against the compiled `~/Applications/miditrack.app`.

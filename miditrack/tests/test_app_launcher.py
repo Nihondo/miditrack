@@ -114,11 +114,14 @@ class TestSwiftLauncherContract(unittest.TestCase):
         self.assertIn("WKUserScript", self.source)
 
     def test_has_a_file_menu_with_open_and_save(self) -> None:
+        # 保存メニューはサブメニュー化せず「ファイル」直下にフラットに並べる
+        # （ユーザー要望により、当初のサブメニュー案から変更）。
         self.assertIn("ファイルを開く…", self.source)
         self.assertIn("#open-dialog-button", self.source)
         self.assertIn("#download-button", self.source)
         self.assertIn("#download-wav-button", self.source)
         self.assertIn("#save-project-button", self.source)
+        self.assertNotIn('NSMenu(title: "保存")', self.source)
 
     def test_has_a_settings_menu_item(self) -> None:
         self.assertIn("設定…", self.source)
@@ -127,8 +130,17 @@ class TestSwiftLauncherContract(unittest.TestCase):
     def test_menu_actions_target_the_app_delegate(self) -> None:
         # 保存メニュー項目は常に有効にする設計のため、targetをAppDelegate
         # 自身（NSObject直系・NSResponderではない）へ明示指定し、AppKitの
-        # 自動バリデーション対象から外している。
-        self.assertGreaterEqual(self.source.count(".target = target"), 5)
+        # 自動バリデーション対象から外している（addTargetedMenuItem内で
+        # 一括設定）。
+        self.assertIn("item.target = target", self.source)
+        self.assertGreaterEqual(self.source.count("addTargetedMenuItem("), 5)
+
+    def test_menu_items_have_sf_symbols_icons(self) -> None:
+        # 追加したメニュー項目（開く・設定・保存3種）にはSF Symbolsアイコンを
+        # つける。
+        self.assertIn("NSImage(systemSymbolName:", self.source)
+        for symbol_name in ("folder", "gearshape", "pianokeys", "waveform", "doc.zipper"):
+            self.assertIn(f'symbolName: "{symbol_name}"', self.source)
 
     def test_resolves_symlinks_defensively(self) -> None:
         # install.shはこのファイルをswiftcでコンパイルしたバイナリを
