@@ -723,6 +723,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .dialog-heading h2 { margin: 0 0 4px; font-size: 18px; }
 .dialog-heading p { margin: 0; color: var(--neutral-60); font-size: 13px; }
 .upload-dialog { padding: 0; }
+/* 初期フォーカスはダイアログ本体へ置くが、コンテナ自体は操作対象ではないため
+   WKWebViewの外周フォーカスリングは表示しない。内部の操作要素のfocus-visibleは
+   共通ルールで引き続き表示される。 */
+.upload-dialog:focus { outline: none; }
 
 .ensemble-preset-programs {
   margin: 20px 0 0;

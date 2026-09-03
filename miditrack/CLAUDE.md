@@ -2357,7 +2357,13 @@ fullscreen-only `#open-dialog-button`; `moveUploadCardToShell()` returns it to
 the start of `.app-shell` when leaving fullscreen. Reusing the one element
 preserves its controls, IDs, open state, and event handlers without duplicate
 markup or mode-specific state. `setupOpenDialog()` uses `showModal()` so the
-browser handles focus containment and makes the background inert. The explicit
+browser handles focus containment and makes the background inert. The dialog
+itself has `tabindex="-1"`, and the open handler focuses it immediately after
+`showModal()`, so opening it announces the labelled modal without placing the
+initial focus ring on the nested `<summary>` heading. `.upload-dialog:focus`
+also suppresses the non-interactive container's WKWebView focus ring; Tab still
+moves through the contained controls in their document order and their
+`:focus-visible` indicators remain intact. The explicit
 close button, Escape, and supported-browser backdrop clicks close it; Safari's
 absence of `closedby` is covered by the narrowly scoped backdrop-coordinate
 fallback. `showUploadCard()`/`hideUploadCard()` retain the original normal-mode

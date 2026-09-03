@@ -364,6 +364,7 @@ class TestWebApp(unittest.TestCase):
         )
         self.assertIn('id="open-dialog" closedby="any"', html)
         self.assertIn('aria-labelledby="upload-card-title"', html)
+        self.assertIn('aria-labelledby="upload-card-title" tabindex="-1"', html)
         self.assertIn('id="open-dialog-close"', html)
         self.assertIn('id="midi-input"', html)
         self.assertIn('id="open-project-button"', html)
@@ -382,6 +383,7 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("function moveUploadCardToDialog()", javascript)
         self.assertIn("function moveUploadCardToShell()", javascript)
         self.assertIn('dialog.showModal()', javascript)
+        self.assertIn('dialog.focus({ preventScroll: true });', javascript)
         self.assertIn('if (!("closedBy" in HTMLDialogElement.prototype))', javascript)
         self.assertIn('if (dialog.open) dialog.close();', javascript)
         self.assertIn('if (!document.body.classList.contains("is-fullscreen")) $("#upload-card").open = true;', javascript)
@@ -397,6 +399,7 @@ class TestWebApp(unittest.TestCase):
         self.assertIn("padding: 8px", fullscreen_tracks_rule)
         self.assertIn("body.is-fullscreen .upload-dialog {", css)
         self.assertIn("max-height: calc(100dvh - 24px)", css)
+        self.assertIn(".upload-dialog:focus { outline: none; }", css)
         self.assertIn("body.is-fullscreen #open-dialog > #upload-card > summary .step-number { display: none; }", css)
         self.assertIn("body.is-fullscreen #open-dialog > #upload-card > summary .disclosure-chevron { display: none; }", css)
 

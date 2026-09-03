@@ -4174,6 +4174,7 @@ function setupOpenDialog() {
   $("#open-dialog-button").addEventListener("click", () => {
     $("#upload-card").open = true;
     dialog.showModal();
+    dialog.focus({ preventScroll: true });
   });
   $("#open-dialog-close").addEventListener("click", () => dialog.close());
 
