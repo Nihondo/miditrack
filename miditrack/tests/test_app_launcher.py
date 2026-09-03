@@ -106,6 +106,30 @@ class TestSwiftLauncherContract(unittest.TestCase):
         # （実機で確認済み）。#filePathを自己位置解決に使う。
         self.assertIn("#filePath", self.source)
 
+    def test_injects_the_native_app_flag(self) -> None:
+        # app.js側のisNativeApp判定はWKUserScript（atDocumentStart）で注入
+        # されるwindow.__miditrackNativeを読む。CSP（script-src 'self'）の
+        # 影響を受けない同期注入であることが前提。
+        self.assertIn("window.__miditrackNative = true", self.source)
+        self.assertIn("WKUserScript", self.source)
+
+    def test_has_a_file_menu_with_open_and_save(self) -> None:
+        self.assertIn("ファイルを開く…", self.source)
+        self.assertIn("#open-dialog-button", self.source)
+        self.assertIn("#download-button", self.source)
+        self.assertIn("#download-wav-button", self.source)
+        self.assertIn("#save-project-button", self.source)
+
+    def test_has_a_settings_menu_item(self) -> None:
+        self.assertIn("設定…", self.source)
+        self.assertIn("#settings-open", self.source)
+
+    def test_menu_actions_target_the_app_delegate(self) -> None:
+        # 保存メニュー項目は常に有効にする設計のため、targetをAppDelegate
+        # 自身（NSObject直系・NSResponderではない）へ明示指定し、AppKitの
+        # 自動バリデーション対象から外している。
+        self.assertGreaterEqual(self.source.count(".target = target"), 5)
+
     def test_resolves_symlinks_defensively(self) -> None:
         # install.shはこのファイルをswiftcでコンパイルしたバイナリを
         # $HOME/Applications配下に直接置く（シンボリックリンクではない —

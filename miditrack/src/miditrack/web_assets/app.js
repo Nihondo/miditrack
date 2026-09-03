@@ -26,6 +26,11 @@ if (queryToken) {
 const isTokenRequired =
   document.querySelector('meta[name="miditrack-token-required"]')?.content !== "false";
 
+// miditrack_app.swiftのmakeWebView()がWKUserScript（atDocumentStart）で
+// ページ内スクリプトより先に注入するフラグ。ネイティブアプリのときだけ
+// 全画面レイアウトを固定する（setupFullscreenLayout()/loadPreferences()参照）。
+const isNativeApp = window.__miditrackNative === true;
+
 const KEEP_ORIGINAL = "__keep__";
 const DEFAULT_GM_PROGRAM = "80";
 const MIDI_EXTENSION_RE = /\.(mid|midi)$/i;
@@ -345,7 +350,7 @@ async function loadPreferences() {
     $("#pianoroll-show-keyboard").checked = state.isPianorollKeyboardVisible;
     $("#hide-empty-tracks").checked = state.hideEmptyTracks;
     updatePianorollKeyboardVisibility();
-    setFullscreenLayout(state.displayMode === "fullscreen");
+    setFullscreenLayout(isNativeApp || state.displayMode === "fullscreen");
     applyThemeSetting();
     applyPianorollHeight();
     applyPianorollColors();
@@ -4090,6 +4095,13 @@ function setFullscreenLayout(isFullscreen, { shouldPersist = false } = {}) {
 // 表示モードの切替操作を登録する。
 function setupFullscreenLayout() {
   const toggle = $("#fullscreen-toggle");
+  // ネイティブアプリでは全画面（DAW）レイアウトに固定し、切り替え手段
+  // （ボタン・Escapeキー）自体を提供しない。実際の適用はloadPreferences()内の
+  // setFullscreenLayout(isNativeApp || ...)が起動時に行う。
+  if (isNativeApp) {
+    toggle.hidden = true;
+    return;
+  }
   toggle.addEventListener("click", () => {
     setFullscreenLayout(!document.body.classList.contains("is-fullscreen"), { shouldPersist: true });
   });

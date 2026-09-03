@@ -158,6 +158,12 @@ button { color: inherit; }
   gap: 8px;
 }
 
+/* .buttonのdisplay:inline-flexが[hidden]の既定display:noneに優先してしまう
+   ため明示的に上書きする（.convert-panel[hidden]と同じ理由）。ネイティブ
+   アプリでは全画面レイアウトを固定し、この切り替えボタン自体を隠す
+   （app.jsのsetupFullscreenLayout()参照）。 */
+#fullscreen-toggle[hidden] { display: none; }
+
 .app-header .header-action-button {
   color: #fff;
   background: rgba(255, 255, 255, 0.1);

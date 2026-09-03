@@ -4107,3 +4107,137 @@ swallowed with `|| true` rather than failing the whole install, since a
 `codesign`-less environment — unlikely given the earlier Xcode Command Line
 Tools check, but not impossible — should still produce a working bundle
 rather than blocking setup entirely).
+
+## Added: menu integration between `miditrack.app` and the Web UI
+
+The WKWebView shell above gave `miditrack.app` a Dock presence and window
+lifecycle, but its menu bar (`installMainMenu()`) still only covered
+AppKit-native concerns (About/Hide/Quit, Edit, native fullscreen, Window).
+Every actual app feature — opening a file, changing display settings,
+downloading MIDI/WAV/a project — still required reaching into the WebView
+and clicking a button, with no menu or keyboard-shortcut path at all. This
+feature wires the existing Web UI controls up to native menu items instead
+of duplicating their logic in Swift.
+
+**Why `window.__miditrackNative` is injected via `WKUserScript` at
+`.atDocumentStart`, not `customUserAgent`**: `index.html` is served with a
+strict CSP (`script-src 'self'`, see "Added: 表示設定 dialog" above for why
+this already ruled out an inline `<head>` script for the dark-mode-flash
+fix), which blocks an inline flag-setting `<script>` but has no effect on a
+`WKUserScript` the *native host* injects — it runs before any page script,
+including the CSP-governed ones, and needs no server-side cooperation.
+Rewriting `customUserAgent` to append a marker string was considered and
+rejected: `app.js` has no existing UA-sniffing code path to extend, and a UA
+string is a much broader surface (affecting any future third-party
+JS/analytics that reads it) for what is otherwise a single boolean flag.
+`makeWebView()`'s `WKUserScript` sets exactly `window.__miditrackNative =
+true` and nothing else, so `app.js`'s `isNativeApp` constant
+(`window.__miditrackNative === true`, defined next to the existing
+`isTokenRequired` constant near the top of the file) is a plain equality
+check with no parsing.
+
+**Why full-screen (DAW layout) is force-applied in two places, not one**:
+`setupFullscreenLayout()` registers the `#fullscreen-toggle` click listener
+and the Escape-key handler — the only two ways a user can *change* display
+mode — so gating both behind `if (isNativeApp) { toggle.hidden = true;
+return; }` removes the toggle mechanism entirely for a native launch. But
+the actual mode is *applied* at startup from `loadPreferences()`
+(`setFullscreenLayout(isNativeApp || state.displayMode === "fullscreen")`),
+not from `init()`'s earlier setup calls — `state.displayMode` is whatever
+`preferences.json` last saved from a **browser** session, and could easily
+be `"normal"`. Without this second change, a native launch would render in
+whatever mode a previous browser session left behind, only becoming
+unchangeable (correct, but wrong initial state) rather than being fixed to
+full-screen from the first paint. Neither call passes `shouldPersist:
+true`, so a native launch never overwrites the browser's own saved
+`displayMode` preference — this mirrors the existing "startup application
+never persists" behavior `loadPreferences()`'s call already had before this
+feature (see `setFullscreenLayout()`'s own `shouldPersist` parameter).
+
+**Why `#fullscreen-toggle[hidden] { display: none; }` had to be added to
+`app.css`**: `.button`'s `display: inline-flex` and the browser's default
+`[hidden] { display: none }` UA rule are the same specificity (one class
+selector vs. one attribute selector), so author CSS wins by cascade order
+and `toggle.hidden = true` alone would leave the button visually unchanged
+— the identical trap already documented for `.convert-field.is-checkbox`
+under "Added: per-track WAV export" above. The fix is the same: an explicit
+`#fullscreen-toggle[hidden]` override.
+
+**Why the menu actions are `evaluateJavaScript()` one-liners that click an
+existing button, not reimplementations of open/save/settings in Swift**:
+every one of these actions already has a fully working, validated,
+state-aware implementation in `app.js` — `#open-dialog-button` opens the
+upload/conversion modal, `#settings-open` opens the display-settings
+dialog, `#download-button`/`#download-wav-button`/`#save-project-button`
+each already check `state.session.hasDownload`/disabled state before doing
+anything. `clickWebViewElement(_ selector:)` is a single private helper
+(`webView?.evaluateJavaScript("document.querySelector('\(selector)')?.click();")`)
+that every menu action calls with its own CSS selector — reusing this logic
+avoids a second, Swift-side implementation of state that would inevitably
+drift from the Web UI's own (e.g. if a future edit changes when the
+download buttons become enabled).
+
+**Why the save menu items are always enabled, with no
+`WKScriptMessageHandler` syncing `hasDownload` back to Swift**: a disabled
+HTML button's `.click()` is a no-op — the browser itself refuses to dispatch
+the click, so `evaluateJavaScript()` silently does nothing rather than
+erroring. This was confirmed to be acceptable scope for this feature (a
+user clicking "MIDIを保存…" before loading a file sees nothing happen,
+rather than a grayed-out menu item) rather than building a live state sync
+between the WebView's DOM and `NSMenuItem.isEnabled`. `installMainMenu()`
+now takes a `target: AnyObject` parameter threaded through
+`makeApplicationMenu()`/`makeFileMenu()`, and every action's `NSMenuItem`
+sets `.target` explicitly to `MiditrackAppDelegate` itself rather than
+leaving it `nil` (which would dispatch through the responder chain).
+`MiditrackAppDelegate` is `NSObject`-derived but not `NSResponder`, so
+AppKit's automatic menu-item validation (`validateMenuItem:`, which would
+otherwise disable an item whose target doesn't currently implement/enable
+its action) never applies to these items — they read as permanently enabled
+by construction, matching the "always enabled" decision without any extra
+code.
+
+**Why the save items live in a "保存" submenu inside "ファイル", not as three
+flat top-level items**: this groups the three related download actions
+(MIDI/WAV/project) under one label the way a conventional macOS app's
+File > Save/Export submenu would, and keeps "ファイルを開く…" as the only
+item directly visible in the top-level "ファイル" menu alongside it.
+Variation-ZIP and per-track-ZIP exports were deliberately left out of this
+submenu (confirmed with the user during planning) — both remain
+browser-only actions reached through the existing `<details>` disclosure
+in the Web UI, since neither has a single obvious default output the way
+MIDI/WAV/project do.
+
+**Why Cmd+S is bound to "プロジェクトを保存…", not "MIDIを保存…"**: of the
+three, only "プロジェクトを保存…" (`#save-project-button`, `POST
+/api/project/export`) round-trips the full editing session — assignments,
+volumes, transform, download filename, selected SoundFont — through the
+`.miditrack` archive format described under "Project session archives"
+above. MIDI/WAV are one-way rendered exports. Cmd+S conventionally means
+"save my work so I can resume it," which matches the project archive, not
+either export.
+
+**Why "WAVを保存…" alone additionally gets Cmd+E**: `E` for "Export" has
+precedent in Apple's own apps (classic iMovie's Share/Export shortcut) and
+fits this app's own "MIDI/WAV are one-way rendered exports, not round-trip
+saves" distinction from the paragraph above better than a bare "save"
+mnemonic would. It does not collide with any existing menu binding in this
+app (`o`/`q`/`h`/`⌥h`/`z`/`⇧z`/`x`/`c`/`v`/`a`/`r`/`⌃f`/`m`/`w`/`,`/`s`) or
+with the app's own functionality — Safari/TextEdit's unrelated "Use
+Selection for Find" convention for the same key has no equivalent feature
+in this app to conflict with. "MIDIを保存…" was deliberately left without a
+shortcut: giving every save-menu item a binding was not requested, and MIDI
+export's own natural mnemonic (`M`) is already the parent "ファイル" menu's
+underlying access-key territory, not worth reserving without a concrete
+need.
+
+`tests/test_app_launcher.py`'s `TestSwiftLauncherContract` gained four
+string-literal contract tests matching this file's existing style
+(`test_injects_the_native_app_flag`, `test_has_a_file_menu_with_open_and_save`,
+`test_has_a_settings_menu_item`, `test_menu_actions_target_the_app_delegate`)
+— `clickWebViewElement()` itself is not covered by `--self-test`'s pure-
+function checks (it depends on a live `WKWebView`, unavailable without a
+GUI), so these string checks are the only automated guard for the menu
+wiring; end-to-end behavior (menu clicks actually opening dialogs/dialogs
+prompting for a save location, and the browser-launched path keeping its
+toggle and Escape behavior intact) was verified by hand against the
+compiled `~/Applications/miditrack.app`.

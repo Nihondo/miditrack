@@ -398,6 +398,14 @@ func makeWebView(delegate: MiditrackWebDelegate) -> WKWebView {
     let configuration = WKWebViewConfiguration()
     configuration.mediaTypesRequiringUserActionForPlayback = []
     configuration.preferences.isElementFullscreenEnabled = true
+    // Web側にネイティブアプリであることを伝える。CSP（script-src 'self'）の
+    // 影響を受けず、ページ内スクリプトより先（atDocumentStart）に実行される。
+    let nativeFlagScript = WKUserScript(
+        source: "window.__miditrackNative = true;",
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+    )
+    configuration.userContentController.addUserScript(nativeFlagScript)
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.uiDelegate = delegate
     webView.navigationDelegate = delegate
@@ -430,10 +438,13 @@ func loadingPlaceholderHtml() -> String {
     """
 }
 
-func makeApplicationMenu(applicationName: String) -> NSMenuItem {
+func makeApplicationMenu(applicationName: String, target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
     let menu = NSMenu()
     menu.addItem(withTitle: "\(applicationName) について", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+    menu.addItem(.separator())
+    menu.addItem(withTitle: "設定…", action: #selector(MiditrackAppDelegate.openSettingsFromMenu), keyEquivalent: ",")
+        .target = target
     menu.addItem(.separator())
     menu.addItem(withTitle: "\(applicationName) を隠す", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
     menu.addItem(withTitle: "ほかを隠す", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
@@ -441,6 +452,32 @@ func makeApplicationMenu(applicationName: String) -> NSMenuItem {
     menu.addItem(withTitle: "すべてを表示", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
     menu.addItem(.separator())
     menu.addItem(withTitle: "\(applicationName) を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    item.submenu = menu
+    return item
+}
+
+/// 「ファイルを開く…」と「保存」（MIDI/WAV/プロジェクト）サブメニューを持つ
+/// 「ファイル」メニュー。いずれもWeb側の既存ボタンをクリックするだけの薄い
+/// 実装（clickWebViewElement参照）で、有効/無効の判定はWeb側に委ねるため
+/// 常に有効にしている。
+func makeFileMenu(target: AnyObject) -> NSMenuItem {
+    let item = NSMenuItem()
+    let menu = NSMenu(title: "ファイル")
+    menu.addItem(withTitle: "ファイルを開く…", action: #selector(MiditrackAppDelegate.openFileFromMenu), keyEquivalent: "o")
+        .target = target
+    menu.addItem(.separator())
+
+    let saveMenu = NSMenu(title: "保存")
+    saveMenu.addItem(withTitle: "MIDIを保存…", action: #selector(MiditrackAppDelegate.saveMidiFromMenu), keyEquivalent: "")
+        .target = target
+    saveMenu.addItem(withTitle: "WAVを保存…", action: #selector(MiditrackAppDelegate.saveWavFromMenu), keyEquivalent: "e")
+        .target = target
+    saveMenu.addItem(withTitle: "プロジェクトを保存…", action: #selector(MiditrackAppDelegate.saveProjectFromMenu), keyEquivalent: "s")
+        .target = target
+    let saveMenuItem = NSMenuItem(title: "保存", action: nil, keyEquivalent: "")
+    saveMenuItem.submenu = saveMenu
+    menu.addItem(saveMenuItem)
+
     item.submenu = menu
     return item
 }
@@ -478,9 +515,10 @@ func makeWindowMenu() -> NSMenuItem {
     return item
 }
 
-func installMainMenu(applicationName: String) {
+func installMainMenu(applicationName: String, target: AnyObject) {
     let mainMenu = NSMenu()
-    mainMenu.addItem(makeApplicationMenu(applicationName: applicationName))
+    mainMenu.addItem(makeApplicationMenu(applicationName: applicationName, target: target))
+    mainMenu.addItem(makeFileMenu(target: target))
     mainMenu.addItem(makeEditMenu())
     mainMenu.addItem(makeViewMenu())
     mainMenu.addItem(makeWindowMenu())
@@ -501,7 +539,7 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         if let icon = NSImage(contentsOf: applicationIconURL) {
             NSApp.applicationIconImage = icon
         }
-        installMainMenu(applicationName: "miditrack")
+        installMainMenu(applicationName: "miditrack", target: self)
 
         let delegate = MiditrackWebDelegate()
         webDelegate = delegate
@@ -535,6 +573,37 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         backend?.terminate()
+    }
+
+    // MARK: メニューアクション（Web側の既存ボタンをクリックするだけの薄い実装）
+
+    // fileprivate: #selectorでこのクラスを参照するmakeFileMenu/makeApplicationMenuは
+    // 同じファイル内のトップレベル関数であり、privateだと型スコープ外から見えない。
+    @objc fileprivate func openFileFromMenu() {
+        clickWebViewElement("#open-dialog-button")
+    }
+
+    @objc fileprivate func openSettingsFromMenu() {
+        clickWebViewElement("#settings-open")
+    }
+
+    @objc fileprivate func saveMidiFromMenu() {
+        clickWebViewElement("#download-button")
+    }
+
+    @objc fileprivate func saveWavFromMenu() {
+        clickWebViewElement("#download-wav-button")
+    }
+
+    @objc fileprivate func saveProjectFromMenu() {
+        clickWebViewElement("#save-project-button")
+    }
+
+    /// メニューからWeb側の既存ボタンをクリックしたのと同じ効果を起こす。
+    /// disabledなボタンは.click()してもブラウザが無視するため、有効/無効の
+    /// 判定をSwift側に持つ必要がない（メニュー項目は常に有効という決定に対応）。
+    private func clickWebViewElement(_ selector: String) {
+        webView?.evaluateJavaScript("document.querySelector('\(selector)')?.click();")
     }
 
     private func scheduleStartupTimeout() {
