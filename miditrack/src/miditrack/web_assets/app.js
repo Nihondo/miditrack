@@ -28,7 +28,8 @@ const isTokenRequired =
 
 // miditrack_app.swiftのmakeWebView()がWKUserScript（atDocumentStart）で
 // ページ内スクリプトより先に注入するフラグ。ネイティブアプリのときだけ
-// 全画面レイアウトを固定する（setupFullscreenLayout()/loadPreferences()参照）。
+// 全画面レイアウトを固定する。WKUserScriptはbody生成時にもクラスを付与し、
+// init()でもDOM操作を完了するため、通常レイアウトが一瞬描画されない。
 const isNativeApp = window.__miditrackNative === true;
 
 const KEEP_ORIGINAL = "__keep__";
@@ -4096,8 +4097,8 @@ function setFullscreenLayout(isFullscreen, { shouldPersist = false } = {}) {
 function setupFullscreenLayout() {
   const toggle = $("#fullscreen-toggle");
   // ネイティブアプリでは全画面（DAW）レイアウトに固定し、切り替え手段
-  // （ボタン・Escapeキー）自体を提供しない。実際の適用はloadPreferences()内の
-  // setFullscreenLayout(isNativeApp || ...)が起動時に行う。
+  // （ボタン・Escapeキー）自体を提供しない。レイアウト本体はinit()の最初に
+  // 適用済みで、loadPreferences()はその状態を再確認するだけにする。
   if (isNativeApp) {
     toggle.hidden = true;
     return;
@@ -4314,6 +4315,10 @@ async function notifyNativeAppReady() {
 }
 
 async function init() {
+  // ネイティブ版は設定APIの応答を待たずに全画面レイアウトを完成させる。
+  // Swift側のatDocumentStart注入と組み合わせ、通常レイアウトが一瞬見える
+  // 起動時の切り替わりを防ぐ。
+  if (isNativeApp) setFullscreenLayout(true);
   if (isTokenRequired && !token) {
     showStatus("起動トークンがありません。ターミナルに表示されたURLから開いてください。", "error");
     await notifyNativeAppReady();

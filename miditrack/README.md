@@ -90,7 +90,7 @@ SoundFont lookup must never use `<repository>/soundfonts`. Its stable order is `
 
 The server binds locally and uses a launch-scoped token for API requests. Treat uploads as local-user inputs, but keep ZIP extraction limits and path validation intact. Do not expose a route that allows arbitrary filesystem reads or a shell command string.
 
-`~/Applications/miditrack.app` keeps normal per-launch token authentication (it does not pass `--no-token`). `miditrack_app.swift` resolves all runtime assets from `Bundle.main`, supplies `MIDITRACK_RESOURCE_ROOT` and `MIDITRACK_NODE_BIN`, and starts the PyInstaller backend with `Process()`. It displays the lead-image splash for at least one second and switches to the WebKit window only after the backend emits `miditrack Web UI: http://127.0.0.1:PORT/?token=...`. The token never reaches an external browser. `/api/audio`'s query-string token fallback remains the only exception to header-based auth.
+`~/Applications/miditrack.app` keeps normal per-launch token authentication (it does not pass `--no-token`). `miditrack_app.swift` resolves all runtime assets from `Bundle.main`, supplies `MIDITRACK_RESOURCE_ROOT` and `MIDITRACK_NODE_BIN`, and starts the PyInstaller backend with `Process()`. Its native WebKit page receives the full-screen layout before its first paint, while the lead-image splash remains visible for at least one second and the backend emits `miditrack Web UI: http://127.0.0.1:PORT/?token=...`. The token never reaches an external browser. `/api/audio`'s query-string token fallback remains the only exception to header-based auth.
 
 ## Versioning
 

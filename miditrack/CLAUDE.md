@@ -2329,6 +2329,19 @@ doesn't need, since NSF (`supports_song_list=True`) calls it from
 
 ## Added: full-screen DAW layout
 
+### Native launch: apply the layout before first paint
+
+The native `miditrack.app` must never visibly transition from the normal
+single-column layout into the fixed full-screen DAW layout during startup.
+`makeWebView()` injects both `window.__miditrackNative` and an
+`is-fullscreen` body-class initializer at `WKUserScript`'s
+`atDocumentStart`; a short-lived `MutationObserver` applies the class as soon
+as the parser creates `<body>`. `app.js` repeats `setFullscreenLayout(true)`
+as the first action in `init()` before awaiting preferences, which also moves
+the upload card into its native dialog and completes the DOM-level setup.
+The two stages are deliberate: the injected class prevents the first-paint
+flash, while the app helper keeps all normal full-screen invariants intact.
+
 `index.html`'s single `min(1000px, 100%)` column made it impossible to see
 the track list and the piano roll at the same time — exactly what editing
 instruments/volumes while watching the render's result actually needs. The

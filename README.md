@@ -30,7 +30,7 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.v
    cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
-4. Double-click `miditrack.app`, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
+4. Double-click `miditrack.app`, or drag it to the Dock — it opens directly in its full-screen editing layout, with the whole app inside its own window and no separate browser tab. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
 
 5. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
 

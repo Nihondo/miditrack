@@ -126,6 +126,11 @@ class TestSwiftLauncherContract(unittest.TestCase):
         ):
             self.assertIn(required_symbol, self.source)
 
+    def test_applies_the_native_fullscreen_layout_before_the_first_page_paint(self) -> None:
+        self.assertIn('window.__miditrackNative = true', self.source)
+        self.assertIn('document.body.classList.add("is-fullscreen")', self.source)
+        self.assertIn("injectionTime: .atDocumentStart", self.source)
+
     def test_keeps_the_file_and_settings_menu(self) -> None:
         for required_symbol in (
             "ファイルを開く…",

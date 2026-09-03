@@ -465,7 +465,18 @@ func makeWebView(delegate: MiditrackWebDelegate) -> WKWebView {
     // Web側にネイティブアプリであることを伝える。CSP（script-src 'self'）の
     // 影響を受けず、ページ内スクリプトより先（atDocumentStart）に実行される。
     let nativeFlagScript = WKUserScript(
-        source: "window.__miditrackNative = true;",
+        source: """
+        window.__miditrackNative = true;
+        let applyNativeFullscreen = () => {
+            if (document.body) document.body.classList.add("is-fullscreen");
+        };
+        const nativeFullscreenObserver = new MutationObserver(() => {
+            applyNativeFullscreen();
+            if (document.body) nativeFullscreenObserver.disconnect();
+        });
+        nativeFullscreenObserver.observe(document.documentElement, { childList: true });
+        applyNativeFullscreen();
+        """,
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
     )
