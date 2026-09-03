@@ -8,7 +8,7 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.v
 
 ## Quick Start
 
-1. On an Apple Silicon Mac, download the latest `miditrack-*-macos-arm64.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
+1. On an Apple Silicon Mac, download the latest `miditrack.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
 
 2. Install the runtime dependencies through [Homebrew](https://brew.sh/). If Homebrew itself is not installed yet, install it first.
 
@@ -174,15 +174,9 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 | `--no-browser` | Do not open a browser tab automatically. |
 | `--version` | Show the version and exit. |
 
-### Launching miditrack from the Dock
-
-`miditrack.app`, once moved to `~/Applications`, is a normal Dock app, not a background helper. Double-click it, or drag it to the Dock. It shows a startup image for at least one second while the bundled backend starts, then displays the whole UI in its own window. No separate browser tab opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time.
-
-Downloads (MIDI, WAV, ZIP, `.miditrack` projects) prompt for a save location, the same as a browser's "Save As."
-
 ### Saving miditrack as a browser "app"
 
-This is an independent way to run miditrack — it doesn't interact with the Dock app above. miditrack can be saved as a PWA (Chrome's "Install app," Safari's "Add to Dock," and similar). A saved app icon always opens `http://127.0.0.1:<port>/` with no token, so combine these three options for that workflow:
+This is an independent way to run miditrack — it doesn't interact with the Dock app. miditrack can be saved as a PWA (Chrome's "Install app," Safari's "Add to Dock," and similar). A saved app icon always opens `http://127.0.0.1:<port>/` with no token, so combine these three options for that workflow:
 
 - **`--port`** — pins the port so the app icon opens the same URL every time.
 - **`--no-token`** — a saved app icon has no way to carry a token in its URL, so this disables token authentication entirely (only use this in a trusted environment).

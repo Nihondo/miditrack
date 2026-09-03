@@ -8,7 +8,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
 
 ## クイックスタート
 
-1. Apple Silicon Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack-*-macos-arm64.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
+1. Apple Silicon Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
 
 2. Homebrewでランタイム依存を導入します。Homebrewが未導入の場合は先にインストールしてください。
 
@@ -174,15 +174,9 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 | `--no-browser` | ブラウザタブを自動で開きません。 |
 | `--version` | バージョンを表示して終了します。 |
 
-### Dockからmiditrackを起動する
-
-`~/Applications`へ移動した`miditrack.app`は、バックグラウンドの補助ツールではなく普通のDockアプリです。ダブルクリックするか、Dockへドラッグして使ってください。同梱バックエンドの起動中は少なくとも1秒間スプラッシュ画像を表示し、その後にUI全体を専用ウィンドウへ表示します。別途ブラウザタブは開きません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了します。
-
-ダウンロード（MIDI、WAV、ZIP、`.miditrack`プロジェクト）は、ブラウザの「名前を付けて保存」と同じく保存先を尋ねられます。
-
 ### ブラウザから「アプリ」として保存して使う
 
-これは上記のDockアプリとは独立した、別の起動方法です。miditrackはPWAとして保存できます（Chromeの「アプリをインストール」やSafariの「Dockに追加」など）。保存したアプリのアイコンは常に`http://127.0.0.1:<ポート>/`をトークン無しで開くため、この使い方をする場合は次の3つを組み合わせてください。
+これはDockアプリとは独立した、別の起動方法です。miditrackはPWAとして保存できます（Chromeの「アプリをインストール」やSafariの「Dockに追加」など）。保存したアプリのアイコンは常に`http://127.0.0.1:<ポート>/`をトークン無しで開くため、この使い方をする場合は次の3つを組み合わせてください。
 
 - **`--port`** — アプリのアイコンが毎回同じURLを開けるよう、ポート番号を固定します。
 - **`--no-token`** — アプリ起動時はURLにトークンを付けられないため、トークン認証自体を無効化します（信頼できる環境でのみ使用してください）。
