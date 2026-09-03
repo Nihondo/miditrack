@@ -63,6 +63,24 @@ let serverStartupTimeoutSeconds: TimeInterval = 40
 let backendTerminationGraceSeconds: TimeInterval = 3
 let initialWindowSize = NSSize(width: 1280, height: 860)
 
+// app.cssのbody背景グラデーションが収束する先の色（--neutral-10）の近似値。
+// WKWebViewは自身のCSSが読み込まれるまで既定で不透明な白背景を描画するため、
+// 何も手当てしないとダークモード環境でも「黒いスプラッシュカード→白フラッシュ
+// →実際のダークUI」という順で見えてしまう。起動直後にシステム外観を判定して
+// この色をWKWebView自身とその周辺コンテナへ先回りで塗っておくことで、
+// ページのCSSが実際に適用されるまでの間も最終的な見た目に近い色で埋める。
+let lightStartupBackgroundColor = NSColor(srgbRed: 0xfa / 255, green: 0xfb / 255, blue: 0xfc / 255, alpha: 1)
+let darkStartupBackgroundColor = NSColor(srgbRed: 0x20 / 255, green: 0x26 / 255, blue: 0x2f / 255, alpha: 1)
+
+/// 現在のシステム外観（ライト/ダーク）に応じた起動時背景色を返す。
+/// preferences.jsonのappTheme（"light"/"dark"固定指定）はSwift側からは
+/// 読んでいない——大半のユーザーは既定の"system"のままであり、ここは
+/// あくまで「WKWebView自身の描画が始まるまでの一瞬」を埋める近似で足りるため。
+func resolveStartupBackgroundColor() -> NSColor {
+    let isDarkAppearance = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    return isDarkAppearance ? darkStartupBackgroundColor : lightStartupBackgroundColor
+}
+
 // Finder/Dockが継承するPATHはlaunchdの既定（/usr/bin:/bin:/usr/sbin:/sbin）で
 // /opt/homebrew/binを含まない。fluidsynth/ffmpeg/rubberband/nodeはすべて
 // PATH解決なので、これが無いとレンダリングだけ全部失敗する。
@@ -502,7 +520,7 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
 
 // MARK: - G. ウィンドウとメニュー
 
-func makeWebView(delegate: MiditrackWebDelegate) -> WKWebView {
+func makeWebView(delegate: MiditrackWebDelegate, backgroundColor: NSColor) -> WKWebView {
     let configuration = WKWebViewConfiguration()
     configuration.mediaTypesRequiringUserActionForPlayback = []
     configuration.preferences.isElementFullscreenEnabled = true
@@ -532,6 +550,10 @@ func makeWebView(delegate: MiditrackWebDelegate) -> WKWebView {
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.uiDelegate = delegate
     webView.navigationDelegate = delegate
+    // ページ自身のCSSが適用されるまでWKWebViewが既定で描く不透明な白背景を
+    // 起動時のテーマ色に置き換える（macOS 12+のAPI、このアプリの
+    // LSMinimumSystemVersion 13.0で常に利用可能）。
+    webView.underPageBackgroundColor = backgroundColor
     return webView
 }
 
@@ -631,8 +653,10 @@ func makeSplashCardView() -> NSView {
 /// WKWebViewとスプラッシュカードを重ねた、メインウィンドウのcontentView用
 /// コンテナを作る。カードは最後に追加してwebViewより手前に描画するが、
 /// 640x360の領域だけを占める。
-func makeMainContentContainer(webView: NSView, splashCard: NSView) -> NSView {
+func makeMainContentContainer(webView: NSView, splashCard: NSView, backgroundColor: NSColor) -> NSView {
     let container = NSView()
+    container.wantsLayer = true
+    container.layer?.backgroundColor = backgroundColor.cgColor
     container.addSubview(webView)
     container.addSubview(splashCard)
     webView.translatesAutoresizingMaskIntoConstraints = false
@@ -823,14 +847,18 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
         splashStartedAt = Date()
 
+        let startupBackgroundColor = resolveStartupBackgroundColor()
         let delegate = MiditrackWebDelegate()
         webDelegate = delegate
-        let webView = makeWebView(delegate: delegate)
+        let webView = makeWebView(delegate: delegate, backgroundColor: startupBackgroundColor)
         self.webView = webView
         let splashCard = makeSplashCardView()
         splashCardView = splashCard
-        let contentContainer = makeMainContentContainer(webView: webView, splashCard: splashCard)
+        let contentContainer = makeMainContentContainer(
+            webView: webView, splashCard: splashCard, backgroundColor: startupBackgroundColor
+        )
         let mainWindow = makeMainWindow(contentView: contentContainer)
+        mainWindow.backgroundColor = startupBackgroundColor
         window = mainWindow
         delegate.onInitialLoadFinished = { [weak self] in
             self?.revealMainContent()

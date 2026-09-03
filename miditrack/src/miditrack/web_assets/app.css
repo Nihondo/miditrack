@@ -47,13 +47,48 @@
   color-scheme: light;
 }
 
-/* テーマは data-theme の具体値（light/dark）で切り替える。"システム追従" は
+/* テーマの正規の切り替えはdata-theme属性（light/dark）で行う。"システム追従"は
    JS側のresolveTheme()/applyThemeSetting()がmatchMediaから解決してこの
-   属性へ書き込むため、CSSにOS追従用の@mediaブロックは持たせない
-   （index.html<head>の同期スクリプトが初回描画前の既定値を設定する）。
-   ニュートラル階調を反転し、常時ダークで固定したい要素（--toast-bg等）は
-   反転対象から切り離して別変数で定義する。 */
-[data-theme="dark"] {
+   属性へ書き込む。だがapp.jsは<script defer>で読み込まれるため実行は
+   常にHTML全体のパース完了後——render-blockingな<link rel="stylesheet">の
+   解決だけでは初回ペイントを遅らせきれず、data-theme未設定のまま一度
+   ライト値で描画されてからdarkへ切り替わる「白フラッシュ」が実機で
+   確認された（以前のコメントの「実用上ちらつきは防げる」という想定は
+   誤りだった）。このため@media (prefers-color-scheme: dark)によるCSSのみの
+   フォールバックを:root:not([data-theme="light"])に対して適用し、JSの
+   実行を待たずにOS設定へ追従できるようにする。data-theme="light"を
+   明示指定したときだけこのフォールバックを無効化し、[data-theme="dark"]
+   ブロック（JS確定後の正規の適用、system判定結果および明示的な固定選択の
+   両方をカバーする）へ完全に委ねる。ニュートラル階調を反転し、常時ダークで
+   固定したい要素（--toast-bg等）は反転対象から切り離して別変数で定義する。
+   2つのブロックの中身は意図的に同一——値を変更する際は両方を揃えること。 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --brand-dark: #6a8ecf;
+    --brand-light: #253247;
+    --digital-text: #9bb8f3;
+    --neutral-0: #1b2129;
+    --neutral-10: #20262f;
+    --neutral-20: #262d37;
+    --neutral-30: #333c48;
+    --neutral-40: #414b59;
+    --neutral-60: #9aa7bb;
+    --neutral-80: #c3ccdb;
+    --neutral-100: #eef1f6;
+    --pianoroll-key-white: #e8edf4;
+    --pianoroll-key-black: #10151d;
+    --pianoroll-key-border: #7d899a;
+    --pianoroll-key-label: #334155;
+    --pianoroll-key-automation: #262d37;
+    --pianoroll-frame-border: #4d5969;
+    --pianoroll-keyboard-divider: #718096;
+    --warning: #eab308;
+    --toast-bg: #10151d;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
+  }
+}
+:root[data-theme="dark"] {
   color-scheme: dark;
   --brand-dark: #6a8ecf;
   --brand-light: #253247;

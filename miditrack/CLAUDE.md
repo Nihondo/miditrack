@@ -2983,7 +2983,7 @@ immediate-apply/immediate-save with no OK/Cancel draft state, exactly the
 behavior the three original checkboxes already had — this dialog is
 strictly a UI reorganization, not a new interaction model.
 
-### Theme selection: `[data-theme]` replaces the bare `@media` block
+### Theme selection: `[data-theme]`, plus a CSS-only `@media` fallback (see Fixed note below)
 
 `appTheme` (`"system"`/`"light"`/`"dark"`, default `"system"`) is resolved
 client-side by `resolveTheme()` and written to `document.documentElement
@@ -3018,6 +3018,45 @@ and the deferred script runs at essentially the same point. Any future
 "run something before first paint" idea in this codebase must go through an
 external `/assets/*.js` file for the same reason; a `<script>` tag typed
 directly into `index.html` will not execute.
+
+**Fixed: the "loses no meaningful protection... in practice" claim above was
+wrong, and a real light-flash reached users (most visibly reported as
+"black splash → white flash → real UI" from `miditrack.app`'s native
+launcher, but the underlying cause is this Web UI's own CSS/JS, not the
+native shell — see `miditrack_app.swift`'s own splash-timing fix, kept
+alongside this one, for the native-side half of that report).** A `<script
+defer>`'s execution point (after the document has finished parsing) is not
+the same event as a render-blocking `<link rel="stylesheet">`'s resolution
+(after that one file's bytes arrive) — the assumption that they land "at
+essentially the same point" held only loosely, and on a fast local
+connection (this app's own `127.0.0.1` backend, where the CSS fetch is
+close to instant) the CSS can finish and the browser can paint a first frame
+using `:root`'s light-mode default values before the deferred script has
+even started, let alone written `data-theme`. `app.css` now carries a CSS-
+only `@media (prefers-color-scheme: dark)` block on top of `[data-theme=
+"dark"]`, not instead of it — the `@media` rule targets
+`:root:not([data-theme="light"])`, so it only ever plugs the gap between
+first paint and this script's own `data-theme` write for the `"system"`
+default (the overwhelming common case: the OS-level value and the script's
+own eventual `resolveTheme("system")` output always agree), while an
+explicit `data-theme="light"` pin (from `appTheme` being fixed away from
+`"system"`) suppresses it outright rather than fighting the script for
+control after the fact. Both blocks' variable values are kept in
+deliberate, exact duplication — there is no shared-values mechanism here,
+so a future palette edit must update both. `tests/test_web.py`'s dedicated
+assertion for this file **used to assert the `@media` block's absence**
+(`assertNotIn("@media (prefers-color-scheme: dark)", css)`, written when
+this section's `[data-theme]`-only design first shipped); it now asserts
+the opposite — its presence, plus the `:root:not([data-theme="light"])`
+selector — since the old assertion was itself locking in the exact
+regression this fix undoes. The lesson for this codebase generalizes: a
+timing claim about browser paint/script ordering ("X happens by roughly the
+same point as Y") needs to be verified against an actual flash-visible
+run, not reasoned about from the spec alone — this project already had
+that lesson once, for the identical file, from the CSP-blocks-inline-
+`<script>` discovery two paragraphs up, and reasoning-instead-of-observing
+about the *next* line of the same file reintroduced a version of the exact
+bug the first fix was written to prevent.
 
 ### Piano-roll colors: token indirection lets a null mean "follow the theme"
 
@@ -4571,7 +4610,35 @@ the card fades. A resolved initialization promise or completed DOM mutation is
 not proof that WebKit has painted the new content: `app.js` must await a double
 `requestAnimationFrame` before posting `miditrackReady` to the native shell.
 The Swift delegate's five-second `didFinish` fallback prevents a script failure
-from leaving the splash visible forever. Release signing is inside-out with the Developer ID
+from leaving the splash visible forever.
+
+**Fixed: a black-then-white flash around the splash card before the real UI
+appeared.** `makeSplashCardView()`'s black background only ever covers the
+fixed 640x360 card itself; nothing previously set a background color on the
+`WKWebView`, its containing `NSView`, or the `NSWindow` around it. A bare
+`WKWebView` defaults to an opaque white background until its own page CSS
+paints over it, so the actual sequence was: window shown (card's black
+against whatever undrawn window backing shows through — dark on a
+dark-appearance system) → `WKWebView` begins loading the backend URL and
+paints its default white before `index.html`'s CSS applies → the real
+(possibly dark) themed UI appears once `app.js`'s `dataset.theme` line runs.
+`resolveStartupBackgroundColor()` reads `NSApp.effectiveAppearance` once at
+launch and returns an approximation of `app.css`'s `--neutral-10` for
+light/dark; `makeWebView()` sets that color on the `WKWebView`'s
+`underPageBackgroundColor` (macOS 12+, safely available given this app's
+`-target arm64-apple-macos13.0`), `makeMainContentContainer()`'s container
+gets a matching `wantsLayer`/`layer.backgroundColor`, and `mainWindow
+.backgroundColor` is set to the same value — so every layer behind the
+splash card, and the `WKWebView` itself before its own CSS paints, already
+matches the eventual theme instead of defaulting to white. This does not
+read `preferences.json`'s `appTheme` (a "light"/"dark" pin set from inside
+the Web UI) — only the OS-level `effectiveAppearance` — since covering the
+overwhelmingly common "system" default is what actually fixes the reported
+flash, and reaching into the preferences file from Swift would be
+disproportionate for the remaining edge case of a user who pinned a theme
+that disagrees with their OS appearance.
+
+Release signing is inside-out with the Developer ID
 identity,
 followed by the outer app signature with hardened runtime and timestamp;
 notarization staples that same tested app rather than rebuilding it.

@@ -4,9 +4,16 @@
 // 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
 // applyThemeSetting()がこの後で上書きする。index.htmlのCSPがインライン
 // scriptを許可しない（script-src 'self'）ため、head内のインラインscriptでは
-// なくここに置く — このファイル自体はdeferで読み込まれ、render-blockingな
-// <link rel="stylesheet">の解決とほぼ同じタイミングで実行されるため、外部
-// ファイルであっても実用上ちらつきは防げる。
+// なくここに置く。ただしこのファイル自体はdeferで読み込まれ、実行は常に
+// HTML全体のパース完了後——render-blockingな<link rel="stylesheet">の解決
+// だけでは初回ペイントを遅らせきれず、data-theme未設定のままライト値で
+// 一度描画されてしまうケースが実機で確認された。そのためapp.cssは
+// @media (prefers-color-scheme: dark)によるCSSのみのフォールバックを
+// 別途持っており、この行が実行される前の初回ペイントもOS設定に追従できる
+// ようになっている。この行はappTheme="light"/"dark"の明示固定選択と、
+// "system"判定結果をdata-theme属性へ確定させる（CSSのフォールバックが
+// 拾えない、"system"設定なのにOS設定と食い違うdata-theme="light"固定時の
+// 解除を含む）ために引き続き必要。
 document.documentElement.dataset.theme =
   matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 

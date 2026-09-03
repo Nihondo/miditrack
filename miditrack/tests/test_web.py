@@ -4743,7 +4743,8 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("hsl(${hue} 90% 48% / ${opacity})", javascript)
         self.assertIn("#upload-card { box-shadow: 0 1px 2px", css)
         self.assertIn('data-theme="dark"', css)
-        self.assertNotIn("@media (prefers-color-scheme: dark)", css)
+        self.assertIn("@media (prefers-color-scheme: dark)", css)
+        self.assertIn(":root:not([data-theme=\"light\"])", css)
         self.assertIn('displayMode: state.displayMode', javascript)
         fullscreen_setup_block = javascript.split("function setupFullscreenLayout() {", 1)[1].split(
             "\n}\n\n// 通常表示用のアップロードカード", 1
