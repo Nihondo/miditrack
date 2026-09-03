@@ -70,11 +70,13 @@ The converter binaries, the pinned Python and Node.js runtimes, and the Apple Si
 
 ## Using miditrack
 
-Drop a source file or a `.mid` onto the upload area and work through the four numbered screens. **Save project** downloads a `.miditrack` archive with the editable MIDI, conversion settings, track choices, speed/pitch, loop, and preset. **Open project** restores that state without re-converting the source. Rendered audio and generated ZIPs are not stored in a project.
+Drop a source file or a `.mid` onto the upload area and work with the tracks and piano roll together on the single main screen. **Save project** downloads a `.miditrack` archive with the editable MIDI, conversion settings, track choices, speed/pitch, loop, and preset. **Open project** restores that state without re-converting the source. Rendered audio and generated ZIPs are not stored in a project.
 
-### Screen 1 · File Selection
+### File Selection
 
-![File Selection](images/miditrack_s01.png)
+![File Selection](images/miditrack_file.png)
+
+Click **Open** in the header to reach this dialog — it also opens automatically before any file is loaded.
 
 **Upload area** — Drag a file onto the dashed area, or click to open a file picker. Accepted: `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.vgm`, `.vgz`, `.zip`, `.m3u`. Drop multiple source files, a ZIP rip pack, or a source file together with an `.m3u` playlist at once. ZIP uploads allow up to 200 files and 512 MiB extracted. ZIPs can contain `.spc` and `.spc2`; a ZIP containing only unsupported files (including `.rsn`) reports that no supported source file was found.
 
@@ -86,13 +88,15 @@ Drop a source file or a `.mid` onto the upload area and work through the four nu
 - **NSF/NSFE** — Duration in seconds and optional PAL timing.
 - **SPC/SPC2** — Loop count.
 
-Click **Convert to MIDI** to start. After conversion the remaining screens work identically to starting from an uploaded MIDI.
+Click **Convert to MIDI** to start. The dialog also offers **Open project** and **Save project**. After conversion it closes and the main screen below shows the result.
 
-### Screen 2 · Tracks
+### Main Screen
 
-![Tracks](images/miditrack_s02.png)
+![Main Screen](images/miditrack_all.png)
 
-**Track list** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
+The track panel and the piano roll stay visible side-by-side at all times. Reopen the file dialog above from the header's **Open** button whenever you want to load or convert another file.
+
+**Track panel (left)** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
 
 **SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically. **Cmd-click** (Ctrl-click on Windows/Linux) applies the same choice to every other track that offers the same option.
 
@@ -104,11 +108,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **SoundFont** — Select a `.sf2`/`.sf3` from those found in the standard search directories. **Fast** (22.05 kHz) renders quickly for auditioning; **Quality** (44.1 kHz) matches the WAV download.
 
-### Screen 3 · Audition
-
-![Audition](images/miditrack_s03.png)
-
-**Transport** — ◀◀ and ▶▶ step by 5 s per click, ⏮ returns to the start, and ▶/⏸ plays or pauses. Keyboard shortcuts are also available: Space toggles play/pause; Left/Right arrows seek ±1 s; Shift + Left/Right arrows seek ±5 s; Page Up/Page Down seek ±10 s; Home jumps to the start; End jumps to the end; and Cmd+← jumps to the start. The timer shows the current position over the total duration.
+**Transport (right, top)** — ◀◀ and ▶▶ step by 5 s per click, ⏮ returns to the start, and ▶/⏸ plays or pauses. Keyboard shortcuts are also available: Space toggles play/pause; Left/Right arrows seek ±1 s; Shift + Left/Right arrows seek ±5 s; Page Up/Page Down seek ±10 s; Home jumps to the start; End jumps to the end; and Cmd+← jumps to the start. The timer shows the current position over the total duration.
 
 **Speed** — Playback rate from 0.1× to 10×. Applies to all subsequent renders and the WAV download.
 
@@ -116,17 +116,13 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Volume** — Master level for the session.
 
-**Piano roll** — Displays all tracks as coloured note bars on a vertical keyboard. Scroll to navigate; pinch or use the scroll wheel to zoom. Click to seek.
+**Piano roll (right)** — Displays all tracks as coloured note bars on a vertical keyboard. Scroll to navigate; pinch or use the scroll wheel to zoom. Click to seek.
 
 **Pitch bend lane** — Shows pitch bend data for each track below the note area.
 
 Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview. If you begin playback while a fresh render is still needed, miditrack can first play a short segment around the current position, then crossfade to the exact full-length WAV when it is ready. Original chip-audio tracks are prepared in the background after conversion so they can join that short preview once ready; the spinner remains visible while the full WAV is still being finished.
 
-### Screen 4 · Output
-
-![Output](images/miditrack_s04.png)
-
-**Download MIDI / WAV** — Download MIDI saves the edited file with current instrument assignments. Download WAV produces a 44.1 kHz stereo WAV using the current track settings, speed, and pitch. Edit the **filename** field before downloading to set the base name.
+**Download MIDI / WAV (bottom)** — Download MIDI saves the edited file with current instrument assignments. Download WAV produces a 44.1 kHz stereo WAV using the current track settings, speed, and pitch. Edit the **filename** field before downloading to set the base name.
 
 **Generate variations in bulk** — Enter comma-separated speed multipliers and semitone values, then click **Download variations as ZIP**. Check **Include MIDI in ZIP** to add the corresponding MIDI file for each combination. Accepts up to 6 speeds, 8 transposes, and 15 total combinations. The audition speed and pitch settings are not changed.
 
@@ -134,29 +130,17 @@ Rendering starts automatically after edits and completed renders are cached for 
 
 Changing a SoundFont, a track setting, or the filename invalidates previously generated variation and per-track ZIPs; regenerate them after the change.
 
-### Full-Screen Mode
-
-![Full-screen mode](images/miditrack_full.png)
-
-Full-screen mode shows the track panel and the piano roll side-by-side on a single screen. Click **Full screen** in the header to enter; click **Exit full screen** to leave.
-
-**Track panel (left)** — The same controls as Screen 2: source toggle, instrument, mute, solo, and volume per track. Ensemble presets and the SoundFont selector are anchored at the bottom of the panel.
-
-**Piano roll (right)** — Identical to Screen 3. The transport bar and speed/pitch controls appear at the top.
-
-**Output bar (bottom)** — MIDI and WAV download buttons and the output options panel replace the separate Screen 4.
-
 ### Display Settings
 
 ![Display Settings](images/miditrack_ss.png)
 
-Open the display settings panel from any screen. Changes take effect immediately and are preserved across restarts.
+Open the display settings panel from the header's gear icon. Changes take effect immediately and are preserved across restarts.
 
 **Theme** — **Global display** sets the colour scheme: follow the system setting, light, or dark.
 
 **Piano roll**
 - *Round note corners*, *Add note outline*, *Show grid lines*, *Show keyboard* — toggle each element individually.
-- *Height* — Sets the piano roll height in the step-by-step layout. In full-screen mode the roll always fills the window height.
+- *Height* — Sets the piano roll height. On the app version the roll always fills the window height regardless of this setting.
 - *Background colour* / *Grid line colour* — Pick a custom colour or reset to the theme default.
 - *Track colour scheme* — Controls the saturation of the per-track note colours.
 - *Vertical grid divisions* — Number of subdivisions per beat.

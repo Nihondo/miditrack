@@ -54,8 +54,14 @@ fi
 
 for formula in fluid-synth ffmpeg rubberband; do
   info "Homebrew依存をインストールしています: $formula"
-  brew install "$formula"
+  if ! brew install "$formula"; then
+    printf '⚠ %sの導入に失敗しました。既存の別tap版を利用できる場合は続行します。\n' "$formula" >&2
+  fi
 done
+
+command -v fluidsynth >/dev/null 2>&1 || fail "fluidsynthが見つかりません。FluidSynthをPATHへ追加してください"
+command -v ffmpeg >/dev/null 2>&1 || fail "ffmpegが見つかりません。利用可能なffmpegをPATHへ追加してください"
+command -v rubberband >/dev/null 2>&1 || fail "rubberbandが見つかりません。Rubber BandをPATHへ追加してください"
 
 mkdir -p "$HOME/Applications"
 info "配布版と同じmiditrack.appを組み立てています"
