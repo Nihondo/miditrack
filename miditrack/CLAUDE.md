@@ -4345,7 +4345,13 @@ copyright, and a clickable "Website: ..." line that opens the product page,
 and the menu bar's Help menu shows the search field plus "miditrack ヘルプ",
 which opens the manual page in the default browser.
 
-## Finder compact icons use the original 1024px artwork only
+## Finder compact icons use the original 1024px artwork only (superseded)
+
+**Superseded by "Fixed: Dock icon over-scaled while running on macOS 26
+(Tahoe)" below** — `build_app_bundle.sh` no longer embeds a hand-built
+single-`ic10` ICNS at all; it compiles `images/miditrack.icon` with `actool`
+instead. This section is kept only to explain why the single-representation
+approach existed in the first place, for context on the newer fix.
 
 `scripts/build_app_bundle.sh` creates `miditrack.icns` as a single `ic10`
  chunk containing `images/miditrack_icon.png` without generating the usual
@@ -4443,48 +4449,105 @@ session's own sandbox permissions didn't allow writing there, so it wasn't
 regenerated as part of this change — verify the actual Dock appearance
 before considering this closed.
 
-## `images/miditrack.icon` is now the editable icon source; `miditrack_icon.png` is a derived, committed asset
+## `images/miditrack.icon` is the editable icon source (superseded: no longer exported to a flat PNG)
 
-The two padding rounds above (80% → 92%) existed because the source artwork
-was a flat, hand-cropped PNG with no notion of Apple's actual squircle/
-padding/shadow template — every ratio had to be guessed and visually
-re-checked against the OS's own auto-framing behavior. `images/miditrack.icon`
-is an Xcode 26 Icon Composer document (its own `icon.json` plus the source
-artwork under `Assets/`) that replaces that guesswork: Icon Composer knows
-the real macOS icon template geometry and renders the correct squircle mask,
-margin, and drop shadow itself, the same rendering macOS's own icon pipeline
-uses. It is the file to open and edit (via the Icon Composer.app GUI) for any
-future icon change; `images/miditrack_icon.png` becomes a derived artifact of
-it, not a hand-tuned original.
+**Superseded by the section below** — `images/miditrack.icon` (an Xcode 26
+Icon Composer document: its own `icon.json` plus source artwork under
+`Assets/`) is still the file to open and edit via Icon Composer.app for any
+future icon change, but it is no longer flattened to `images/miditrack_icon.png`
+for the app bundle. That PNG now exists purely as documentation/README
+artwork, byte-identical to no build step. See the next section for why and
+for what replaced it.
 
-`images/miditrack_icon.png` is still the single committed file
-`scripts/build_app_bundle.sh` reads (see "Finder compact icons use the
-original 1024px artwork only" above) — that script and
-`tests/test_build_app_bundle.py`'s dimension/one-representation assertions
-are unchanged. Regenerating the PNG from the `.icon` source is a one-time,
-by-hand step (the same "inspect once as a file before committing" posture the
-92%-padding fix above already established), done with `ictool`, the small CLI
-bundled inside Icon Composer.app itself:
+## Fixed: Dock icon over-scaled while the app is running on macOS 26 (Tahoe)
+
+**Symptom, reported directly by the user with side-by-side screenshots**:
+the Dock icon looked like every neighboring icon while `miditrack.app` was
+*not* running (Dock persistent icon, Launchpad), but visibly larger than
+neighboring icons — not just "differently padded," clearly over-scaled —
+the moment the app was actually launched and showing its running-indicator
+Dock tile.
+
+**Root cause**: the single-`ic10`-chunk ICNS built by the previous approach
+(see "Finder compact icons..." above) embeds one flat, unmasked 1024px PNG
+with no padding/shadow/gradient layer metadata — it relies entirely on
+macOS's classic icon renderer to mask and scale it consistently everywhere.
+macOS 26 introduced a new layered icon renderer (the same "Liquid Glass"
+system Icon Composer's `.icon` format targets, with real background/
+foreground layer separation, shadow, and translucency) for an app's *live*
+Dock tile — the one shown for a running app, including its bounce/indicator
+behavior. A flat `ic10` PNG has none of the layer/margin metadata that
+renderer expects, so it falls back to treating the entire flat image as
+foreground content and scales it up to fill the tile the same way a
+properly-layered icon's smaller foreground layer would — visibly larger
+than an icon that actually carries that metadata. The idle/not-running Dock
+tile and Launchpad go through a different, older rendering path that has no
+such expectation, which is why the same file looked correct there and wrong
+only once running — this is what made the bug easy to miss during the
+92%-padding fix above, which was only ever checked against the idle Dock
+icon.
+
+**The fix reverses the previous section's `ictool`-flattening conclusion**:
+that section rejected `actool` because compiling a bare `AppIcon.icon`
+dropped into an empty `.xcassets` produced no output. The missing piece was
+two required flags: `actool --compile <output-dir> --platform macosx
+--minimum-deployment-target 13.0 --app-icon miditrack
+--output-partial-info-plist <path> images/miditrack.icon` — passed a
+`.icon` bundle directly (no `.xcassets` wrapper needed) with `--app-icon`
+naming it and `--output-partial-info-plist` pointed at any writable path
+(`actool` refuses to compile app icons at all without it, but the file's
+contents are unused here since `Info.plist` already declares
+`CFBundleIconFile`/`CFBundleIconName` directly) — this compiles both a
+modern layered `Assets.car` (used by the macOS 26 Dock/Liquid Glass
+renderer while running) and a fallback `miditrack.icns` (used by every
+older renderer: idle Dock, Launchpad, Finder, older macOS) from the same
+`.icon` source, confirmed against this machine's actual Xcode 26.6/macOS
+26.6.2 toolchain. Full Xcode is still required (`actool` ships with the
+Command Line Tools, but compiling a `.icon` bundle specifically needs the
+Xcode 26+ toolchain's `actool`, not an older one) — no new dependency
+beyond what Icon Composer editing itself already required.
+
+`scripts/build_app_bundle.sh`'s icon step is now:
 
 ```
-"$(dirname "$(dirname "$(xcode-select -p)")")/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
-  images/miditrack.icon --export-image --output-file images/miditrack_icon.png \
-  --platform macOS --rendition Default --width 1024 --height 1024 --scale 1
+icon_source="$repo_dir/images/miditrack.icon"
+xcrun actool --compile "$bundle_contents/Resources" \
+  --platform macosx --minimum-deployment-target 13.0 \
+  --app-icon miditrack \
+  --output-partial-info-plist "$work_dir/icon-partial-info.plist" \
+  "$icon_source" >/dev/null
 ```
 
-`ictool` requires the full Xcode.app (Icon Composer.app ships inside
-`Xcode.app/Contents/Applications`, not with the Command Line Tools alone),
-so this step is not part of `scripts/build_app_bundle.sh` and does not add a
-new build-time dependency — only a `git commit`-time one, exactly like the
-`magick`-based regeneration it replaces. `actool`, the asset-catalog compiler
-that would normally compile a `.icon` bundle inside an `.xcassets` into a
-modern layered `Assets.car` icon, was tried first and rejected: compiling a
-standalone `AppIcon.icon` dropped directly into a bare `.xcassets` produced
-no error but also no `Assets.car`/icns output at all (confirmed by inspecting
-`actool --compile`'s output directory directly) — full Liquid Glass icon
-support needs the whole Xcode project build system, not a raw CLI
-invocation, so `ictool`'s flattened-PNG export remains the practical bridge
-into this project's existing single-`ic10` ICNS pipeline.
+replacing the entire hand-built ICNS-header byte-assembly block. The
+Info.plist heredoc gained `<key>CFBundleIconName</key><string>miditrack</string>`
+alongside the pre-existing `CFBundleIconFile` — `CFBundleIconName` is what
+tells the modern renderer which named icon inside `Assets.car` to use;
+without it, `actool`'s own partial-Info.plist output (unused here, but
+confirmed via a real compile) shows both keys are expected together.
+`images/miditrack_icon.png` is no longer read by `build_app_bundle.sh` at
+all — it is not deleted, since it still backs `images/miditrack_lead.png`'s
+sibling documentation usage and README imagery, but it plays no further
+role in the actual app bundle. `tests/test_build_app_bundle.py`'s
+`test_compiles_the_icon_composer_asset_with_actool` (renamed from
+`test_embeds_only_the_1024px_icon_representation`) locks the new
+`actool --compile`/`--app-icon`/`--output-partial-info-plist` invocation and
+the `CFBundleIconName` key instead of the old `ic10`/manual-header
+assertions.
+
+**Verified two ways.** First, `xcrun actool --compile` was run directly
+against `images/miditrack.icon` with the flags above, confirmed to produce
+a non-trivial `Assets.car` (~3.2MB) and a valid fallback `miditrack.icns`
+(~90KB) with no errors, at both `--minimum-deployment-target 13.0` (this
+app's actual `LSMinimumSystemVersion`) and `15.0`. Second, and more
+directly: a minimal standalone test app (`IconPreview.app` — a trivial
+compiled Swift/AppKit executable, ad hoc signed, with only this icon
+pipeline's output copied into its own `Resources/` and `CFBundleIconName`
+set) was launched via `open`, and the user confirmed by eye that its
+running Dock tile now renders at the same size as neighboring apps, where
+the old single-`ic10` approach reproduced the original over-scaled bug when
+tested the same way. Re-run `install.sh` (or `scripts/release_app.sh`) to
+regenerate `~/Applications/miditrack.app` with this fix; no code outside
+`build_app_bundle.sh` and its `Info.plist` heredoc needed to change.
 
 `scripts/build_app_bundle.sh` is the only app-payload assembler. Both
 `install.sh` and `scripts/release_app.sh` call it, so a locally tested app is

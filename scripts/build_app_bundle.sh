@@ -98,6 +98,7 @@ cat > "$bundle_contents/Info.plist" <<PLIST
 <key>CFBundleIdentifier</key><string>com.nihondo.miditrack</string>
 <key>CFBundleExecutable</key><string>miditrack</string>
 <key>CFBundleIconFile</key><string>miditrack</string>
+<key>CFBundleIconName</key><string>miditrack</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>$version</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -123,20 +124,16 @@ cat > "$bundle_contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-# Embed only the 1024px source (the ICNS `ic10` representation). Finder then
-# scales the same artwork for compact list views instead of selecting a
-# separately downsampled representation with a visible light frame.
-icon_source="$repo_dir/images/miditrack_icon.png"
-icon_output="$bundle_contents/Resources/miditrack.icns"
-icon_png_bytes="$(stat -f %z "$icon_source")"
-icon_total_bytes=$((icon_png_bytes + 16))
-{
-  printf 'icns'
-  printf '%08x' "$icon_total_bytes" | /usr/bin/xxd -r -p
-  printf 'ic10'
-  printf '%08x' $((icon_png_bytes + 8)) | /usr/bin/xxd -r -p
-  cat "$icon_source"
-} > "$icon_output"
+# Compile the Icon Composer asset into Assets.car (+ a fallback .icns).
+# A hand-embedded flat 1024px PNG (the old approach) has no inner padding, so
+# macOS 26's Dock over-scales it while the app is running; the .icon package
+# carries the correct padding/shadow/gradient layers for that renderer.
+icon_source="$repo_dir/images/miditrack.icon"
+xcrun actool --compile "$bundle_contents/Resources" \
+  --platform macosx --minimum-deployment-target 13.0 \
+  --app-icon miditrack \
+  --output-partial-info-plist "$work_dir/icon-partial-info.plist" \
+  "$icon_source" >/dev/null
 
 git_commit="$(git -C "$repo_dir" rev-parse HEAD)"
 python_lock_hash="$(shasum -a 256 "$repo_dir/miditrack/uv.lock" | awk '{print $1}')"

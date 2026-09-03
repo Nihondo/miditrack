@@ -62,31 +62,25 @@ class TestBuildAppBundlePlist(unittest.TestCase):
         self.assertIn('"$candidate" == "$bundle_contents/Helpers/node"', bundle_script)
         self.assertIn('--entitlements "$node_entitlements"', bundle_script)
 
-    def test_embeds_only_the_1024px_icon_representation(self) -> None:
-        icon_source = self.repository_root / "images/miditrack_icon.png"
+    def test_compiles_the_icon_composer_asset_with_actool(self) -> None:
+        icon_source = self.repository_root / "images/miditrack.icon"
         splash_source = self.repository_root / "miditrack/src/miditrack/web_assets/miditrack_lead.png"
         documentation_splash = self.repository_root / "images/miditrack_lead.png"
+        self.assertTrue(icon_source.is_dir())
         self.assertTrue(splash_source.is_file())
         self.assertEqual(splash_source.read_bytes(), documentation_splash.read_bytes())
         self.assertFalse(
             (self.repository_root / "miditrack/src/miditrack/web_assets/miditrack_icon.png").exists()
         )
-        result = subprocess.run(
-            ["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(icon_source)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("pixelWidth: 1024", result.stdout)
-        self.assertIn("pixelHeight: 1024", result.stdout)
 
         bundle_script = (self.repository_root / "scripts/build_app_bundle.sh").read_text(encoding="utf-8")
-        self.assertIn('icon_source="$repo_dir/images/miditrack_icon.png"', bundle_script)
-        self.assertIn("printf 'ic10'", bundle_script)
-        self.assertIn('printf \'%08x\' "$icon_total_bytes"', bundle_script)
+        self.assertIn('icon_source="$repo_dir/images/miditrack.icon"', bundle_script)
+        self.assertIn("xcrun actool --compile", bundle_script)
+        self.assertIn("--app-icon miditrack", bundle_script)
+        self.assertIn("--output-partial-info-plist", bundle_script)
+        self.assertIn("<key>CFBundleIconName</key><string>miditrack</string>", bundle_script)
         self.assertNotIn("iconutil --convert icns", bundle_script)
-        self.assertNotIn('sips -z "$size"', bundle_script)
+        self.assertNotIn("printf 'ic10'", bundle_script)
         self.assertNotIn('rsync -a "$repo_dir/images/"', bundle_script)
 
 
