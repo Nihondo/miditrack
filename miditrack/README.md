@@ -15,9 +15,7 @@ This document is for contributors and maintainers of the `miditrack` package. Fo
 
 ```bash
 cd miditrack
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e .
+uv sync --locked --extra build
 ```
 
 Run the application through the wrapper:
@@ -26,7 +24,7 @@ Run the application through the wrapper:
 ./miditrack.sh --no-browser
 ```
 
-The wrapper resolves its own location, always uses this package's `.venv`, preserves the caller's working directory, and forwards all arguments. Do not replace it with an implicit system-Python fallback.
+The wrapper resolves its own location. In an app bundle it starts the bundled PyInstaller backend; in a checkout it uses this package's `.venv`, preserves the caller's working directory, and forwards all arguments. Do not replace either mode with an implicit system-Python fallback.
 
 ### External tools for local development
 
@@ -86,30 +84,53 @@ An override that is set but unusable must fail clearly rather than silently fall
 
 `render.py`, `convert.py`, and `rubberband.py` must pass argv arrays to subprocesses with no shell. Repository paths may contain spaces or shell metacharacters.
 
-`midi2wav.sh` derives the repository root from its own path so its bundled SoundFont directory remains `<repository>/soundfonts` after the script's move into `miditrack/`.
+SoundFont lookup must never use `<repository>/soundfonts`. Its stable order is `~/Library/Audio/Sounds/Banks`, `/Library/Audio/Sounds/Banks`, `/opt/homebrew/share/soundfonts`, and `/opt/homebrew/share/fluid-synth/sf2`; the explicit CLI option and `MIDI2WAV_SOUNDFONT` remain higher priority.
 
 ### Local security model
 
 The server binds locally and uses a launch-scoped token for API requests. Treat uploads as local-user inputs, but keep ZIP extraction limits and path validation intact. Do not expose a route that allows arbitrary filesystem reads or a shell command string.
 
-`~/Applications/miditrack.app` keeps normal per-launch token authentication (it does not pass `--no-token`). `miditrack_app.swift` starts the backend itself (via `Process()`, after its window is shown — see `miditrack/CLAUDE.md` for why the timing matters) and pipes its stdout, parsing the `miditrack Web UI: http://127.0.0.1:PORT/?token=...` startup line and loading that URL directly into its `WKWebView` — the token never leaves the parent-child pipe or reaches an external browser. `/api/audio`'s query-string token fallback remains the only exception to header-based auth.
+`~/Applications/miditrack.app` keeps normal per-launch token authentication (it does not pass `--no-token`). `miditrack_app.swift` resolves all runtime assets from `Bundle.main`, supplies `MIDITRACK_RESOURCE_ROOT` and `MIDITRACK_NODE_BIN`, and starts the PyInstaller backend with `Process()`. It displays the lead-image splash for at least one second and switches to the WebKit window only after the backend emits `miditrack Web UI: http://127.0.0.1:PORT/?token=...`. The token never reaches an external browser. `/api/audio`'s query-string token fallback remains the only exception to header-based auth.
 
 ## Versioning
 
-`src/miditrack/__init__.py`'s `__version__` is the single source of truth for the package version. `pyproject.toml` declares `dynamic = ["version"]` and resolves it from that same attribute (`[tool.setuptools.dynamic]`), so it never needs a separate manual edit. `install.sh` reads `__version__` at install time and writes it into `~/Applications/miditrack.app`'s `Info.plist` as both `CFBundleShortVersionString` and `CFBundleVersion`.
+`src/miditrack/__init__.py`'s `__version__` is the single source of truth for the package version. `pyproject.toml` declares `dynamic = ["version"]` and resolves it from that same attribute (`[tool.setuptools.dynamic]`). `scripts/build_app_bundle.sh` writes it into the app `Info.plist` as both `CFBundleShortVersionString` and `CFBundleVersion`.
 
 To bump the version:
 
 1. Update `__version__` in `src/miditrack/__init__.py`.
 2. Re-run `pip install -e .` (or any build) if you need the installed package metadata to reflect it immediately.
-3. Re-run the repository's `install.sh` if you need `~/Applications/miditrack.app`'s bundle version to reflect it.
+3. Run `scripts/build_app_bundle.sh --output /tmp/miditrack.app` and test that exact app before signing it for distribution.
+
+## Release signing and notarization
+
+The release script reads signing settings from the Git-ignored
+`scripts/release_credentials.sh`. Create it from the tracked template, then
+set the Developer ID Application certificate name and the existing
+`notarytool` Keychain profile name:
+
+```bash
+cp scripts/release_credentials.sh.example scripts/release_credentials.sh
+open -e scripts/release_credentials.sh
+scripts/release_app.sh --notarize
+```
+
+`scripts/release_app.sh` alone (no `--notarize`) only builds and signs
+`dist/miditrack.app`; it never submits to Apple or requires
+`MIDITRACK_NOTARY_PROFILE`. Pass `--notarize` only when producing an actual
+distributable build.
+
+Do not put an Apple ID password, App Store Connect private key, or any other
+secret in the file. The notary profile itself belongs in the Keychain. To use
+a credentials file at another location, set `MIDITRACK_RELEASE_CONFIG` to its
+path before running the release script.
 
 ## Verification
 
 Run the Python suite from the repository root:
 
 ```bash
-miditrack/.venv/bin/python -m pytest -q miditrack/tests
+cd miditrack && PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
 ```
 
 Before submitting a renderer or wrapper change, also check:
@@ -119,6 +140,9 @@ bash -n miditrack/midi2wav.sh
 miditrack/midi2wav.sh --help
 xcrun swiftc -typecheck miditrack/miditrack_app.swift
 plutil -lint "$HOME/Applications/miditrack.app/Contents/Info.plist"
+scripts/build_app_bundle.sh --output /tmp/miditrack.app
+codesign --verify --deep --strict /tmp/miditrack.app
+scripts/release_app.sh # builds and signs only; no --notarize, so this never submits to Apple
 ```
 
 When a change crosses a converter boundary, build and test the affected converter as well:

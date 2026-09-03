@@ -36,15 +36,11 @@ resolve_real_path() {
     printf '%s/%s\n' "$source_dir" "$(basename "$source_path")"
 }
 
-SCRIPT_PATH="$(resolve_real_path "${BASH_SOURCE[0]}")"
-PROJECT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")/.." >/dev/null 2>&1 && pwd)"
-
 # === デフォルトの SoundFont 探索先（先に見つかったものを優先） ===
 DEFAULT_SOUNDFONT_DIRS=(
-    "$PROJECT_DIR/soundfonts"
     "$HOME/Library/Audio/Sounds/Banks"
-    "/opt/homebrew/share/soundfonts"
     "/Library/Audio/Sounds/Banks"
+    "/opt/homebrew/share/soundfonts"
     "/opt/homebrew/share/fluid-synth/sf2"
 )
 
@@ -88,10 +84,9 @@ SoundFont の解決順:
   4. 探索ディレクトリ（既定は下記、-d 指定時は置換）を順に見て最初に見つかった *.sf2/*.sf3
 
 既定の探索ディレクトリ:
-  <プロジェクトルート>/soundfonts（外部SoundFontはこの下にシンボリックリンクとして配置する）
   ~/Library/Audio/Sounds/Banks
-  /opt/homebrew/share/soundfonts
   /Library/Audio/Sounds/Banks
+  /opt/homebrew/share/soundfonts
   /opt/homebrew/share/fluid-synth/sf2
 
 例:

@@ -4342,3 +4342,40 @@ icon-generation block re-run directly) to pick up the new source PNG; this
 session's own sandbox permissions didn't allow writing there, so it wasn't
 regenerated as part of this change — verify the actual Dock appearance
 before considering this closed.
+
+## Distribution bundle invariant (2026-09)
+
+`scripts/build_app_bundle.sh` is the only app-payload assembler. Both
+`install.sh` and `scripts/release_app.sh` call it, so a locally tested app is
+the same payload that is later signed and notarized. The bundle must contain
+only `Resources/project`, the PyInstaller backend, Node 24, and the helper
+binaries; do not copy `.git`, a development virtual environment, caches, or
+build directories.
+
+All app runtime paths originate at `Bundle.main`: Swift supplies
+`MIDITRACK_RESOURCE_ROOT` and `MIDITRACK_NODE_BIN`, then Python resolves
+project resources and Node from those explicit values. Never restore a
+compile-time repository path (`#filePath`) or `<repository>/soundfonts`.
+SoundFonts belong in the user's Audio Sound Banks directory, and Homebrew is
+only for FluidSynth, ffmpeg, and Rubber Band.
+
+The splash window must be displayed before the backend starts, remain visible
+for at least one second, and only transition once the backend startup URL is
+received. Release signing is inside-out with the Developer ID identity,
+followed by the outer app signature with hardened runtime and timestamp;
+notarization staples that same tested app rather than rebuilding it.
+
+`scripts/release_app.sh` sources the Git-ignored
+`scripts/release_credentials.sh` before it reads `MIDITRACK_SIGNING_IDENTITY`
+and `MIDITRACK_NOTARY_PROFILE`. The tracked `.example` file documents the two
+non-secret identifiers. Never commit credentials, Apple ID passwords, or App
+Store Connect private keys; the notary credential remains in the Keychain.
+`MIDITRACK_RELEASE_CONFIG` may select an alternative local shell file for CI
+or a separate signing machine.
+
+Notarization is opt-in via `--notarize`. Without it, `release_app.sh` only
+builds and signs `dist/miditrack.app` and does not require
+`MIDITRACK_NOTARY_PROFILE` — this is what the README's "before submitting a
+change" checklist runs, so a routine sanity check never submits a real
+notarization request. Only `--notarize` runs `notarytool submit --wait`,
+staples, and archives.

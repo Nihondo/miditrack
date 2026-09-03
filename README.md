@@ -1,6 +1,6 @@
 # miditrack
 
-Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or VGM (`.vgm`/`.vgz`) — into editable MIDI and listen to the result in your browser. Everyday use needs no terminal after the one-time setup.
+Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.vgm`/`.vgz`) — into editable MIDI and listen to the result in your browser. Everyday use needs no terminal after the one-time setup.
 
 `miditrack` runs only on your Mac. Your source files, MIDI, and rendered audio stay local.
 
@@ -8,29 +8,33 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
 
 ## Quick Start
 
-1. On an Apple Silicon Mac, clone or download this repository and enter its directory.
+1. On an Apple Silicon Mac, download the latest `miditrack-*-macos-arm64.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
+
+2. Install the runtime dependencies through [Homebrew](https://brew.sh/). If Homebrew itself is not installed yet, install it first.
 
    ```bash
-   git clone https://github.com/Nihondo/miditrack.git
-   cd miditrack
+   # If Homebrew is not installed yet:
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+   brew install fluid-synth ffmpeg rubberband
    ```
 
-2. Run the installer. It installs Python, FluidSynth, Node.js, ffmpeg, Rubber Band, the Python virtual environment, and the VGM runtime dependencies.
+   - **FluidSynth** — used to render MIDI to WAV
+   - **ffmpeg** — used to mix WAVs together
+   - **Rubber Band** — used to change the original audio's speed/pitch
+
+3. Put a General MIDI SoundFont (`.sf2`/`.sf3`) in your user Sound Banks directory. SoundFonts are never bundled or downloaded with the app.
 
    ```bash
-   ./install.sh
+   mkdir -p ~/Library/Audio/Sounds/Banks
+   cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
-3. FluidSynth's standard SoundFont is used immediately for auditioning and WAV export. To use a custom General MIDI SoundFont (`.sf2`/`.sf3`), place it in `soundfonts/`.
-
-   ```bash
-   mkdir -p soundfonts
-   cp /path/to/GeneralMIDI.sf2 soundfonts/
-   ```
-
-4. The installer also creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
+4. Double-click `miditrack.app`, or drag it to the Dock — it opens its own window with the whole app inside, so no separate browser tab is needed. See [Launching miditrack from the Dock](#launching-miditrack-from-the-dock) below for details, or [Command-line options](#command-line-options) to start it from a terminal instead.
 
 5. Drop a supported source file or a `.mid` file onto the upload area, edit it, audition it, then download MIDI or WAV.
+
+Building from source instead is also available for contributors — see [miditrack/README.md](miditrack/README.md).
 
 ## What You Can Do
 
@@ -48,34 +52,33 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`/`.rsn`), or V
 |---|---|---|
 | **miditrack** | Browser-based conversion, editing, auditioning, and export | Recommended for everyday work |
 | **nsf2midi** | NES/Famicom `.nsf`/`.nsfe` to MIDI | Direct CLI or bundled conversion |
-| **spc2midi** | SNES `.spc`/`.spc2`/`.rsn` to MIDI and optional game SoundFont | Direct CLI or bundled conversion |
+| **spc2midi** | SNES `.spc`/`.spc2` to MIDI and optional game SoundFont | Direct CLI or bundled conversion |
 | **vgm2midi** | VGM/VGZ command logs to MIDI | Direct CLI or bundled conversion |
 | **miditrack/midi2wav.sh** | MIDI to WAV through FluidSynth | Used by miditrack or directly from a terminal |
 
 ## Requirements
 
-- Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial package download
-- Run `./install.sh` to install Python 3.10+, [FluidSynth](https://www.fluidsynth.org/), Node.js, ffmpeg, and Rubber Band, then create the required Python and Node.js environments
-- FluidSynth's standard General MIDI SoundFont is used initially. To add a custom `.sf2`/`.sf3`, place it in `<repository>/soundfonts` (create that directory if it does not exist), or use another supported search directory:
-  - `<repository>/soundfonts`
+- Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial download
+- The [latest release build](https://github.com/Nihondo/miditrack/releases/latest) of `miditrack.app`, plus [FluidSynth](https://www.fluidsynth.org/), ffmpeg, and Rubber Band installed through Homebrew (`brew install fluid-synth ffmpeg rubberband`)
+- Put a custom `.sf2`/`.sf3` in one of these search directories (the first is recommended):
   - `~/Library/Audio/Sounds/Banks`
-  - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
+  - `/opt/homebrew/share/soundfonts`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
-The installer processes Homebrew formulae one at a time. If a formula conflicts with an existing same-named formula from another tap, Homebrew's error remains visible and setup continues. It stops only if the required command is unavailable on `PATH` afterward.
-
-The converter binaries and the Apple Silicon native helper for Original VGM sound are bundled, so ordinary source conversion and Original VGM sound need no build step. ffmpeg and Rubber Band are included in the standard installer for real-audio stem mixing, per-track export, and speed/pitch changes. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
+The converter binaries, the pinned Python and Node.js runtimes, and the Apple Silicon native helper for Original VGM sound are all bundled inside `miditrack.app`, so ordinary source conversion, Original VGM sound, real-audio stem mixing, per-track export, and speed/pitch changes need no build step. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
 
 ## Using miditrack
 
-Drop a source file or a `.mid` onto the upload area and work through the four numbered screens. **Save project** downloads a `.miditrack` archive with the editable MIDI, conversion settings, track choices, speed/pitch, loop, and preset. **Open project** restores that state without re-converting the source. Rendered audio and generated ZIPs are not stored in a project.
+Drop a source file or a `.mid` onto the upload area and work with the tracks and piano roll together on the single main screen. **Save project** downloads a `.miditrack` archive with the editable MIDI, conversion settings, track choices, speed/pitch, loop, and preset. **Open project** restores that state without re-converting the source. Rendered audio and generated ZIPs are not stored in a project.
 
-### Screen 1 · File Selection
+### File Selection
 
-![File Selection](images/miditrack_s01.png)
+![File Selection](images/miditrack_file.png)
 
-**Upload area** — Drag a file onto the dashed area, or click to open a file picker. Accepted: `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.rsn`, `.vgm`, `.vgz`, `.zip`, `.m3u`. Drop multiple source files, a ZIP rip pack, or a source file together with an `.m3u` playlist at once. ZIP uploads allow up to 200 files and 512 MiB extracted. A playlist loaded alongside a source file supplies song titles.
+Click **Open** in the header to reach this dialog — it also opens automatically before any file is loaded.
+
+**Upload area** — Drag a file onto the dashed area, or click to open a file picker. Accepted: `.mid`, `.midi`, `.nsf`, `.nsfe`, `.spc`, `.spc2`, `.vgm`, `.vgz`, `.zip`, `.m3u`. Drop multiple source files, a ZIP rip pack, or a source file together with an `.m3u` playlist at once. ZIP uploads allow up to 200 files and 512 MiB extracted. ZIPs can contain `.spc` and `.spc2`; a ZIP containing only unsupported files (including `.rsn`) reports that no supported source file was found.
 
 **File and song picker** — When the upload contains multiple convertible sources a file dropdown appears. If the format provides multiple songs (NSF, SPC rip packs) a song picker appears below it.
 
@@ -83,15 +86,17 @@ Drop a source file or a `.mid` onto the upload area and work through the four nu
 
 - **VGM/VGZ** — Loop count or duration (mutually exclusive). **Original game sound by default** pre-selects noise/DAC/rhythm tracks for chip rendering; any track can be changed after conversion. **OPN Ch3 Special to GM drums** maps YM2203/YM2608/YM2612 Ch3 Special operators to kick, snare, hi-hat, cymbal, and tom.
 - **NSF/NSFE** — Duration in seconds and optional PAL timing.
-- **SPC/SPC2/RSN** — Loop count.
+- **SPC/SPC2** — Loop count.
 
-Click **Convert to MIDI** to start. After conversion the remaining screens work identically to starting from an uploaded MIDI.
+Click **Convert to MIDI** to start. The dialog also offers **Open project** and **Save project**. After conversion it closes and the main screen below shows the result.
 
-### Screen 2 · Tracks
+### Main Screen
 
-![Tracks](images/miditrack_s02.png)
+![Main Screen](images/miditrack_all.png)
 
-**Track list** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
+The track panel and the piano roll stay visible side-by-side at all times. Reopen the file dialog above from the header's **Open** button whenever you want to load or convert another file.
+
+**Track panel (left)** — Each row shows a colour swatch, track name, MIDI channel (CH), source toggle, instrument selector, mute, solo, and volume slider. Click **Track ▲** to sort alphabetically; click again to reverse. MIDI channel 10 (percussion) and multi-channel tracks cannot have their instrument changed.
 
 **SF / Original toggle** — **SF** plays the track through the selected General MIDI SoundFont and honours instrument assignments. **Original** uses a game-derived SoundFont for SPC, or hardware/chip rendering for NSF and VGM. Volume is still adjustable in Original mode. VGM rows sharing a physical hardware channel switch together; ambiguous shared channels are not set to Original automatically. **Cmd-click** (Ctrl-click on Windows/Linux) applies the same choice to every other track that offers the same option.
 
@@ -103,11 +108,7 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **SoundFont** — Select a `.sf2`/`.sf3` from those found in the standard search directories. **Fast** (22.05 kHz) renders quickly for auditioning; **Quality** (44.1 kHz) matches the WAV download.
 
-### Screen 3 · Audition
-
-![Audition](images/miditrack_s03.png)
-
-**Transport** — ◀◀ and ▶▶ step by 5 s per click, ⏮ returns to the start, and ▶/⏸ plays or pauses. Keyboard shortcuts are also available: Space toggles play/pause; Left/Right arrows seek ±1 s; Shift + Left/Right arrows seek ±5 s; Page Up/Page Down seek ±10 s; Home jumps to the start; End jumps to the end; and Cmd+← jumps to the start. The timer shows the current position over the total duration.
+**Transport (right, top)** — ◀◀ and ▶▶ step by 5 s per click, ⏮ returns to the start, and ▶/⏸ plays or pauses. Keyboard shortcuts are also available: Space toggles play/pause; Left/Right arrows seek ±1 s; Shift + Left/Right arrows seek ±5 s; Page Up/Page Down seek ±10 s; Home jumps to the start; End jumps to the end; and Cmd+← jumps to the start. The timer shows the current position over the total duration.
 
 **Speed** — Playback rate from 0.1× to 10×. Applies to all subsequent renders and the WAV download.
 
@@ -115,17 +116,13 @@ Click **Convert to MIDI** to start. After conversion the remaining screens work 
 
 **Volume** — Master level for the session.
 
-**Piano roll** — Displays all tracks as coloured note bars on a vertical keyboard. Scroll to navigate; pinch or use the scroll wheel to zoom. Click to seek.
+**Piano roll (right)** — Displays all tracks as coloured note bars on a vertical keyboard. Scroll to navigate; pinch or use the scroll wheel to zoom. Click to seek.
 
 **Pitch bend lane** — Shows pitch bend data for each track below the note area.
 
 Rendering starts automatically after edits and completed renders are cached for the session. A short delay after the last change updates the preview. If you begin playback while a fresh render is still needed, miditrack can first play a short segment around the current position, then crossfade to the exact full-length WAV when it is ready. Original chip-audio tracks are prepared in the background after conversion so they can join that short preview once ready; the spinner remains visible while the full WAV is still being finished.
 
-### Screen 4 · Output
-
-![Output](images/miditrack_s04.png)
-
-**Download MIDI / WAV** — Download MIDI saves the edited file with current instrument assignments. Download WAV produces a 44.1 kHz stereo WAV using the current track settings, speed, and pitch. Edit the **filename** field before downloading to set the base name.
+**Download MIDI / WAV (bottom)** — Download MIDI saves the edited file with current instrument assignments. Download WAV produces a 44.1 kHz stereo WAV using the current track settings, speed, and pitch. Edit the **filename** field before downloading to set the base name.
 
 **Generate variations in bulk** — Enter comma-separated speed multipliers and semitone values, then click **Download variations as ZIP**. Check **Include MIDI in ZIP** to add the corresponding MIDI file for each combination. Accepts up to 6 speeds, 8 transposes, and 15 total combinations. The audition speed and pitch settings are not changed.
 
@@ -133,29 +130,17 @@ Rendering starts automatically after edits and completed renders are cached for 
 
 Changing a SoundFont, a track setting, or the filename invalidates previously generated variation and per-track ZIPs; regenerate them after the change.
 
-### Full-Screen Mode
-
-![Full-screen mode](images/miditrack_full.png)
-
-Full-screen mode shows the track panel and the piano roll side-by-side on a single screen. Click **Full screen** in the header to enter; click **Exit full screen** to leave.
-
-**Track panel (left)** — The same controls as Screen 2: source toggle, instrument, mute, solo, and volume per track. Ensemble presets and the SoundFont selector are anchored at the bottom of the panel.
-
-**Piano roll (right)** — Identical to Screen 3. The transport bar and speed/pitch controls appear at the top.
-
-**Output bar (bottom)** — MIDI and WAV download buttons and the output options panel replace the separate Screen 4.
-
 ### Display Settings
 
 ![Display Settings](images/miditrack_ss.png)
 
-Open the display settings panel from any screen. Changes take effect immediately and are preserved across restarts.
+Open the display settings panel from the header's gear icon. Changes take effect immediately and are preserved across restarts.
 
 **Theme** — **Global display** sets the colour scheme: follow the system setting, light, or dark.
 
 **Piano roll**
 - *Round note corners*, *Add note outline*, *Show grid lines*, *Show keyboard* — toggle each element individually.
-- *Height* — Sets the piano roll height in the step-by-step layout. In full-screen mode the roll always fills the window height.
+- *Height* — Sets the piano roll height. On the app version the roll always fills the window height regardless of this setting.
 - *Background colour* / *Grid line colour* — Pick a custom colour or reset to the theme default.
 - *Track colour scheme* — Controls the saturation of the per-track note colours.
 - *Vertical grid divisions* — Number of subdivisions per beat.
@@ -169,6 +154,12 @@ Open the display settings panel from any screen. Changes take effect immediately
 - `.m3u` title matching is best-effort. A stale or mismatched playlist leaves song titles unchanged instead of failing.
 
 ### Command-line options
+
+Run it directly from the app bundle, or create a `miditrack` command once:
+
+```bash
+ln -s ~/Applications/miditrack.app/Contents/Resources/project/miditrack/miditrack.sh /opt/homebrew/bin/miditrack
+```
 
 ```text
 miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browser]
@@ -185,7 +176,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 
 ### Launching miditrack from the Dock
 
-`install.sh` creates `~/Applications/miditrack.app`. Double-click it, or drag it to the Dock — it's a normal Dock app, not a background helper. It starts its own backend server and shows the whole UI inside its own window, so no separate browser tab ever opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time, so nothing keeps running once you're done. The first launch takes a few seconds to appear while the app itself compiles and the backend starts, both in the background.
+`miditrack.app`, once moved to `~/Applications`, is a normal Dock app, not a background helper. Double-click it, or drag it to the Dock. It shows a startup image for at least one second while the bundled backend starts, then displays the whole UI in its own window. No separate browser tab opens. Closing the window (or pressing Cmd+Q) quits the backend at the same time.
 
 Downloads (MIDI, WAV, ZIP, `.miditrack` projects) prompt for a save location, the same as a browser's "Save As."
 
@@ -219,8 +210,8 @@ See [nsf2midi/README.md](nsf2midi/README.md) for MDF instrument definitions, PAL
 ### spc2midi
 
 ```bash
-spc2midi song.rsn song.mid
-spc2midi -s 12 --sf2 song.rsn song.mid
+spc2midi song.spc song.mid
+spc2midi --sf2 song.spc song.mid
 ```
 
 See [spc2midi/README.md](spc2midi/README.md) for SoundFont/DLS export and loop handling.
@@ -273,7 +264,7 @@ only when comparing output with FluidSynth's eager-loading behaviour.
 |---|---|
 | miditrack | MIT |
 | nsf2midi | GPL-2.0-or-later |
-| spc2midi | zlib, with an LGPL-3.0 component in VGMTrans |
-| vgm2midi | MIT |
+| spc2midi | zlib |
+| vgm2midi | MIT (its bundled native helper, `vgm2midi_stems`, statically links [libvgm](https://github.com/ValleyBell/libvgm) and is GPL-2.0-or-later as a whole — see `vgm2midi/NOTICE.md`) |
 
 See each subproject's `README.md`, `LICENSE`, or `NOTICE.md` for full licensing and attribution.

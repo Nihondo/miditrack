@@ -12,6 +12,7 @@ import hashlib
 import itertools
 import json
 import math
+import os
 import re
 import secrets
 import shutil
@@ -48,8 +49,18 @@ from .errors import (
 from .gm import DEFAULT_GM_PROGRAM, instrument_catalog
 from .midi import TrackInfo
 
-ASSET_DIR = Path(__file__).with_name("web_assets")
-# .rsn/.vgz等の音源ファイルは.midより桁違いに大きくなりうるため32MBから引き上げてある。
+def resolve_asset_directory() -> Path:
+    """アプリバンドルまたは開発パッケージのWebアセットを解決する。"""
+    resource_root = os.environ.get("MIDITRACK_RESOURCE_ROOT")
+    if resource_root:
+        bundled_assets = Path(resource_root) / "miditrack/src/miditrack/web_assets"
+        if bundled_assets.is_dir():
+            return bundled_assets
+    return Path(__file__).with_name("web_assets")
+
+
+ASSET_DIR = resolve_asset_directory()
+# .vgz等の音源ファイルは.midより桁違いに大きくなりうるため32MBから引き上げてある。
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_PROJECT_UPLOAD_BYTES = 512 * 1024 * 1024
 ALLOWED_MIDI_EXTENSIONS = (".mid", ".midi")
@@ -268,7 +279,7 @@ class WebSession:
     # game_soundfont_path とは直交する軸: こちらは「音色を手動指定したトラックを
     # 鳴らすGMバンク」の意味を持つ。
     soundfont_override: Path | None = None
-    # 音源ファイル（.nsf/.spc/.rsn/.vgm等）由来のセッション情報。.midを直接読んだ
+    # 音源ファイル（.nsf/.spc/.vgm等）由来のセッション情報。.midを直接読んだ
     # ときはNoneのまま。root/soundfont_overrideと違い、clear()で必ず消える。
     source_path: Path | None = None
     source_name: str = ""

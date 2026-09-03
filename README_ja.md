@@ -1,6 +1,6 @@
 # miditrack
 
-NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`）のチップチューンを編集可能なMIDIに変換し、ブラウザで試聴できます。一度セットアップすれば、普段の利用にターミナルは必要ありません。
+NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）のチップチューンを編集可能なMIDIに変換し、ブラウザで試聴できます。一度セットアップすれば、普段の利用にターミナルは必要ありません。
 
 `miditrack`はMac上だけで動作します。音源ファイル、MIDI、レンダリングした音声はすべてローカルに残ります。
 
@@ -8,29 +8,33 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 ## クイックスタート
 
-1. Apple Silicon Macでこのリポジトリをcloneまたはダウンロードし、ディレクトリへ移動します。
+1. Apple Silicon Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack-*-macos-arm64.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
+
+2. Homebrewでランタイム依存を導入します。Homebrewが未導入の場合は先にインストールしてください。
 
    ```bash
-   git clone https://github.com/Nihondo/miditrack.git
-   cd miditrack
+   # Homebrewが未導入の場合:
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+   brew install fluid-synth ffmpeg rubberband
    ```
 
-2. インストーラを実行します。Python、FluidSynth、Node.js、ffmpeg、Rubber Band、Python仮想環境、VGM実行時依存を導入します。
+   - **FluidSynth** — MIDIをWAVへレンダリングするのに使用
+   - **ffmpeg** — WAVのミックスに使用
+   - **Rubber Band** — 原曲の速度・ピッチ変更に使用
+
+3. General MIDI SoundFont（`.sf2`/`.sf3`）をユーザーのSound Banksディレクトリへ配置します。SoundFontはアプリに同梱・ダウンロードされません。
 
    ```bash
-   ./install.sh
+   mkdir -p ~/Library/Audio/Sounds/Banks
+   cp /path/to/GeneralMIDI.sf2 ~/Library/Audio/Sounds/Banks/
    ```
 
-3. 試聴とWAV出力は、初期状態でFluidSynth標準のSoundFontを使えます。カスタムのGeneral MIDI SoundFont（`.sf2`/`.sf3`）を使う場合は、`soundfonts/`へ配置します。
-
-   ```bash
-   mkdir -p soundfonts
-   cp /path/to/GeneralMIDI.sf2 soundfonts/
-   ```
-
-4. インストーラは`~/Applications/miditrack.app`も作成します。ダブルクリックするか、Dockへドラッグして起動してください——アプリ全体が専用のウィンドウの中で完結するため、別途ブラウザタブが開くことはありません。詳細は後述の[Dockからmiditrackを起動する](#dockからmiditrackを起動する)を、ターミナルから起動したい場合は[コマンドラインオプション](#コマンドラインオプション)を参照してください。
+4. `miditrack.app`をダブルクリックするか、Dockへドラッグして起動してください——アプリ全体が専用のウィンドウの中で完結するため、別途ブラウザタブが開くことはありません。詳細は後述の[Dockからmiditrackを起動する](#dockからmiditrackを起動する)を、ターミナルから起動したい場合は[コマンドラインオプション](#コマンドラインオプション)を参照してください。
 
 5. 対応する音源ファイルまたは`.mid`ファイルをアップロード枠へ置き、編集・試聴してからMIDIまたはWAVをダウンロードします。
+
+ソースからビルドする方法はコントリビューター向けに別途用意しています——[miditrack/README_ja.md](miditrack/README_ja.md)を参照してください。
 
 ## できること
 
@@ -48,34 +52,33 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 |---|---|---|
 | **miditrack** | ブラウザでの変換、編集、試聴、出力 | 普段の利用に推奨 |
 | **nsf2midi** | NES／ファミコンの`.nsf`/`.nsfe`をMIDIへ変換 | CLIから直接、またはmiditrackの変換 |
-| **spc2midi** | SNESの`.spc`/`.spc2`/`.rsn`をMIDIと任意のゲーム用SoundFontへ変換 | CLIから直接、またはmiditrackの変換 |
+| **spc2midi** | SNESの`.spc`/`.spc2`をMIDIと任意のゲーム用SoundFontへ変換 | CLIから直接、またはmiditrackの変換 |
 | **vgm2midi** | VGM/VGZのコマンドログをMIDIへ変換 | CLIから直接、またはmiditrackの変換 |
 | **miditrack/midi2wav.sh** | FluidSynthを使ってMIDIをWAVへ変換 | miditrackから使用、またはターミナルで直接実行 |
 
 ## 必要環境
 
-- Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回パッケージ取得用のインターネット接続
-- `./install.sh`でPython 3.10以上、[FluidSynth](https://www.fluidsynth.org/)、Node.js、ffmpeg、Rubber Bandを導入し、必要なPython／Node.js環境を作成
-- 初期状態ではFluidSynth標準のGeneral MIDI SoundFontを使います。カスタムの`.sf2`/`.sf3`を追加する場合は、`<リポジトリ>/soundfonts`（存在しなければ作成）または次の探索先へ配置します。
-  - `<リポジトリ>/soundfonts`
+- Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回ダウンロード用のインターネット接続
+- [最新のリリースビルド](https://github.com/Nihondo/miditrack/releases/latest)の`miditrack.app`、および[FluidSynth](https://www.fluidsynth.org/)・ffmpeg・Rubber Band（`brew install fluid-synth ffmpeg rubberband`でHomebrewから導入）
+- カスタムの`.sf2`/`.sf3`は次の探索先へ配置します（先頭を推奨）。
   - `~/Library/Audio/Sounds/Banks`
-  - `/opt/homebrew/share/soundfonts`
   - `/Library/Audio/Sounds/Banks`
+  - `/opt/homebrew/share/soundfonts`
   - `/opt/homebrew/share/fluid-synth/sf2`
 
-インストーラはHomebrewの式を1件ずつ処理します。同名の式が別tapに存在して競合した場合も、Homebrewのエラーは表示したままセットアップを続行します。最後に必要なコマンドが`PATH`上で見つからない場合だけ停止します。
-
-コンバーターのバイナリと、Apple Silicon向けVGM原曲音源のネイティブヘルパーは同梱されているため、通常の音源変換とVGM原曲音源にビルドは不要です。実音声ステムのミックス、トラック別出力、速度／ピッチ変更に必要なffmpegとRubber Bandも標準インストーラに含まれます。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
+コンバーターのバイナリ、固定バージョンのPython・Node.jsランタイム、Apple Silicon向けVGM原曲音源のネイティブヘルパーはすべて`miditrack.app`内に同梱されているため、通常の音源変換、VGM原曲音源、実音声ステムのミックス、トラック別出力、速度／ピッチ変更のいずれにもビルドは不要です。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
 
 ## miditrackの使い方
 
-音源ファイルまたは`.mid`をアップロード枠へ置き、4つの画面を順に操作します。**プロジェクトを保存**は編集可能なMIDI・変換設定・トラック選択・速度／ピッチ・ループ・プリセットを`.miditrack`アーカイブとしてダウンロードします。**プロジェクトを開く**はその状態を復元します。音源の再変換は不要です。レンダー済み音声と生成済みZIPは意図的にプロジェクトへ保存しません。
+音源ファイルまたは`.mid`をアップロード枠へ置き、トラックとピアノロールが1画面にまとまったメイン画面で編集します。**プロジェクトを保存**は編集可能なMIDI・変換設定・トラック選択・速度／ピッチ・ループ・プリセットを`.miditrack`アーカイブとしてダウンロードします。**プロジェクトを開く**はその状態を復元します。音源の再変換は不要です。レンダー済み音声と生成済みZIPは意図的にプロジェクトへ保存しません。
 
-### 画面1 · ファイル選択
+### ファイル選択
 
-![ファイル選択](images/miditrack_s01.png)
+![ファイル選択](images/miditrack_file.png)
 
-**アップロード枠** — 点線枠へファイルをドラッグするか、クリックしてファイルピッカーを開きます。対応形式: `.mid` / `.midi` / `.nsf` / `.nsfe` / `.spc` / `.spc2` / `.rsn` / `.vgm` / `.vgz` / `.zip` / `.m3u`。複数の音源ファイル、ZIPリップパック、音源と`.m3u`プレイリストをまとめてドロップできます。ZIPはファイル数200件まで、展開後512MiBまでです。`.m3u`プレイリストを音源と一緒に読み込むと曲名を取得できます。
+ヘッダーの**開く**をクリックするとこのダイアログが開きます。音源が未読み込みの場合は起動時に自動的に表示されます。
+
+**アップロード枠** — 点線枠へファイルをドラッグするか、クリックしてファイルピッカーを開きます。対応形式: `.mid` / `.midi` / `.nsf` / `.nsfe` / `.spc` / `.spc2` / `.vgm` / `.vgz` / `.zip` / `.m3u`。複数の音源ファイル、ZIPリップパック、音源と`.m3u`プレイリストをまとめてドロップできます。ZIPはファイル数200件まで、展開後512MiBまでです。ZIP内の`.spc`と`.spc2`は変換でき、`.rsn`だけなど対応ファイルがないZIPはその旨を表示します。
 
 **ファイル・曲のピッカー** — 変換可能な音源が複数ある場合はファイルのドロップダウンが表示されます。複数曲を含む形式（NSF、SPCリップパック）ではその下に曲ピッカーが表示されます。
 
@@ -83,15 +86,17 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 - **VGM/VGZ** — ループ回数または秒数（同時指定不可）。**原曲の音源（実機）を初期選択**はノイズ・DAC・リズム系トラックをチップレンダリングに設定します（変換後も個別に切り替え可能）。**OPN Ch3 SpecialをGMドラムに変換**はYM2203/YM2608/YM2612 Ch3 Specialオペレータをキック・スネア・ハイハット・シンバル・タムへ近似します。
 - **NSF/NSFE** — 秒数と任意のPALタイミング。
-- **SPC/SPC2/RSN** — ループ回数。
+- **SPC/SPC2** — ループ回数。
 
-**MIDIに変換**をクリックして変換を開始します。変換後はMIDIをアップロードした場合と同じように操作できます。
+**MIDIに変換**をクリックして変換を開始します。このダイアログから**プロジェクトを開く**・**プロジェクトを保存**も行えます。変換が完了するとダイアログが閉じ、下記のメイン画面に結果が表示されます。
 
-### 画面2 · トラック
+### メイン画面
 
-![トラック](images/miditrack_s02.png)
+![メイン画面](images/miditrack_all.png)
 
-**トラック一覧** — 各行にはカラースウォッチ、トラック名、MIDIチャンネル（CH）、音源トグル、楽器セレクター、ミュート、ソロ、音量スライダーが並びます。**トラック▲**をクリックするとアルファベット順に並べ替え、もう一度クリックすると逆順になります。MIDIチャンネル10（パーカッション）と複数チャンネルにまたがるトラックは楽器を変更できません。
+トラックパネルとピアノロールが常に1画面に並んで表示されます。別の音源を読み込む・変換し直す場合は、ヘッダーの**開く**からいつでも上記のダイアログを再度開けます。
+
+**トラックパネル（左）** — 各行にはカラースウォッチ、トラック名、MIDIチャンネル（CH）、音源トグル、楽器セレクター、ミュート、ソロ、音量スライダーが並びます。**トラック▲**をクリックするとアルファベット順に並べ替え、もう一度クリックすると逆順になります。MIDIチャンネル10（パーカッション）と複数チャンネルにまたがるトラックは楽器を変更できません。
 
 **SF / 原曲 トグル** — **SF**は選択したGeneral MIDI SoundFontでトラックを再生し、楽器選択も反映します。**原曲**はSPCではゲーム由来のSoundFont、NSF/VGMではハードウェア・チップレンダリングを使用します。原曲モードでも音量は調整できます。物理チャンネルを共有するVGMの行はまとめて切り替わります。曖昧な共有チャンネルは原曲として自動選択されません。**Cmd**（Windows／LinuxではCtrl）を押しながらクリックすると、同じ選択肢を持つ他の全トラックにも同じ設定を一括適用します。
 
@@ -103,11 +108,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 **SoundFont** — 標準の探索先で見つかった`.sf2`/`.sf3`から選択します。**高速**（22.05kHz）は試聴用の速いレンダリング、**品質**（44.1kHz）はWAVダウンロードと同じ内容です。
 
-### 画面3 · 試聴
-
-![試聴](images/miditrack_s03.png)
-
-**トランスポート** — ◀◀と▶▶は5秒ずつ巻き戻し／スキップし、⏮は先頭に戻り、▶/⏸で再生・一時停止を切り替えます。キーボードショートカットも利用できます: Spaceで再生/一時停止、左右カーソルで±1秒シーク、Shiftを押しながら左右カーソルで±5秒シーク、PageUp/PageDownで±10秒シーク、Homeで先頭、Endで最後尾、Cmd+←で先頭へ移動します。タイマーは現在位置と全体時間を表示します。
+**トランスポート（右上）** — ◀◀と▶▶は5秒ずつ巻き戻し／スキップし、⏮は先頭に戻り、▶/⏸で再生・一時停止を切り替えます。キーボードショートカットも利用できます: Spaceで再生/一時停止、左右カーソルで±1秒シーク、Shiftを押しながら左右カーソルで±5秒シーク、PageUp/PageDownで±10秒シーク、Homeで先頭、Endで最後尾、Cmd+←で先頭へ移動します。タイマーは現在位置と全体時間を表示します。
 
 **速度** — 再生倍率を0.1〜10倍で設定します。以降のすべてのレンダリングとWAVダウンロードへ反映されます。
 
@@ -115,17 +116,13 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 **音量** — セッション全体のマスター音量です。
 
-**ピアノロール** — 全トラックのノートをカラーのバーで縦鍵盤上に表示します。横スクロールで移動、ピンチまたはスクロールホイールでズームできます。クリックでシークします。
+**ピアノロール（右）** — 全トラックのノートをカラーのバーで縦鍵盤上に表示します。横スクロールで移動、ピンチまたはスクロールホイールでズームできます。クリックでシークします。
 
 **ピッチベンド** — 各トラックのピッチベンドデータをノートエリア下部に表示します。
 
 レンダリングは編集後に自動で開始し、完成済みレンダーはセッション内でキャッシュされます。最後の変更から短い待機時間の後にプレビューを更新します。新しいレンダーが必要な状態で再生を始めると、現在位置付近の短い区間を先に鳴らし、全尺WAVの完成後に正確な音声へクロスフェードします。原曲のチップ音源トラックは変換後にバックグラウンドで準備され、準備完了後はこの短いプレビューにも加わります。全尺WAVの生成中はスピナーが表示されたままになります。
 
-### 画面4 · 出力
-
-![出力](images/miditrack_s04.png)
-
-**MIDIをダウンロード / WAVをダウンロード** — MIDIをダウンロードは現在の楽器割り当てを反映した編集済みMIDIを保存します。WAVをダウンロードは現在のトラック設定・速度・ピッチで44.1kHzステレオWAVを生成します。**保存ファイル名**欄で基本ファイル名を変更できます。
+**MIDIをダウンロード / WAVをダウンロード（下部）** — MIDIをダウンロードは現在の楽器割り当てを反映した編集済みMIDIを保存します。WAVをダウンロードは現在のトラック設定・速度・ピッチで44.1kHzステレオWAVを生成します。**保存ファイル名**欄で基本ファイル名を変更できます。
 
 **バリエーションをまとめて生成** — 速度倍率と半音値をカンマ区切りで入力し、**バリエーションをZIPでダウンロード**をクリックします。**ZIPにMIDIも含める**で各組み合わせのMIDIファイルも追加できます。速度6個・移調8個・組み合わせ合計15件までです。試聴中の速度・ピッチは変更されません。
 
@@ -133,29 +130,17 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`/`.rsn`）、VGM（`.vgm`/`.vgz`�
 
 SoundFont、トラック設定、出力ファイル名を変更すると、生成済みのバリエーションZIPとトラック別ZIPは無効になります。変更後に再生成してください。
 
-### 全画面モード
-
-![全画面モード](images/miditrack_full.png)
-
-全画面モードでは、トラックパネルとピアノロールが1画面に並んで表示されます。ヘッダーの**全画面**をクリックで切り替え、**全画面を終了**で通常表示へ戻ります。
-
-**トラックパネル（左）** — 画面2と同じ操作ができます。音源トグル、楽器、ミュート、ソロ、音量をトラックごとに設定できます。編成プリセットとSoundFontセレクターはリスト下部に固定されます。
-
-**ピアノロール（右）** — 画面3と同じ内容です。トランスポートバーと速度・ピッチのコントロールは上部に配置されます。
-
-**出力バー（下部）** — MIDIとWAVのダウンロードボタンおよび出力オプションパネルが最下部に表示され、画面4の代わりに使えます。
-
 ### 表示設定
 
 ![表示設定](images/miditrack_ss.png)
 
-どの画面からでも表示設定パネルを開けます。変更は即座に反映され、次回起動時も引き継がれます。
+ヘッダーの歯車アイコンから表示設定パネルを開けます。変更は即座に反映され、次回起動時も引き継がれます。
 
 **テーマ** — **全体の表示**で配色をシステム追従・ライト・ダークから選びます。
 
 **ピアノロール**
 - *ノートを角丸にする*・*ノートに縁取りを付ける*・*グリッド線を表示*・*鍵盤を表示* — 各要素を個別に切り替えます。
-- *高さ* — ステップ表示時のピアノロールの高さを設定します。全画面モード時は常にウィンドウ幅に追随します。
+- *高さ* — ピアノロールの高さを設定します。アプリ版では常にウィンドウの高さに追随し、この設定は反映されません。
 - *背景色* / *グリッド線の色* — カスタムカラーを選ぶか、テーマ既定に戻せます。
 - *トラック配色* — トラックごとのノートカラーの彩度を設定します。
 - *縦グリッドの分割数* — 1拍あたりの分割数です。
@@ -169,6 +154,12 @@ SoundFont、トラック設定、出力ファイル名を変更すると、生�
 - `.m3u`の曲名対応付けはベストエフォートです。古い、または対応付けできないプレイリストはエラーにせず、曲名を変えません。
 
 ### コマンドラインオプション
+
+アプリバンドル内から直接実行するか、一度だけ`miditrack`コマンドを作成します。
+
+```bash
+ln -s ~/Applications/miditrack.app/Contents/Resources/project/miditrack/miditrack.sh /opt/homebrew/bin/miditrack
+```
 
 ```text
 miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browser]
@@ -185,7 +176,7 @@ miditrack [MIDI_FILE] [--soundfont FILE] [--port PORT] [--no-token] [--no-browse
 
 ### Dockからmiditrackを起動する
 
-`install.sh`は`~/Applications/miditrack.app`を作成します。ダブルクリックするか、Dockへドラッグして使ってください——バックグラウンドの補助ツールではなく、普通のDockアプリです。自分自身でバックエンドサーバーを起動し、UI全体を自分のウィンドウの中に表示するため、別途ブラウザタブが開くことはありません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了するため、使い終わったあとに何も残りません。初回起動はアプリ自体のコンパイルとバックエンドの起動が裏で並行して進むため、表示まで数秒かかります。
+`~/Applications`へ移動した`miditrack.app`は、バックグラウンドの補助ツールではなく普通のDockアプリです。ダブルクリックするか、Dockへドラッグして使ってください。同梱バックエンドの起動中は少なくとも1秒間スプラッシュ画像を表示し、その後にUI全体を専用ウィンドウへ表示します。別途ブラウザタブは開きません。ウィンドウを閉じる（またはCmd+Q）と同時にバックエンドも終了します。
 
 ダウンロード（MIDI、WAV、ZIP、`.miditrack`プロジェクト）は、ブラウザの「名前を付けて保存」と同じく保存先を尋ねられます。
 
@@ -219,8 +210,8 @@ MDF音色定義、PALタイミング、チップ音声レンダリングは[nsf2
 ### spc2midi
 
 ```bash
-spc2midi song.rsn song.mid
-spc2midi -s 12 --sf2 song.rsn song.mid
+spc2midi song.spc song.mid
+spc2midi --sf2 song.spc song.mid
 ```
 
 SoundFont/DLS出力とループ処理は[spc2midi/README.md](spc2midi/README_ja.md)を参照してください。
@@ -271,7 +262,7 @@ vgm2midi song.vgz --loops 3
 |---|---|
 | miditrack | MIT |
 | nsf2midi | GPL-2.0-or-later |
-| spc2midi | zlib（VGMTransのLGPL-3.0コンポーネントを含む） |
-| vgm2midi | MIT |
+| spc2midi | zlib |
+| vgm2midi | MIT（同梱のネイティブヘルパー`vgm2midi_stems`は[libvgm](https://github.com/ValleyBell/libvgm)を静的リンクしており、全体としてはGPL-2.0-or-laterとして扱う必要があります——詳細は`vgm2midi/NOTICE.md`を参照） |
 
 完全なライセンスと帰属は、各サブプロジェクトの`README.md`、`LICENSE`、`NOTICE.md`を参照してください。

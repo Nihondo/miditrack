@@ -42,7 +42,7 @@ class TestDetectFormat(unittest.TestCase):
         self.assertEqual(convert.detect_format("song.NSFE").key, "nsf")
         self.assertEqual(convert.detect_format("song.spc").key, "spc")
         self.assertEqual(convert.detect_format("song.spc2").key, "spc")
-        self.assertEqual(convert.detect_format("collection.RSN").key, "spc")
+        self.assertIsNone(convert.try_detect_format("collection.RSN"))
         self.assertEqual(convert.detect_format("song.vgm").key, "vgm")
         self.assertEqual(convert.detect_format("song.vgz").key, "vgm")
 

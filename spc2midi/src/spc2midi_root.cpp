@@ -18,7 +18,7 @@ void Spc2MidiRoot::UI_setRootPtr(VGMRoot** the_root) { *the_root = &g_root; }
 // 例外: MAMELoader.cpp の "Failed to open MAME ROM definition JSON" は、spc2midi が対象と
 // しないアーケード基板 (MAME) 向けの補助ローダが、あらゆる入力に対して無条件に mame_roms.json
 // を探しに行って失敗するだけの内部ノイズ。VGMTrans 公式の vgmtrans-cli でも全く同じメッセージ
-// が (対象ファイルの種類に関わらず) 毎回 LOG_LEVEL_ERR で出ることを確認済み。SPC/SPC2/RSN の
+// が (対象ファイルの種類に関わらず) 毎回 LOG_LEVEL_ERR で出ることを確認済み。SPC/SPC2 の
 // 変換結果には一切影響しないため、非 -v 時は抑制し、-v 指定時のみ他の info/debug と同様に出す。
 void Spc2MidiRoot::UI_log(LogItem* item) {
   if (item == nullptr) return;

@@ -53,13 +53,72 @@ function verifyEscapedManifest(helper, input, directory, totalSamples) {
   return parsed;
 }
 
-/** channel selector modeが指定デバイスだけを正確なframe数で描画することを検証する。 */
+/** channel selector modeが指定デバイス（SN76489、MAMEコア。Maximコアからの
+ * 切替後）だけを正確なframe数・正確な周波数で描画することを検証する。
+ * フィクスチャのlatch(0x86)+data(0x00)バイトが10-bit周期を6に設定するので、
+ * freq = clock / (32 * period) = 3579545 / (32*6) ≈ 18643.5Hzが期待値。 */
 function verifySelection(helper, input, directory, totalSamples) {
   const output = path.join(directory, 'selected-sn-channel-0.wav');
   childProcess.execFileSync(helper, ['--selection', input, output, String(totalSamples), '0:0:1:0'], { stdio: 'pipe' });
   assert.equal(readFrames(output), totalSamples);
   assert.ok(measureRms(output) > 0, 'selected SN76489 channel must produce non-silent audio');
-  return output;
+  const samples = readSamples(output);
+  let crossings = 0;
+  for (let index = 2; index < samples.length; index += 2) {
+    if ((samples[index - 2] < 0) !== (samples[index] < 0)) crossings++;
+  }
+  const frequencyHz = crossings / 2 / ((samples.length / 2) / 44100);
+  const expectedHz = 3579545 / (32 * 6);
+  assert.ok(Math.abs(frequencyHz - expectedHz) < 50, `SN76489 tone frequency ${frequencyHz.toFixed(1)}Hz should be ~${expectedHz.toFixed(1)}Hz`);
+  return { output, frequencyHz };
+}
+
+/** HuC6280 (PC Engine PSG) MAMEコア（Ootakeコアからの切替後）の最小VGMを書く。
+ * HuC6280はSN76489と異なり32段の波形テーブル方式なので、$06への書き込み
+ * (channel enable前、indexが自動インクリメントされる間)が無いと無音になる。
+ * さらにc6280_mame.cのvolume_table[31]は無音を意味するため、global/channel
+ * balanceレジスタ($01/$05)を既定値の0のままにすると音量計算が無音側に
+ * クランプされる — 両方とも高い値(0xFFなど)にする必要がある。 */
+function writeHuC6280Fixture(directory) {
+  const bytes = [0xb9, 0x00, 0x00]; // select channel 0
+  for (let i = 0; i < 32; i++) bytes.push(0xb9, 0x06, i < 16 ? 0x1f : 0x00); // 32-step waveform, half max half zero
+  bytes.push(
+    0xb9, 0x02, 0x00, // freq low (period 0x200 -> ~218Hz @ 3579545Hz clock)
+    0xb9, 0x03, 0x02, // freq high
+    0xb9, 0x01, 0xff, // global balance: left=right=0xF
+    0xb9, 0x05, 0xff, // channel balance: left=right=0xF
+    0xb9, 0x04, 0x9f, // enable, channel volume=31 (max)
+    0x61, 0x44, 0xac, // wait 44100 samples
+    0x66, // end of sound data
+  );
+  const commands = Buffer.from(bytes);
+  const dataOffset = 0x100;
+  const buffer = Buffer.alloc(dataOffset + commands.length);
+  buffer.write('Vgm ', 0, 'ascii'); buffer.writeUInt32LE(buffer.length - 4, 4); buffer.writeUInt32LE(0x0161, 8);
+  buffer.writeUInt32LE(44100, 0x18); buffer.writeUInt32LE(3579545, 0xa4); buffer.writeUInt32LE(dataOffset - 0x34, 0x34);
+  commands.copy(buffer, dataOffset);
+  const input = path.join(directory, 'huc6280-synthetic.vgm'); fs.writeFileSync(input, buffer); return input;
+}
+
+/** HuC6280のMAMEコアが実際に可聴音を、想定周波数どおりに描画することを検証する。 */
+function verifyHuC6280(helper, directory) {
+  const input = writeHuC6280Fixture(directory);
+  const output = path.join(directory, 'huc6280-stems'); fs.mkdirSync(output);
+  const manifest = path.join(output, 'huc6280.stems.json');
+  childProcess.execFileSync(helper, [input, output, '44100', manifest], { stdio: 'pipe' });
+  const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  assert.equal(parsed.stems.length, 2, 'expected mix + exactly one HuC6280 device stem');
+  const [, device] = parsed.stems;
+  const samples = readSamples(device.path);
+  const peak = Math.max(...Array.from(samples, Math.abs));
+  assert.ok(peak > 1000, `HuC6280 (MAME core) stem must be clearly audible, got peak=${peak}`);
+  let crossings = 0;
+  for (let index = 2; index < samples.length; index += 2) {
+    if ((samples[index - 2] < 0) !== (samples[index] < 0)) crossings++;
+  }
+  const frequencyHz = crossings / 2 / ((samples.length / 2) / 44100);
+  assert.ok(Math.abs(frequencyHz - 218) < 5, `HuC6280 tone frequency ${frequencyHz.toFixed(1)}Hz should be ~218Hz`);
+  return { peak, frequencyHz };
 }
 
 function main() {
@@ -77,7 +136,8 @@ function main() {
   assert.ok(deviceStems.length >= 2, 'synthetic fixture must enumerate at least two devices');
   const differenceDbfs = measureDifference(mix, deviceStems); assert.ok(differenceDbfs <= -80, `stem sum difference ${differenceDbfs.toFixed(2)} dBFS exceeds -80 dBFS`);
   const escapedManifest = verifyEscapedManifest(helper, input, directory, results[0][1].sampleCount);
-  const selectionPath = verifySelection(helper, input, directory, results[0][1].sampleCount);
-  console.log(JSON.stringify({ frames: Object.fromEntries(results.map(([label, manifest]) => [label, manifest.sampleCount])), devices: deviceStems.length, differenceDbfs, escapedManifestPath: escapedManifest.stems[0].path, selectionPath }, null, 2));
+  const selection = verifySelection(helper, input, directory, results[0][1].sampleCount);
+  const huc6280 = verifyHuC6280(helper, directory);
+  console.log(JSON.stringify({ frames: Object.fromEntries(results.map(([label, manifest]) => [label, manifest.sampleCount])), devices: deviceStems.length, differenceDbfs, escapedManifestPath: escapedManifest.stems[0].path, sn76489: { path: selection.output, frequencyHz: selection.frequencyHz }, huc6280 }, null, 2));
 }
 main();

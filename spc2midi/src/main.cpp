@@ -3,7 +3,7 @@
 //
 // VGMTrans (third-party, zlib license; vgmtrans.pin で SHA 固定) の vgmtranscore に
 // リンクし、SNES 系サウンドドライバのバイトコードを直接解析するシーケンスパーサ
-// (N-SPC / AkaoSnes / KonamiSnes ほか計20ドライバ) を通して .spc/.spc2/.rsn を
+// (N-SPC / AkaoSnes / KonamiSnes ほか計20ドライバ) を通して .spc/.spc2 を
 // VGMColl のリストへ変換する。nsf2midi のような「エミュレートして観測する」推定は
 // 行わず、coll->seq()->saveAsMidi() がテンポ・ループ・音色まで正確な SMF を書き出す。
 //
@@ -61,7 +61,7 @@ void PrintUsage(const char* prog) {
   std::fprintf(stderr,
       "usage: %s [options] <input.spc> [output.mid]\n"
       "\n"
-      "input may be .spc, .spc2, or .rsn (a RAR archive of multiple .spc files);\n"
+      "input must be a .spc or .spc2 file;\n"
       "the format is auto-detected, so the extension is not inspected.\n"
       "\n"
       "options:\n"
@@ -164,7 +164,7 @@ ParseResult ParseArgs(int argc, char** argv, Options& opt) {
 // 人間やAIエージェントが調べる手がかりに、エントリポイントは新規スキャナ
 // パターンを書く際の解析の出発点になる。
 //
-// .spc2は単体SPCの別拡張子だが、.rsn(複数.spcを含むRARアーカイブ)はここでは
+// .spc2は単体SPCの別拡張子であり、ここでは
 // 展開しない — RawFile/SPCFileの構築失敗(シグネチャ不一致や最小サイズ未満)を
 // 例外で検知し、その場合は追加情報を出さずに黙って戻る(ReportNoDriver()の
 // 既存の固定メッセージだけが残る)。
@@ -194,7 +194,7 @@ void ReportSpcHeaderHints(const std::string& input_path) {
         tag.songTitle.c_str(), tag.gameTitle.c_str(), tag.artist.c_str(),
         tag.nameOfDumper.c_str(), tag.comments.c_str(), pc);
   } catch (const std::exception&) {
-    // .spc2/.rsn以外の非SPC入力、またはRSNアーカイブそのもの。追加情報を
+    // .spc2以外の非SPC入力。追加情報を
     // 出せないだけで、ReportNoDriver()自体は失敗させない。
   }
 }

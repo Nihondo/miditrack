@@ -1,0 +1,33 @@
+diff --git a/src/main/CMakeLists.txt b/src/main/CMakeLists.txt
+--- a/src/main/CMakeLists.txt
++++ b/src/main/CMakeLists.txt
+@@ -35,14 +35,6 @@
+ target_include_directories(minizip PUBLIC "${MINIZIP_DIR}")
+ target_link_libraries(minizip PUBLIC ZLIB::ZLIB)
+ 
+-# Add libunarr
+-message(INFO "Using built-in unarr")
+-set(ENABLE_7Z         OFF CACHE BOOL "[unarr] Build with 7z support"               FORCE)
+-set(USE_SYSTEM_BZ2    OFF CACHE BOOL "[unarr] Build with system bzip2 if possible" FORCE)
+-set(BUILD_SHARED_LIBS OFF CACHE BOOL "[unarr] Build libunarr as a shared library"  FORCE)
+-set(USE_SYSTEM_ZLIB   OFF CACHE BOOL "[unarr] Build with system zlib if possible"  FORCE)
+-add_subdirectory("${PROJECT_SOURCE_DIR}/lib/unarr" "${CMAKE_BINARY_DIR}/lib/unarr" EXCLUDE_FROM_ALL)
+-
+ # Add libchdr
+ if (ZLIB_FOUND)
+   set(WITH_SYSTEM_ZLIB ON  CACHE BOOL "[libchdr] Use system provided zlib library" FORCE)
+@@ -54,6 +46,7 @@
+ 
+ file(GLOB_RECURSE MAIN_FILES "${PROJECT_SOURCE_DIR}/src/main/*.cpp"
+      "${PROJECT_SOURCE_DIR}/src/main/*.h")
++list(FILTER MAIN_FILES EXCLUDE REGEX "/RSNLoader\\.cpp$")
+ 
+ add_library(vgmtranscore OBJECT ${MAIN_FILES})
+ 
+@@ -74,5 +67,5 @@
+         ${CMAKE_CURRENT_BINARY_DIR})
+ target_link_libraries(
+   vgmtranscore
+-  PUBLIC spdlog::spdlog unarr ZLIB::ZLIB minizip mio chdr-static
++  PUBLIC spdlog::spdlog ZLIB::ZLIB minizip mio chdr-static
+ )
