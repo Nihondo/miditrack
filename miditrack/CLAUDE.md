@@ -4313,3 +4313,32 @@ image files) before being copied over the tracked file. `install.sh`,
 path unchanged — the fix needed no code change anywhere, only a new PNG
 committed in place of the old one. Re-run `install.sh` to regenerate
 `~/Applications/miditrack.app`'s `.icns` from the updated source.
+
+## Follow-up: the 80% padding from the fix above looked too small next to other Dock icons
+
+After the border fix landed, the icon appeared visibly smaller than
+neighboring Dock icons (Notion, VS Code, Automator, OBS, X), even though no
+OS-added frame was present anymore. The 824-of-1024 (~80%) ratio cited above
+as "the" Apple template value is overly conservative in practice — most
+real-world macOS app icons (including Apple's own) sit closer to 90-93%
+content-to-canvas, and third-party icons routinely ignore the conservative
+824px figure entirely. 80% was erring safe against the border bug, but safe
+enough to also read as undersized.
+
+Re-extracted the untouched artwork from the committed PNG with
+`magick images/miditrack_icon.png -trim +repage` (recovers the original
+803×824 rounded-rect artwork losslessly, since the prior fix only added
+transparent margin, never touched a source pixel), then regenerated at
+92% (`-resize 942x942 -background none -gravity center -extent 1024x1024`,
+preserving the artwork's own aspect ratio rather than forcing a square).
+92% keeps a comfortable margin below the ~97.4% full-bleed geometry that
+triggered macOS's auto-frame in the original bug, while looking closer in
+scale to sibling Dock icons than the 80% version did. Chose this over
+reverting to full-bleed because the auto-frame bug's root cause (OS
+re-masking near-edge-to-edge icons) is still present in this macOS version —
+only the margin amount changed, not the underlying tradeoff.
+`~/Applications/miditrack.app`'s `.icns` needs `install.sh` re-run (or the
+icon-generation block re-run directly) to pick up the new source PNG; this
+session's own sandbox permissions didn't allow writing there, so it wasn't
+regenerated as part of this change — verify the actual Dock appearance
+before considering this closed.
