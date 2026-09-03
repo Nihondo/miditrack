@@ -1,5 +1,7 @@
 # miditrack
 
+**Under development**
+
 Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.vgm`/`.vgz`) — into editable MIDI and listen to the result in your browser. Everyday use needs no terminal after the one-time setup.
 
 `miditrack` runs only on your Mac. Your source files, MIDI, and rendered audio stay local.
