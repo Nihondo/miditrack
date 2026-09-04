@@ -83,7 +83,9 @@ class TestListSoundfonts(unittest.TestCase):
         self.assertEqual(dirs[0], Path.home() / "Library/Audio/Sounds/Banks")
         self.assertEqual(str(dirs[1]), "/Library/Audio/Sounds/Banks")
         self.assertEqual(str(dirs[2]), "/opt/homebrew/share/soundfonts")
-        self.assertEqual(str(dirs[3]), "/opt/homebrew/share/fluid-synth/sf2")
+        self.assertEqual(str(dirs[3]), "/usr/local/share/soundfonts")
+        self.assertEqual(str(dirs[4]), "/opt/homebrew/share/fluid-synth/sf2")
+        self.assertEqual(str(dirs[5]), "/usr/local/share/fluid-synth/sf2")
 
     def test_resource_root_does_not_add_a_project_soundfont_directory(self) -> None:
         with mock.patch.dict(os.environ, {"MIDITRACK_RESOURCE_ROOT": "/app/project"}):

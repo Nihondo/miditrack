@@ -10,7 +10,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
 
 ## クイックスタート
 
-1. Apple Silicon Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
+1. Apple SiliconまたはIntel Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
 
 2. Homebrewでランタイム依存を導入します。Homebrewが未導入の場合は先にインストールしてください。
 
@@ -60,15 +60,17 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
 
 ## 必要環境
 
-- Apple Silicon Mac、[Homebrew](https://brew.sh/)、初回ダウンロード用のインターネット接続
+- Apple SiliconまたはIntel Mac、[Homebrew](https://brew.sh/)、初回ダウンロード用のインターネット接続
 - [最新のリリースビルド](https://github.com/Nihondo/miditrack/releases/latest)の`miditrack.app`、および[FluidSynth](https://www.fluidsynth.org/)・ffmpeg・Rubber Band（`brew install fluid-synth ffmpeg rubberband`でHomebrewから導入）
 - カスタムの`.sf2`/`.sf3`は次の探索先へ配置します（先頭を推奨）。
   - `~/Library/Audio/Sounds/Banks`
   - `/Library/Audio/Sounds/Banks`
-  - `/opt/homebrew/share/soundfonts`
-  - `/opt/homebrew/share/fluid-synth/sf2`
+  - `/opt/homebrew/share/soundfonts`（Apple Silicon版Homebrew）
+  - `/usr/local/share/soundfonts`（Intel版Homebrew）
+  - `/opt/homebrew/share/fluid-synth/sf2`（Apple Silicon版Homebrew）
+  - `/usr/local/share/fluid-synth/sf2`（Intel版Homebrew）
 
-コンバーターのバイナリ、固定バージョンのPython・Node.jsランタイム、Apple Silicon向けVGM原曲音源のネイティブヘルパーはすべて`miditrack.app`内に同梱されているため、通常の音源変換、VGM原曲音源、実音声ステムのミックス、トラック別出力、速度／ピッチ変更のいずれにもビルドは不要です。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
+コンバーターのバイナリ、固定バージョンのPython・Node.jsランタイム、VGM原曲音源のネイティブヘルパー（Apple Silicon・Intel両対応でビルド済み）はすべて`miditrack.app`内に同梱されているため、通常の音源変換、VGM原曲音源、実音声ステムのミックス、トラック別出力、速度／ピッチ変更のいずれにもビルドは不要です。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
 
 ## miditrackの使い方
 

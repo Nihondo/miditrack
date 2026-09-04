@@ -32,7 +32,9 @@ def default_soundfont_dirs() -> list[Path]:
         Path.home() / "Library/Audio/Sounds/Banks",
         Path("/Library/Audio/Sounds/Banks"),
         Path("/opt/homebrew/share/soundfonts"),
+        Path("/usr/local/share/soundfonts"),
         Path("/opt/homebrew/share/fluid-synth/sf2"),
+        Path("/usr/local/share/fluid-synth/sf2"),
     ]
 
 

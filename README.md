@@ -10,7 +10,7 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.v
 
 ## Quick Start
 
-1. On an Apple Silicon Mac, download the latest `miditrack.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
+1. On an Apple Silicon or Intel Mac, download the latest `miditrack.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
 
 2. Install the runtime dependencies through [Homebrew](https://brew.sh/). If Homebrew itself is not installed yet, install it first.
 
@@ -60,15 +60,17 @@ Building from source instead is also available for contributors — see [miditra
 
 ## Requirements
 
-- Apple Silicon Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial download
+- Apple Silicon or Intel Mac, [Homebrew](https://brew.sh/), and an internet connection for the initial download
 - The [latest release build](https://github.com/Nihondo/miditrack/releases/latest) of `miditrack.app`, plus [FluidSynth](https://www.fluidsynth.org/), ffmpeg, and Rubber Band installed through Homebrew (`brew install fluid-synth ffmpeg rubberband`)
 - Put a custom `.sf2`/`.sf3` in one of these search directories (the first is recommended):
   - `~/Library/Audio/Sounds/Banks`
   - `/Library/Audio/Sounds/Banks`
-  - `/opt/homebrew/share/soundfonts`
-  - `/opt/homebrew/share/fluid-synth/sf2`
+  - `/opt/homebrew/share/soundfonts` (Apple Silicon Homebrew)
+  - `/usr/local/share/soundfonts` (Intel Homebrew)
+  - `/opt/homebrew/share/fluid-synth/sf2` (Apple Silicon Homebrew)
+  - `/usr/local/share/fluid-synth/sf2` (Intel Homebrew)
 
-The converter binaries, the pinned Python and Node.js runtimes, and the Apple Silicon native helper for Original VGM sound are all bundled inside `miditrack.app`, so ordinary source conversion, Original VGM sound, real-audio stem mixing, per-track export, and speed/pitch changes need no build step. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
+The converter binaries, the pinned Python and Node.js runtimes, and the native helper for Original VGM sound (built for both Apple Silicon and Intel) are all bundled inside `miditrack.app`, so ordinary source conversion, Original VGM sound, real-audio stem mixing, per-track export, and speed/pitch changes need no build step. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
 
 ## Using miditrack
 

@@ -1768,15 +1768,22 @@ the active SoundFont at runtime, without touching `midi2wav.sh` itself.
 
 `render.list_soundfonts()` and `render.default_soundfont_dirs()`
 (`render.py`) are a direct Python transcription of `midi2wav.sh`'s own
-`DEFAULT_SOUNDFONT_DIRS` array — same five directories, same order
-(`<repo>/soundfonts` first, then `~/Library/Audio/Sounds/Banks`,
-`/opt/homebrew/share/soundfonts`, `/Library/Audio/Sounds/Banks`,
-`/opt/homebrew/share/fluid-synth/sf2`), so the browser's list always
-matches what `midi2wav.sh -S`'s own interactive picker would show — which
-is otherwise unreachable from a Web UI, since there's no TTY behind an
-HTTP request (documented as a limitation in `README_ja.md`/`README.md`
-before this feature; the in-browser picker now covers the same need).
-Missing directories are silently skipped, matching the shell script's own
+`DEFAULT_SOUNDFONT_DIRS` array — same six directories, same order
+(`~/Library/Audio/Sounds/Banks`, `/Library/Audio/Sounds/Banks`,
+`/opt/homebrew/share/soundfonts`, `/usr/local/share/soundfonts`,
+`/opt/homebrew/share/fluid-synth/sf2`, `/usr/local/share/fluid-synth/sf2`),
+so the browser's list always matches what `midi2wav.sh -S`'s own
+interactive picker would show — which is otherwise unreachable from a Web
+UI, since there's no TTY behind an HTTP request (documented as a limitation
+in `README_ja.md`/`README.md` before this feature; the in-browser picker
+now covers the same need). The `/usr/local/...` entries exist alongside
+their `/opt/homebrew/...` counterparts because this app now ships as a
+universal (Apple Silicon + Intel) binary (see "feat: macOS向けの
+ユニバーサルバイナリビルドをサポート"): Homebrew installs under
+`/opt/homebrew` on Apple Silicon but under `/usr/local` on Intel, and an app
+built and run on one architecture must still find SoundFonts a user
+installed via the other prefix. Missing directories are silently skipped,
+matching the shell script's own
 behavior — this is also how an external SoundFont library is meant to be
 wired in: symlink it at `<repo>/soundfonts` rather than hardcoding its
 real (often machine-specific) path anywhere in this codebase.

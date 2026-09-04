@@ -41,7 +41,9 @@ DEFAULT_SOUNDFONT_DIRS=(
     "$HOME/Library/Audio/Sounds/Banks"
     "/Library/Audio/Sounds/Banks"
     "/opt/homebrew/share/soundfonts"
+    "/usr/local/share/soundfonts"
     "/opt/homebrew/share/fluid-synth/sf2"
+    "/usr/local/share/fluid-synth/sf2"
 )
 
 # === カラー出力 ===
@@ -87,7 +89,9 @@ SoundFont の解決順:
   ~/Library/Audio/Sounds/Banks
   /Library/Audio/Sounds/Banks
   /opt/homebrew/share/soundfonts
+  /usr/local/share/soundfonts
   /opt/homebrew/share/fluid-synth/sf2
+  /usr/local/share/fluid-synth/sf2
 
 例:
   midi2wav.sh song.mid                     # デフォルト SoundFont で song.wav

@@ -5,5 +5,10 @@
     <!-- V8がHardened Runtime下でJITコード用メモリを確保するために必要。 -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
+    <!-- allow-jitだけではx86_64（IntelおよびRosetta経由の実行）でV8のCode Range確保が
+         "Check failed: 12 == (*__error())" で失敗する。V8がMAP_JIT経由ではなく直接
+         RWXページをmprotectする箇所があるため、署名なしの実行可能メモリを明示的に許可する。 -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
 </dict>
 </plist>

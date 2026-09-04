@@ -84,7 +84,7 @@ An override that is set but unusable must fail clearly rather than silently fall
 
 `render.py`, `convert.py`, and `rubberband.py` must pass argv arrays to subprocesses with no shell. Repository paths may contain spaces or shell metacharacters.
 
-SoundFont lookup must never use `<repository>/soundfonts`. Its stable order is `~/Library/Audio/Sounds/Banks`, `/Library/Audio/Sounds/Banks`, `/opt/homebrew/share/soundfonts`, and `/opt/homebrew/share/fluid-synth/sf2`; the explicit CLI option and `MIDI2WAV_SOUNDFONT` remain higher priority.
+SoundFont lookup must never use `<repository>/soundfonts`. Its stable order is `~/Library/Audio/Sounds/Banks`, `/Library/Audio/Sounds/Banks`, `/opt/homebrew/share/soundfonts`, `/usr/local/share/soundfonts`, `/opt/homebrew/share/fluid-synth/sf2`, and `/usr/local/share/fluid-synth/sf2` — the `/opt/homebrew/...`/`/usr/local/...` pairs cover Apple Silicon and Intel Homebrew prefixes respectively, since the app ships as a universal binary; the explicit CLI option and `MIDI2WAV_SOUNDFONT` remain higher priority.
 
 ### Local security model
 
