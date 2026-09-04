@@ -1,6 +1,6 @@
 {
   "name": "vgm2midi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Convert VGM/VGZ files to MIDI, including YM2203 OPN, YM2608 OPNA, YM3526/YM3812/Y8950 OPL, and HuC6280 PSG support.",
   "main": "dist/index.js",

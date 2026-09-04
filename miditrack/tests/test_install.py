@@ -38,7 +38,7 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("既存のmiditrack.appを上書きしません", self.installer)
 
     def test_preserves_an_existing_unrelated_cli_command(self) -> None:
-        self.assertIn('command_link="/opt/homebrew/bin/miditrack"', self.installer)
+        self.assertIn('command_link="$(brew --prefix)/bin/miditrack"', self.installer)
         self.assertIn('[[ -L "$command_link" && "$(readlink "$command_link")" == "$cli_path" ]]', self.installer)
         self.assertIn('ln -s "$cli_path" "$command_link"', self.installer)
         self.assertNotIn("ln -sf", self.installer)

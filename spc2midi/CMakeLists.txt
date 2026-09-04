@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(spc2midi VERSION 0.1 LANGUAGES C CXX)
+project(spc2midi VERSION 0.1.1 LANGUAGES C CXX)
 
 # VGMTrans の Qt UI は不要。vgmtranscore (+ 同梱の vgmtrans-cli) だけを取り込む。
 set(ENABLE_UI_QT OFF CACHE BOOL "" FORCE)

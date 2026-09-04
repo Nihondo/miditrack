@@ -5,9 +5,9 @@ usage() {
   cat <<'USAGE'
 Usage: ./install.sh
 
-Builds the same arm64 miditrack.app payload used for release distribution and
-installs it into ~/Applications. Homebrew is used only for FluidSynth, ffmpeg,
-and Rubber Band.
+Builds the same miditrack.app payload used for release distribution (Apple
+Silicon or Intel, matching this Mac) and installs it into ~/Applications.
+Homebrew is used only for FluidSynth, ffmpeg, and Rubber Band.
 USAGE
 }
 
@@ -35,14 +35,17 @@ esac
 install_path="$(resolve_script_path "${BASH_SOURCE[0]}")"
 repository_dir="$(cd -P "$(dirname "$install_path")" >/dev/null 2>&1 && pwd)"
 app_dir="$HOME/Applications/miditrack.app"
-command_link="/opt/homebrew/bin/miditrack"
 cli_path="$app_dir/Contents/Resources/project/miditrack/miditrack.sh"
 marker_path="$app_dir/Contents/Resources/.installed-by-install-sh"
 
-[[ "$(uname -m)" == arm64 ]] || fail "miditrack.appはApple Silicon専用です"
+case "$(uname -m)" in
+  arm64|x86_64) ;;
+  *) fail "miditrack.appはApple Silicon MacまたはIntel Macでのみ動作します" ;;
+esac
 [[ -x "$repository_dir/scripts/build_app_bundle.sh" ]] || fail "アプリ組み立てスクリプトが見つかりません"
 command -v brew >/dev/null 2>&1 || fail "Homebrewが必要です: https://brew.sh/"
 command -v uv >/dev/null 2>&1 || fail "固定Pythonランタイムの組み立てにuvが必要です: brew install uv"
+command_link="$(brew --prefix)/bin/miditrack"
 
 if [[ -e "$app_dir" || -L "$app_dir" ]]; then
   [[ -f "$marker_path" && ! -L "$app_dir" ]] || fail "既存のmiditrack.appを上書きしません: $app_dir"

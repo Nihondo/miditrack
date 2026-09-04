@@ -52,7 +52,11 @@ if ! grep -Fq "GIT_TAG $commit" "$project_dir/native/CMakeLists.txt"; then
   exit 2
 fi
 
+# The committed binary is universal (Apple Silicon + Intel) so it runs on
+# either Mac without a per-host rebuild. clang cross-compiles both slices in
+# one invocation via the macOS SDK; no Rosetta or Intel hardware is needed.
 cmake -S "$project_dir/native" -B "$build_dir" -G Ninja \
+  -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
   -DFETCHCONTENT_SOURCE_DIR_LIBVGM="$source_dir" \
   -DVGM2MIDI_NATIVE_CACHE="$cache_dir"
 cmake --build "$build_dir" --target vgm2midi_stems
@@ -62,4 +66,14 @@ cmake --build "$build_dir" --target vgm2midi_stems
 installed_dir="$project_dir/native/bin"
 mkdir -p "$installed_dir"
 cp "$build_dir/vgm2midi_stems" "$installed_dir/vgm2midi_stems"
+
+# ld only ever auto-signs the arm64 slice (required for it to execute at all
+# on Apple Silicon); the x86_64 slice comes out of the linker completely
+# unsigned on this host. Sign both slices explicitly and fail the build if
+# either one doesn't come out valid, so an unsigned x86_64 slice can never
+# reach the committed binary silently.
+codesign --force --sign - "$installed_dir/vgm2midi_stems"
+codesign --verify --strict --arch arm64 "$installed_dir/vgm2midi_stems"
+codesign --verify --strict --arch x86_64 "$installed_dir/vgm2midi_stems"
+
 echo "$installed_dir/vgm2midi_stems"
