@@ -4082,6 +4082,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIsNone(payload["pianorollGridColor"])
         self.assertEqual(payload["trackColorPalette"], "rainbow")
         self.assertTrue(payload["hideEmptyTracks"])
+        self.assertEqual(payload["renderWorkers"], "auto")
         self.assertEqual(
             [preset["name"] for preset in payload["ensemblePresets"]],
             ["ゲームリード", "アコースティック", "ジャズカルテット"],
@@ -4332,6 +4333,33 @@ class TestWebAppPreferences(unittest.TestCase):
             "/api/preferences",
             headers={**AUTH_HEADERS, "Content-Type": "application/json"},
             data=json.dumps({"hideEmptyTracks": "yes"}),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_render_workers_preference_persists(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderWorkers": 4}),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["renderWorkers"], 4)
+        other_app = create_app(token=TOKEN, session=WebSession())
+        other_client = other_app.test_client()
+        self.assertEqual(
+            other_client.get("/api/preferences", headers=AUTH_HEADERS).get_json()["renderWorkers"],
+            4,
+        )
+
+    def test_render_workers_preference_defaults_to_auto(self) -> None:
+        response = self.client.get("/api/preferences", headers=AUTH_HEADERS)
+        self.assertEqual(response.get_json()["renderWorkers"], "auto")
+
+    def test_patch_rejects_invalid_render_workers_preference(self) -> None:
+        response = self.client.patch(
+            "/api/preferences",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderWorkers": 99}),
         )
         self.assertEqual(response.status_code, 400)
 
@@ -4679,7 +4707,7 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("--pianoroll-frame-border: #aeb9c9", css)
         self.assertIn("--pianoroll-keyboard-divider: #7b899e", css)
         self.assertIn("--pianoroll-key-label: #334155", css)
-        # 表示設定ダイアログ: 歯車ボタンとダイアログ本体がメインUIから
+        # 環境設定ダイアログ: 歯車ボタンとダイアログ本体がメインUIから
         # 分離され、旧チェックボックス群が.pianoroll-footer/トラック一覧
         # から消えている（ダイアログ内へ移設された）ことを確認する。
         self.assertIn('id="settings-open"', html)
@@ -4725,10 +4753,26 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertLess(html.index('id="pianoroll-outlined-notes"'), keyboard_checkbox_start)
         self.assertLess(html.index('id="pianoroll-show-grid"'), keyboard_checkbox_start)
         self.assertIn('class="settings-field-row settings-color-fields"', html)
-        self.assertEqual(html.count('class="settings-field-row"'), 1)
+        self.assertIn('class="settings-field-row settings-field-row-3"', html)
+        # プレーンな（修飾クラス無しの）settings-field-rowはもう無い — 高さ/
+        # トラック配色/縦グリッド分割数は3カラム行(settings-field-row-3)へ
+        # まとめ、単独行を消費しないようにした（ダイアログの縦寸法を詰める
+        # ため、環境設定ダイアログをカードで再構成した際の変更）。
+        self.assertEqual(html.count('class="settings-field-row"'), 0)
         self.assertIn('.settings-field-row {', css)
         self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr))', css)
         self.assertIn('.settings-field-row .field-group {\n  min-width: 0;\n  margin-top: 0;', css)
+        self.assertIn('.settings-field-row.settings-field-row-3 {', css)
+        self.assertIn('grid-template-columns: repeat(3, minmax(0, 1fr))', css)
+        # 「表示設定」「動作設定」は角丸矩形カード(.settings-group)としてグルー
+        # ピングされ、横並びグリッド(.settings-groups)に収める。
+        self.assertIn('class="settings-groups"', html)
+        self.assertEqual(html.count('class="settings-group"'), 2)
+        self.assertIn('>表示設定</h3>', html)
+        self.assertIn('>動作設定</h3>', html)
+        self.assertIn('.settings-groups {', css)
+        self.assertIn('.settings-group {', css)
+        self.assertIn('border-radius: 12px', css)
         self.assertIn('.app-header .header-action-button {', css)
         self.assertIn('color: #fff', css)
         footer_block = html.split('class="pianoroll-footer"', 1)[1].split("</div>", 1)[0]

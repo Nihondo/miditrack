@@ -571,13 +571,76 @@ cached individually before gain, so later gain-only edits remount the same raw
 WAV and run only the final mix. SoundFont choice and volume are intentionally
 absent from these raw-stem keys.
 
-Independent external jobs share one `ThreadPoolExecutor(max_workers=2)` per
-render. A game-derived SoundFont part and a GM SoundFont part overlap, and a
+Independent external jobs share one `ThreadPoolExecutor(max_workers=N)` per
+render, where `N` is `_render_workers()` — see "Added: configurable render
+concurrency and a parallelized variations batch" below for where `N` comes
+from. A game-derived SoundFont part and a GM SoundFont part overlap, and a
 VGM/NSF hardware-cache miss overlaps its independent FluidSynth job. FluidSynth
 internal `synth.cpu-cores` parallelism stays disabled: local measurements on
 the representative song were slower than keeping FluidSynth single-core and
 parallelizing independent outer jobs. MIDI application and track splitting
 remain serial, and ffmpeg runs once after every input is complete.
+
+## Added: configurable render concurrency and a parallelized variations batch
+
+`RENDER_WORKERS` used to be a hardcoded module constant (`= 2`) shared by
+every `ThreadPoolExecutor` in the render path — no way to raise it on a
+faster machine, or lower it on a constrained one. `_render_workers()`
+(`web.py`) replaces the constant: it calls `preferences.load_preferences()`
+(the same lightweight per-request read every other preference-backed
+endpoint already does) and resolves `renderWorkers` through
+`preferences.resolve_render_workers()`. Every `ThreadPoolExecutor(max_workers=
+RENDER_WORKERS)` call site now reads `ThreadPoolExecutor(max_workers=
+_render_workers())` instead, so a change takes effect on the very next
+render with no restart.
+
+`renderWorkers` (`preferences.py`, default `"auto"`) accepts either the
+literal string `"auto"` or an integer clamped to
+`RENDER_WORKERS_MIN..RENDER_WORKERS_MAX` (1–8) — the same
+table-driven validator pattern every other preference field already uses
+(see "Added: 表示設定 dialog" above, `_FIELD_VALIDATORS`). `"auto"` resolves
+via `resolve_render_workers()` to `max(1, min(RENDER_WORKERS_AUTO_CAP,
+(os.cpu_count() or 2) // 2))` — half the reported CPU count, capped at
+`RENDER_WORKERS_AUTO_CAP = 4`. This is a deliberately conservative,
+unmeasured estimate rather than a benchmarked figure: rendering mixes
+external-process IO wait (fluidsynth/ffmpeg subprocess) with real CPU work,
+so naively matching the full core count risks oversubscription without a
+proportional throughput gain, and the existing measurement note two
+paragraphs above (FluidSynth's own `synth.cpu-cores` measured slower than
+external parallelism) is the closest data point available for this codebase.
+A user who finds the auto estimate wrong for their machine can pick an
+explicit value instead.
+
+This preference is behavior-affecting, not display-affecting, which is why
+it lives in its own "動作設定" (behavior settings) group inside the renamed
+`#settings-dialog` (環境設定) rather than alongside the theme/piano-roll
+fields — see "Renamed to 環境設定 (Preferences)..." above.
+
+**`POST /api/variations`** (the speed×transpose batch, up to
+`MAX_VARIATION_COUNT` combinations) was the one major render-adjacent path
+that stayed fully sequential even after the per-render job pool existed:
+`itertools.product()`'s loop called `_apply_to()` then
+`_render_applied_midi()` for one combination at a time, so a 15-combination
+default batch paid for 15 renders back-to-back with no parallelism at all.
+`variations_endpoint()` now splits that loop in two: `_apply_to()` (a
+`mido`-only MIDI rewrite — cheap, IO-bound, no external subprocess) still
+runs sequentially for every combination first, assigning each one its own
+pre-incremented `web_session.render_id` before any parallel work starts —
+`render_id` feeds `render-NNNN.partN.wav`-style temp-file names inside
+`_render_applied_midi()`, so two combinations racing on the same counter
+value would collide on disk if allocated concurrently. Only the actual
+`_render_applied_midi()` calls (fluidsynth/ffmpeg/rubberband — the
+expensive part) are then submitted to a `ThreadPoolExecutor(max_workers=
+_render_workers())` and awaited via `as_completed()`; a failure cancels
+still-pending futures and re-raises, and the batch's ZIP-writing loop
+afterward walks the combinations in their original `itertools.product()`
+order rather than completion order, so file ordering inside the ZIP stays
+deterministic regardless of which combination happened to finish first.
+This still runs entirely inside the batch's single `web_session.render_lock`
+acquisition — see "Why `ensure_render()` remains a locked wrapper..." above
+for why the batch cannot call the lock-taking `ensure_render()` per
+combination — so only the *internal* parallelism of one batch changed, not
+whether a batch can overlap another render request.
 
 The browser schedules `POST /api/render/prewarm` after 500ms without another
 relevant edit and sends the fetch with `priority: "low"` (unsupported browsers
@@ -2990,6 +3053,113 @@ immediate-apply/immediate-save with no OK/Cancel draft state, exactly the
 behavior the three original checkboxes already had — this dialog is
 strictly a UI reorganization, not a new interaction model.
 
+### Renamed to 環境設定 (Preferences), and split into 表示設定/動作設定 groups
+
+Every field this dialog held until now was purely cosmetic — theme,
+piano-roll appearance, track colors, `hideEmptyTracks` — so "表示設定"
+(display settings) was an accurate name. Adding `renderWorkers` (the
+render-job concurrency preference; see "Added: configurable render
+concurrency and a parallelized variations batch" below) broke that
+invariant: it changes how rendering behaves, not what anything looks like.
+Renaming the dialog to the more general "環境設定" (Preferences) and its
+gear-button `aria-label` to match keeps the title honest as the dialog
+grows fields that aren't display-only.
+
+`index.html` wraps the existing `.settings-section` elements in two
+`<div class="settings-group">` containers, each headed by a
+`<h3 class="settings-group-title">` — `表示設定` (theme, piano roll,
+track list) and `動作設定` (rendering) — so a user can find "will this
+change what I see" vs. "will this change how it runs" at a glance without
+reading every field. Each topic's own heading (`テーマ`/`ピアノロール`/
+`トラック一覧`/`レンダリング`) moved from `<h3 class="output-section-title">`
+to `<h4>` with the same class (a class-based style, so the tag change is
+purely semantic) — this keeps the heading outline correctly nested under
+the new group-level `<h3>` rather than stacking two `<h3>` levels. `app.css`
+gives `.settings-group-title` its own slightly larger/bolder treatment than
+`.output-section-title`. No control's `id`, event wiring, or persisted
+preference key changed — this is purely a presentational regrouping of
+controls that already existed.
+
+**Follow-up: rounded-rect cards, laid out side by side, and a shorter
+piano-roll section — both requested after the plain heading+divider version
+above shipped and turned out to require scrolling inside the dialog.** The
+two groups are now visually distinct cards, not just a heading with a
+divider: `index.html` wraps both `.settings-group` elements in a new
+`<div class="settings-groups">`, and `.settings-group` itself reuses the
+exact `padding`/`background: var(--neutral-10)`/`border`/`border-radius:
+12px` values `.settings-panel` (the existing rounded box around the
+SoundFont/ensemble-preset controls) already established — one visual
+language for "a rounded box groups related settings" across the whole app,
+rather than a second one invented for this dialog. `.settings-groups` is a
+`grid-template-columns: minmax(0, 3fr) minmax(0, 2fr)`, placing 表示設定 and
+動作設定 side by side instead of stacked — this is what turns the dialog's
+total height into whichever card is taller (表示設定) rather than the sum of
+both cards plus a divider, addressing the original scrolling complaint. Grid
+`align-items` was left at its default `stretch` (not `start`) on a follow-up
+request: 動作設定 currently holds only the one レンダリング field, and an
+`align-items: start` grid would leave its card visibly shorter than 表示設定's,
+floating at the top of its column with empty space below it in the row.
+`stretch` instead grows the shorter 動作設定 card to match 表示設定's height,
+so both cards' bottom edges align — `.settings-group` is `display: flex;
+flex-direction: column` so the extra stretched height lands as blank space
+after its last `.settings-section` rather than distorting that section's own
+internal layout. The old `.settings-group + .settings-group` stacked-divider
+rule is gone; `@media (max-width: 640px)` collapses `.settings-groups` back to
+one column, matching how `.settings-field-row` already collapses at the
+same breakpoint.
+
+表示設定's own ピアノロール subsection was the tallest single contributor,
+so it also got trimmed directly: the *鍵盤を表示* checkbox moved into the
+existing `.settings-checkbox-row` (now four checkboxes on one flex-wrapped
+row instead of three-plus-a-separate-row), and 高さ/トラック配色/縦グリッド
+分割数 — three `<select>`s with short labels, previously one standalone
+`.field-group` plus a separate two-column `.settings-field-row` pair — now
+share one three-column row via the new `.settings-field-row.settings-field-row-3`
+modifier (`grid-template-columns: repeat(3, minmax(0, 1fr))`), collapsing
+back to `1fr` at the same narrow-width breakpoint as every other field-row.
+高さ's inline parenthetical explanation ("全画面時は常にウィンドウ幅に追随
+します...") no longer fits a one-third-width label, so it moved to a
+`<p class="field-help">` directly below the row — the existing 11px/
+`--neutral-60` helper-text style already used elsewhere for this exact
+"explain why a control does nothing in some other context" pattern (see
+`convert.option_schema()`'s per-format `unavailable`/`help` fields above).
+The 背景色/グリッド線の色 color-picker pair keeps its own unmodified
+two-column `.settings-field-row.settings-color-fields` row — a color swatch
+plus a "テーマ既定に戻す" button needs more per-item width than a bare
+`<select>`, so it was left out of the three-column compaction rather than
+risking the reset button's label wrapping in a narrower cell.
+
+`.settings-dialog` also gained its own `width`/`max-height` overrides
+(`min(760px, calc(100% - 32px))` / `min(860px, calc(100dvh - 32px))`),
+wider and taller than the shared `.app-dialog` defaults (`680px`/`760px`)
+that every other dialog in this app still uses unmodified — the extra width
+gives the new two-column `.settings-groups` grid (and the three-column
+field row inside it) enough room per cell to stay legible, and the extra
+height is headroom on top of the actual content-height reduction from the
+card layout and the piano-roll compaction above, not a substitute for it.
+The `calc(100dvh - 32px)` term is untouched, so a genuinely short window
+still clamps the dialog to the visible viewport and falls back to
+`.app-dialog`'s own `overflow: auto` — this change targets the common case
+(a normally-sized window needing no internal scroll at all), not every
+possible window size.
+
+**Follow-up: no autofocus onto the theme `<select>` on open.** `showModal()`'s
+default behavior autofocuses the first focusable element inside the dialog
+— here, `#app-theme` — so every open visibly landed with the theme dropdown
+looking selected/focused, even though nothing about opening the dialog is
+"about the theme." `#settings-dialog` gained the same `tabindex="-1"` +
+explicit `dialog.focus({ preventScroll: true })` pattern `#open-dialog`
+already used for the identical reason (see "2026-09 refinement: file-open
+modal..." above): `setupSettingsDialog()`'s click handler now calls
+`dialog.focus(...)` right after `showModal()`, so focus lands on the dialog
+container itself — announcing the labelled modal to assistive tech without
+visually landing on any one control — instead of falling through to the
+first `<select>`. `.settings-dialog:focus { outline: none; }` mirrors the
+existing `.upload-dialog:focus` rule for the same reason: the container
+itself is not an interactive control, so it should not show WKWebView's
+outer focus ring; every control's own `:focus-visible` ring inside the
+dialog is unaffected and still shows normally on Tab/click.
+
 ### Theme selection: `[data-theme]`, plus a CSS-only `@media` fallback (see Fixed note below)
 
 `appTheme` (`"system"`/`"light"`/`"dark"`, default `"system"`) is resolved
@@ -4663,9 +4833,17 @@ signed with Hardened Runtime it must receive the narrowly scoped
 `com.apple.security.cs.allow-jit` entitlement from
 `scripts/entitlements-node.plist`; otherwise even `node -e` fails before the
 VGM converter starts with V8's "Failed to reserve virtual memory for
-CodeRange" fatal error. Both the ad-hoc bundle build and Developer ID release
-loop apply that entitlement only to `Contents/Helpers/node`. Do not add it to
-the outer app or unrelated helper binaries.
+CodeRange" fatal error. On x86_64 (an Intel Mac, or Apple Silicon running the
+bundle under Rosetta) `allow-jit` alone is not enough: V8's Code Range
+reservation still fails with `Check failed: 12 == (*__error())`, because some
+of V8's memory-protection calls `mprotect()` a RWX page directly instead of
+going through `MAP_JIT`. `scripts/entitlements-node.plist` therefore also
+grants `com.apple.security.cs.allow-unsigned-executable-memory`, added
+alongside the universal-binary work (see "feat: macOS向けのユニバーサル
+バイナリビルドをサポート"). Both the ad-hoc bundle build and Developer ID
+release loop apply this same two-key entitlements file only to
+`Contents/Helpers/node`. Do not add either entitlement to the outer app or
+unrelated helper binaries.
 
 ## Finder file opening and the local-open boundary (2026-09)
 

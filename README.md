@@ -140,11 +140,13 @@ Rendering starts automatically after edits and completed renders are cached for 
 
 Changing a SoundFont, a track setting, or the filename invalidates previously generated variation and per-track ZIPs; regenerate them after the change.
 
-### Display Settings
+### Preferences
 
-![Display Settings](images/miditrack_ss.png)
+![Preferences](images/miditrack_ss.png)
 
-Open the display settings panel from the header's gear icon. Changes take effect immediately and are preserved across restarts.
+Open the preferences panel from the header's gear icon. Changes take effect immediately and are preserved across restarts. Fields are grouped into **Display settings** (appearance only) and **Behaviour settings** (how rendering runs).
+
+**Display settings**
 
 **Theme** — **Global display** sets the colour scheme: follow the system setting, light, or dark.
 
@@ -156,6 +158,10 @@ Open the display settings panel from the header's gear icon. Changes take effect
 - *Vertical grid divisions* — Number of subdivisions per beat.
 
 **Track list** — *Hide tracks with zero notes* removes empty tracks from the list.
+
+**Behaviour settings**
+
+**Rendering** — *Concurrent render jobs* controls how many render jobs (FluidSynth track splits, chip/hardware channels, and bulk-variation combinations) run at once. **Auto** picks a conservative value from the machine's CPU count; choose a fixed number (1/2/4/8) to override it.
 
 ### Limits and behaviour
 

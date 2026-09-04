@@ -762,6 +762,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
    WKWebViewの外周フォーカスリングは表示しない。内部の操作要素のfocus-visibleは
    共通ルールで引き続き表示される。 */
 .upload-dialog:focus { outline: none; }
+/* #settings-dialogも同じ理由でフォーカスを受けるため（テーマの<select>への
+   自動フォーカスを避けるためダイアログ本体へ明示フォーカスする、
+   setupSettingsDialog()参照）、同じ抑制を個別ルールとして適用する。 */
+.settings-dialog:focus { outline: none; }
 
 .ensemble-preset-programs {
   margin: 20px 0 0;
@@ -792,7 +796,50 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .ensemble-preset-program-grid .program-select { width: 100%; }
 .dialog-actions { margin-top: 24px; display: flex; justify-content: flex-end; gap: 8px; }
 
-.settings-dialog { padding: 24px; }
+/* settings-dialogは他の.app-dialogより横幅を広めに取る。「表示設定」
+   「動作設定」の2カード（.settings-groups）を横並びにするための余白で、
+   カードの中身自体（テーマ・ピアノロールの各コントロール）は詰めても
+   窮屈にならない程度を見込んだ値。max-heightも他ダイアログより高くし、
+   通常サイズのウィンドウであれば内部スクロールなしで全項目が収まるように
+   している（極端に低いウィンドウ高では引き続きcalc(100dvh - 32px)で
+   viewportに収め、その場合のみ.app-dialog由来のoverflow: autoが効く）。 */
+.settings-dialog {
+  width: min(760px, calc(100% - 32px));
+  max-height: min(860px, calc(100dvh - 32px));
+  padding: 24px;
+}
+
+/* 「表示設定」「動作設定」を横並びの角丸矩形カードとしてグルーピングする。
+   align-itemsは既定のstretchのままにして、動作設定（コンテンツ量が
+   少ない）を表示設定（コンテンツ量が多い）と同じ枠の高さまで伸ばし、
+   2枚のカードの下端を揃える — 動作設定側だけ短く浮いて見えないように
+   する。 */
+.settings-groups {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+}
+
+/* 既存の.settings-panel（SoundFont/編成プリセット設定を囲む角丸矩形）と
+   同じpadding/background/border/border-radiusを使い、ダイアログ内カードの
+   見た目をアプリ全体で統一する。flex縦積みにしているのは、.settings-groups
+   のstretchで伸びた余白分を最後の.settings-section（または内容が短い
+   カードでは唯一のセクション）の下に自然に落とすため。 */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  background: var(--neutral-10);
+  border: 1px solid var(--neutral-30);
+  border-radius: 12px;
+}
+
+.settings-group-title {
+  margin: 0 0 14px;
+  color: var(--brand-dark);
+  font-size: 14px;
+  font-weight: 700;
+}
 
 .settings-section + .settings-section {
   margin-top: 20px;
@@ -819,6 +866,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px 16px;
+}
+
+/* 高さ・トラック配色・縦グリッドの分割数はラベルが短いセレクトのみなので
+   3カラムにまとめ、単独行だった「高さ」を独立した1行として消費しない
+   ようにする（ダイアログの縦寸法を詰める狙い）。 */
+.settings-field-row.settings-field-row-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 /* 通常の.field-group上余白は、グリッド内では2番目の列だけに効いてしまう。
@@ -1399,6 +1453,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   .header-inner { flex-direction: column; align-items: flex-start; gap: 8px; }
   .header-actions { margin-inline-start: 0; }
   .settings-field-row { grid-template-columns: 1fr; }
+  /* .settings-field-row-3は2クラスセレクタで詳細度が高いため、上の1カラム化を
+     打ち消してしまう。同じ詳細度で明示的に上書きする。 */
+  .settings-field-row.settings-field-row-3 { grid-template-columns: 1fr; }
+  .settings-groups { grid-template-columns: 1fr; }
   .audition-toolbar { align-items: flex-start; }
   .transform-controls { width: 100%; margin-inline-start: 0; }
   #convert-options.has-timing-group { grid-template-columns: 1fr; }

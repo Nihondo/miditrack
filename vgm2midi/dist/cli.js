@@ -66,7 +66,7 @@ const program = new commander_1.Command();
 program
     .name('vgm2midi')
     .description('Convert VGM/VGZ (Video Game Music) files to MIDI format')
-    .version('0.1.0')
+    .version('0.2.0')
     .argument('<input>', 'Input VGM or VGZ file')
     .option('-o, --output <file>', 'Output MIDI file (default: input filename with .mid extension)')
     .option('-t, --tempo <bpm>', 'MIDI tempo in BPM', '120')

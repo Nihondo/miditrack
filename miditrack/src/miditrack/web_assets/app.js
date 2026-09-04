@@ -58,6 +58,8 @@ const BLACK_PIANO_KEY_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
 const THEME_MODES = new Set(["system", "light", "dark"]);
 const PIANOROLL_HEIGHTS = new Set(["compact", "standard", "tall"]);
 const PIANOROLL_GRID_DIVISIONS = new Set([4, 8, 16]);
+// "auto"のみ文字列で、それ以外はサーバーの/api/preferencesが返すJSON数値のまま。
+const RENDER_WORKER_OPTIONS = new Set(["auto", 1, 2, 4, 8]);
 const TRACK_ROLES = [
   { id: "melody", label: "主旋律" },
   { id: "counterMelody", label: "対旋律" },
@@ -121,6 +123,7 @@ const state = {
   pianorollBackgroundColor: null, // 背景色のユーザー指定（#rrggbb）。nullならテーマ既定。
   pianorollGridColor: null, // グリッド線色のユーザー指定（#rrggbb）。nullならテーマ既定。
   trackColorPalette: "rainbow", // トラック配色パレット（rainbow/muted/accessible）。
+  renderWorkers: "auto", // レンダリングジョブの同時処理数（"auto"またはユーザー指定の整数）。設定として永続化する。
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -354,6 +357,9 @@ async function loadPreferences() {
       ? payload.trackColorPalette
       : "rainbow";
     state.hideEmptyTracks = payload.hideEmptyTracks !== false;
+    state.renderWorkers = RENDER_WORKER_OPTIONS.has(payload.renderWorkers)
+      ? payload.renderWorkers
+      : "auto";
     $("#pianoroll-rounded-notes").checked = state.hasRoundedPianorollNotes;
     $("#pianoroll-outlined-notes").checked = state.hasOutlinedPianorollNotes;
     $("#pianoroll-show-keyboard").checked = state.isPianorollKeyboardVisible;
@@ -427,12 +433,13 @@ function syncSettingsDialogControls() {
     state.pianorollBackgroundColor || cssColor("--pianoroll-background", "#fafbfc");
   $("#pianoroll-grid-color").value =
     state.pianorollGridColor || cssColor("--pianoroll-grid-line", "#ebecf0");
+  $("#render-workers").value = String(state.renderWorkers);
 }
 
-// 表示設定の変更をサーバー側設定へ保存する。起動ごとにポートが変わるため
-// localStorageではなく/api/preferencesを使う。表示専用の設定なので、保存に
-// 失敗しても今回の表示は維持したまま静かに続行する（呼び出し元は既にstateと
-// 画面を同期的に更新済み）。
+// 環境設定（表示設定・動作設定）の変更をサーバー側設定へ保存する。起動ごとに
+// ポートが変わるためlocalStorageではなく/api/preferencesを使う。呼び出し元が
+// 既にstateと画面（表示設定）または次回以降の挙動（動作設定）を同期的に更新
+// 済みなので、保存に失敗しても今回のセッションは維持したまま静かに続行する。
 async function savePreferenceFields(updates) {
   try {
     await apiFetch("/api/preferences", {
@@ -4222,12 +4229,20 @@ function setupOpenDialog() {
   }
 }
 
-// 歯車ボタンから開く表示設定ダイアログの開閉と各コントロールを配線する。
-// ダイアログ内の設定はすべて即時反映・即時保存で、OK/キャンセルの下書き
-// 状態は持たない（元からあった3つのピアノロールのチェックボックスと同じ挙動）。
+// 歯車ボタンから開く環境設定ダイアログ（表示設定/動作設定の2グループ）の
+// 開閉と各コントロールを配線する。ダイアログ内の設定はすべて即時反映・
+// 即時保存で、OK/キャンセルの下書き状態は持たない（元からあった3つの
+// ピアノロールのチェックボックスと同じ挙動）。
 function setupSettingsDialog() {
   const dialog = $("#settings-dialog");
-  $("#settings-open").addEventListener("click", () => dialog.showModal());
+  // showModal()の既定動作は最初のフォーカス可能要素（テーマの<select>）へ
+  // 自動フォーカスしてしまう。#open-dialogと同じ対処で、ダイアログ本体
+  // （tabindex="-1"）へ明示的にフォーカスし、開いた直後にテーマの
+  // プルダウンが選択状態に見えないようにする。
+  $("#settings-open").addEventListener("click", () => {
+    dialog.showModal();
+    dialog.focus({ preventScroll: true });
+  });
   $("#settings-close").addEventListener("click", () => dialog.close());
   // ダイアログを閉じると歯車ボタンへフォーカスが戻るため、
   // closeイベント後にblur()してスペースキーで再生トグルを使えるようにする。
@@ -4264,6 +4279,11 @@ function setupSettingsDialog() {
     redrawPianorollStatic();
     renderTrackList();
     savePreferenceFields({ trackColorPalette: state.trackColorPalette });
+  });
+
+  $("#render-workers").addEventListener("change", (event) => {
+    state.renderWorkers = event.target.value === "auto" ? "auto" : Number(event.target.value);
+    savePreferenceFields({ renderWorkers: state.renderWorkers });
   });
 
   // 色ピッカーはinputイベント（ドラッグ中）でプレビューだけを更新し、

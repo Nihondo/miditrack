@@ -24,6 +24,11 @@ MIN_PROGRAM = 0
 MAX_PROGRAM = len(GM_PROGRAM_NAMES) - 1
 MAX_ENSEMBLE_PRESETS = 24
 MAX_ENSEMBLE_PRESET_NAME_LENGTH = 48
+RENDER_WORKERS_MIN = 1
+RENDER_WORKERS_MAX = 8
+# "auto"時の上限。実測に基づく調整ではなく、単純な物理コア数割りだけで
+# 際限なく同時プロセスを増やさないための保守的な頭打ち。
+RENDER_WORKERS_AUTO_CAP = 4
 TRACK_ROLE_IDS = ("melody", "counterMelody", "bass", "accompaniment", "percussion")
 PRESET_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 DEFAULT_ENSEMBLE_PRESETS = (
@@ -98,6 +103,7 @@ def _empty_preferences() -> dict[str, Any]:
         "pianorollGridColor": None,
         "trackColorPalette": "rainbow",
         "hideEmptyTracks": True,
+        "renderWorkers": "auto",
         "ensemblePresets": build_default_ensemble_presets(),
     }
 
@@ -222,6 +228,41 @@ def _validate_hex_color(value: Any, field: str) -> str | None:
     return value.lower()
 
 
+def _validate_render_workers(value: Any) -> str | int:
+    """"auto"（CPUコア数から自動算出）または1〜RENDER_WORKERS_MAXの整数のみ許可する。"""
+    if value == "auto":
+        return "auto"
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WebValidationError(
+            f"renderWorkersは\"auto\"または{RENDER_WORKERS_MIN}〜{RENDER_WORKERS_MAX}の整数で指定してください: {value!r}"
+        )
+    if not (RENDER_WORKERS_MIN <= value <= RENDER_WORKERS_MAX):
+        raise WebValidationError(
+            f"renderWorkersは{RENDER_WORKERS_MIN}〜{RENDER_WORKERS_MAX}の範囲で指定してください: {value}"
+        )
+    return value
+
+
+def resolve_render_workers(value: str | int) -> int:
+    """設定値を実際にThreadPoolExecutorへ渡すワーカー数へ解決する。
+
+    "auto"の場合はos.cpu_count()から単純に算出する — 物理/論理コア数を
+    正確に判定する実測は行わず、コア数を2で割った値をRENDER_WORKERS_AUTO_CAP
+    で頭打ちする保守的な見積もりに留める（レンダリングはfluidsynth/ffmpeg
+    といった外部プロセスのIO・CPU混在ジョブであり、コア数と同数まで並列化
+    しても実測上の恩恵が頭打ちになりやすいため）。os.cpu_count()がNoneを
+    返す環境（コンテナ制限など）は2コア相当として扱う。
+    明示的な整数値が渡された場合はそのまま範囲内へクランプして返す —
+    load_preferences()を経由しない直接呼び出しでも安全なフォールバック。
+    """
+    if value == "auto":
+        cpu_count = os.cpu_count() or 2
+        return max(RENDER_WORKERS_MIN, min(RENDER_WORKERS_AUTO_CAP, cpu_count // 2))
+    if isinstance(value, bool) or not isinstance(value, int):
+        return RENDER_WORKERS_MIN
+    return max(RENDER_WORKERS_MIN, min(RENDER_WORKERS_MAX, value))
+
+
 def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
     """編成プリセット一覧を検証し、保存用の正規化済みデータを返す。"""
     if value is None:
@@ -278,6 +319,7 @@ _FIELD_VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "pianorollGridColor": lambda value: _validate_hex_color(value, "pianorollGridColor"),
     "trackColorPalette": lambda value: _validate_choice(value, TRACK_COLOR_PALETTES, "trackColorPalette"),
     "hideEmptyTracks": lambda value: _validate_bool(value, "hideEmptyTracks"),
+    "renderWorkers": _validate_render_workers,
     "ensemblePresets": validate_ensemble_presets,
 }
 

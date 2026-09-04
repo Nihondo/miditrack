@@ -78,7 +78,6 @@ RENDER_SAMPLE_RATES = {FAST_RENDER_MODE: 22050, QUALITY_RENDER_MODE: 44100}
 RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
 RENDER_CACHE_MAX_ENTRIES = 16
 RENDER_CACHE_VERSION = 1
-RENDER_WORKERS = 2
 # VGMには数十の実機チャンネルを持つ曲がある。全チャンネルの生WAVを温めると
 # render_cache（16件／256MB）から先に完成したWAVを追い出してしまうため、既定集合に
 # 加えて先頭の少数だけを温める。未温めチャンネルは正確な全尺レンダーへフォールバック
@@ -596,6 +595,18 @@ def track_payload(
         "sourceSuggested": is_suggested,
         "sourceGroupSize": len(metadata.group_indices(target.group_id)) if metadata and target else 1,
     }
+
+
+def _render_workers() -> int:
+    """レンダリングジョブの同時実行数を設定ファイルから解決する。
+
+    表示設定ダイアログの「レンダリング」セクション（renderWorkers、既定
+    "auto"）を都度読み込む — load_preferences()自体が軽量なJSON読み込み
+    で、他のリクエストパス（/api/preferences等）でも毎回呼ばれている
+    ものと同じ扱い。ThreadPoolExecutorを使う箇所は毎回この関数を呼ぶ。
+    """
+    prefs = preferences.load_preferences()
+    return preferences.resolve_render_workers(prefs["renderWorkers"])
 
 
 def soundfont_payload(session: WebSession, default_soundfont: Path | None) -> dict[str, Any]:
@@ -1981,7 +1992,7 @@ def create_app(
         """
         plan = _plan_chip_hardware(per_track=per_track)
         try:
-            with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+            with ThreadPoolExecutor(max_workers=_render_workers()) as executor:
                 futures = [
                     executor.submit(_render_chip_targets, miss.indices, miss.path)
                     for miss in plan.misses
@@ -2026,7 +2037,7 @@ def create_app(
                 return True
             stored_paths: set[Path] = set()
             try:
-                with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                with ThreadPoolExecutor(max_workers=_render_workers()) as executor:
                     futures = {
                         executor.submit(_render_chip_targets, miss.indices, miss.path): miss
                         for miss in misses
@@ -2186,7 +2197,7 @@ def create_app(
                     render_wav(job_mid, part_path, job_soundfont, sample_rate)
                     return round((time.perf_counter() - started_at) * 1000)
 
-                with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                with ThreadPoolExecutor(max_workers=_render_workers()) as executor:
                     chip_futures = [
                         executor.submit(render_chip_job, miss)
                         for miss in chip_plan.misses
@@ -2676,20 +2687,52 @@ def create_app(
                 # （_render_applied_midi()のchip_render_stems引数）。
                 shared_chip_stems = _render_chip_hardware(work_dir, "_chiprender")
                 download_stem = _effective_download_stem(web_session)
+
+                # MIDI書き出し（_apply_to()）はmido操作主体で軽量なため逐次実行する。
+                # render_idはrender-NNNN.partN.wav等の一時ファイル名に使われ、
+                # 並列レンダリング時の衝突を避けるためここで組み合わせごとに
+                # 事前採番しておく（web_session.render_idの更新はrender_lock保持中
+                # のこのループでのみ行い、後段の並列実行では読むだけにする）。
+                combos: list[tuple[float, int, Path, Path, int]] = []
                 for speed, transpose in itertools.product(speeds, transposes):
                     label = _variation_label(speed, transpose)
                     mid_out = work_dir / f"{download_stem}_{label}.mid"
                     wav_out = work_dir / f"{download_stem}_{label}.wav"
                     _apply_to(mid_out, speed, transpose)
                     web_session.render_id += 1
+                    combos.append((speed, transpose, mid_out, wav_out, web_session.render_id))
+
+                # 重いfluidsynth/ffmpeg呼び出し（_render_applied_midi()）だけを
+                # 設定された同時処理数（表示設定「レンダリング」＝renderWorkers）
+                # で並列実行する。バッチ全体はrender_lockを保持したままなので、
+                # 他のリクエストと衝突する余地は無く、内部ジョブの並列度だけが変わる。
+                def render_combo(combo: tuple[float, int, Path, Path, int]) -> None:
+                    combo_speed, combo_transpose, combo_mid, combo_wav, combo_render_id = combo
                     _render_applied_midi(
-                        mid_out,
-                        wav_out,
-                        render_id=web_session.render_id,
-                        speed=speed,
-                        transpose=transpose,
+                        combo_mid,
+                        combo_wav,
+                        render_id=combo_render_id,
+                        speed=combo_speed,
+                        transpose=combo_transpose,
                         chip_render_stems=shared_chip_stems,
                     )
+
+                with ThreadPoolExecutor(max_workers=_render_workers()) as executor:
+                    futures = {executor.submit(render_combo, combo): combo for combo in combos}
+                    try:
+                        for future in as_completed(futures):
+                            future.result()
+                    except Exception:
+                        # 未着手のfutureはキャンセルを試みる（実行中のものは
+                        # そのままwith文の終了処理で完了を待つ）。最初に発生した
+                        # 例外をそのまま再送出する。
+                        for pending in futures:
+                            pending.cancel()
+                        raise
+
+                # ZIPへの書き込み順は組み合わせの決定順（itertools.productの順）を
+                # 維持する — 並列実行の完了順に依存させない。
+                for speed, transpose, mid_out, wav_out, _render_id in combos:
                     items.append(
                         {
                             "speed": speed,
@@ -2874,7 +2917,7 @@ def create_app(
 
                 chip_plan_misses = list(chip_plan.misses)
                 try:
-                    with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as executor:
+                    with ThreadPoolExecutor(max_workers=_render_workers()) as executor:
                         futures = [
                             executor.submit(
                                 render_wav,

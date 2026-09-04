@@ -53,10 +53,20 @@ class TestBuildAppBundlePlist(unittest.TestCase):
         self.assertTrue(expected_extensions.issubset(declared_extensions))
         self.assertNotIn("$", self.plist_text)
 
-    def test_signs_only_the_bundled_node_with_the_jit_entitlement(self) -> None:
+    def test_signs_only_the_bundled_node_with_its_v8_entitlements(self) -> None:
         entitlements_path = self.repository_root / "scripts/entitlements-node.plist"
         entitlements = plistlib.loads(entitlements_path.read_bytes())
-        self.assertEqual(entitlements, {"com.apple.security.cs.allow-jit": True})
+        # allow-jitだけではx86_64（IntelおよびRosetta経由）でV8のCode Range確保が
+        # 失敗するため、署名なし実行可能メモリの許可も併せて必要
+        # （scripts/entitlements-node.plist自身のコメント、およびCLAUDE.mdの
+        # 「The bundled Node executable is a V8 runtime」節を参照）。
+        self.assertEqual(
+            entitlements,
+            {
+                "com.apple.security.cs.allow-jit": True,
+                "com.apple.security.cs.allow-unsigned-executable-memory": True,
+            },
+        )
         bundle_script = (self.repository_root / "scripts/build_app_bundle.sh").read_text(encoding="utf-8")
         self.assertIn('node_entitlements="$script_dir/entitlements-node.plist"', bundle_script)
         self.assertIn('"$candidate" == "$bundle_contents/Helpers/node"', bundle_script)

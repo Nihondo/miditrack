@@ -29,7 +29,7 @@
           <span class="fullscreen-label-enter">全画面</span>
           <span class="fullscreen-label-exit">全画面を終了</span>
         </button>
-        <button type="button" class="button small icon-button header-action-button" id="settings-open" aria-haspopup="dialog" aria-label="表示設定">
+        <button type="button" class="button small icon-button header-action-button" id="settings-open" aria-haspopup="dialog" aria-label="環境設定">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.94 3.5c0-.61-.06-1.2-.16-1.77l2.02-1.58a.75.75 0 0 0 .17-.96l-1.9-3.3a.75.75 0 0 0-.91-.33l-2.38.96a7.6 7.6 0 0 0-1.53-.89l-.36-2.53a.75.75 0 0 0-.74-.65h-3.8a.75.75 0 0 0-.74.65l-.36 2.53c-.55.22-1.07.52-1.53.89l-2.38-.96a.75.75 0 0 0-.91.33l-1.9 3.3a.75.75 0 0 0 .17.96l2.02 1.58c-.1.57-.16 1.16-.16 1.77s.06 1.2.16 1.77l-2.02 1.58a.75.75 0 0 0-.17.96l1.9 3.3c.19.32.58.45.91.33l2.38-.96c.46.37.98.67 1.53.89l.36 2.53c.06.37.38.65.74.65h3.8c.36 0 .68-.28.74-.65l.36-2.53c.55-.22 1.07-.52 1.53-.89l2.38.96c.33.12.72-.01.91-.33l1.9-3.3a.75.75 0 0 0-.17-.96l-2.02-1.58c.1-.57.16-1.16.16-1.77Z" />
           </svg>
@@ -369,93 +369,115 @@
     </form>
   </dialog>
 
-  <dialog class="app-dialog settings-dialog" id="settings-dialog" aria-labelledby="settings-dialog-title">
+  <dialog class="app-dialog settings-dialog" id="settings-dialog" aria-labelledby="settings-dialog-title" tabindex="-1">
     <div class="dialog-heading">
-      <h2 id="settings-dialog-title">表示設定</h2>
+      <h2 id="settings-dialog-title">環境設定</h2>
       <p>変更は即座に反映され、次回起動時も引き継がれます。</p>
     </div>
-    <section class="settings-section">
-      <h3 class="output-section-title">テーマ</h3>
-      <div class="field-group">
-        <label class="field-label" for="app-theme">全体の表示</label>
-        <select id="app-theme" class="program-select">
-          <option value="system">システム追従</option>
-          <option value="light">ライト</option>
-          <option value="dark">ダーク</option>
-        </select>
-      </div>
-    </section>
-    <section class="settings-section">
-      <h3 class="output-section-title">ピアノロール</h3>
-      <div class="settings-checkbox-row">
-        <div class="convert-field is-checkbox">
-          <input type="checkbox" id="pianoroll-rounded-notes" checked>
-          <label for="pianoroll-rounded-notes">ノートを角丸にする</label>
-        </div>
-        <div class="convert-field is-checkbox">
-          <input type="checkbox" id="pianoroll-outlined-notes" checked>
-          <label for="pianoroll-outlined-notes">ノートに縁取りを付ける</label>
-        </div>
-        <div class="convert-field is-checkbox">
-          <input type="checkbox" id="pianoroll-show-grid" checked>
-          <label for="pianoroll-show-grid">グリッド線を表示</label>
-        </div>
-      </div>
-      <div class="convert-field is-checkbox">
-        <input type="checkbox" id="pianoroll-show-keyboard" checked>
-        <label for="pianoroll-show-keyboard">鍵盤を表示</label>
-      </div>
-      <div class="field-group">
-        <label class="field-label" for="pianoroll-height">高さ（全画面時は常にウィンドウ幅に追随します）</label>
-        <select id="pianoroll-height" class="program-select">
-          <option value="compact">小</option>
-          <option value="standard" selected>標準</option>
-          <option value="tall">大</option>
-        </select>
-      </div>
-      <div class="settings-field-row settings-color-fields">
-        <div class="field-group settings-color-field">
-          <label class="field-label" for="pianoroll-background-color">背景色</label>
-          <div class="settings-color-row">
-            <input type="color" id="pianoroll-background-color">
-            <button type="button" class="button ghost small" id="pianoroll-background-reset">テーマ既定に戻す</button>
+    <div class="settings-groups">
+      <div class="settings-group">
+        <h3 class="settings-group-title">表示設定</h3>
+        <section class="settings-section">
+          <h4 class="output-section-title">テーマ</h4>
+          <div class="field-group">
+            <label class="field-label" for="app-theme">全体の表示</label>
+            <select id="app-theme" class="program-select">
+              <option value="system">システム追従</option>
+              <option value="light">ライト</option>
+              <option value="dark">ダーク</option>
+            </select>
           </div>
-        </div>
-        <div class="field-group settings-color-field">
-          <label class="field-label" for="pianoroll-grid-color">グリッド線の色</label>
-          <div class="settings-color-row">
-            <input type="color" id="pianoroll-grid-color">
-            <button type="button" class="button ghost small" id="pianoroll-grid-reset">テーマ既定に戻す</button>
+        </section>
+        <section class="settings-section">
+          <h4 class="output-section-title">ピアノロール</h4>
+          <div class="settings-checkbox-row">
+            <div class="convert-field is-checkbox">
+              <input type="checkbox" id="pianoroll-rounded-notes" checked>
+              <label for="pianoroll-rounded-notes">ノートを角丸にする</label>
+            </div>
+            <div class="convert-field is-checkbox">
+              <input type="checkbox" id="pianoroll-outlined-notes" checked>
+              <label for="pianoroll-outlined-notes">ノートに縁取りを付ける</label>
+            </div>
+            <div class="convert-field is-checkbox">
+              <input type="checkbox" id="pianoroll-show-grid" checked>
+              <label for="pianoroll-show-grid">グリッド線を表示</label>
+            </div>
+            <div class="convert-field is-checkbox">
+              <input type="checkbox" id="pianoroll-show-keyboard" checked>
+              <label for="pianoroll-show-keyboard">鍵盤を表示</label>
+            </div>
           </div>
-        </div>
+          <div class="settings-field-row settings-field-row-3">
+            <div class="field-group">
+              <label class="field-label" for="pianoroll-height">高さ</label>
+              <select id="pianoroll-height" class="program-select">
+                <option value="compact">小</option>
+                <option value="standard" selected>標準</option>
+                <option value="tall">大</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="track-color-palette">トラック配色</label>
+              <select id="track-color-palette" class="program-select">
+                <option value="rainbow">虹色</option>
+                <option value="vivid">彩度強め</option>
+                <option value="muted">彩度控えめ</option>
+                <option value="accessible">色覚配慮</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label class="field-label" for="pianoroll-grid-divisions">縦グリッド分割数</label>
+              <select id="pianoroll-grid-divisions" class="program-select">
+                <option value="4">4</option>
+                <option value="8" selected>8</option>
+                <option value="16">16</option>
+              </select>
+            </div>
+          </div>
+          <p class="field-help">高さは全画面時は常にウィンドウ幅に追随し、この設定は反映されません。</p>
+          <div class="settings-field-row settings-color-fields">
+            <div class="field-group settings-color-field">
+              <label class="field-label" for="pianoroll-background-color">背景色</label>
+              <div class="settings-color-row">
+                <input type="color" id="pianoroll-background-color">
+                <button type="button" class="button ghost small" id="pianoroll-background-reset">テーマ既定に戻す</button>
+              </div>
+            </div>
+            <div class="field-group settings-color-field">
+              <label class="field-label" for="pianoroll-grid-color">グリッド線の色</label>
+              <div class="settings-color-row">
+                <input type="color" id="pianoroll-grid-color">
+                <button type="button" class="button ghost small" id="pianoroll-grid-reset">テーマ既定に戻す</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h4 class="output-section-title">トラック一覧</h4>
+          <div class="convert-field is-checkbox">
+            <input type="checkbox" id="hide-empty-tracks" checked>
+            <label for="hide-empty-tracks">ノート数が0のトラックを非表示にする</label>
+          </div>
+        </section>
       </div>
-      <div class="settings-field-row">
-        <div class="field-group">
-          <label class="field-label" for="track-color-palette">トラック配色</label>
-          <select id="track-color-palette" class="program-select">
-            <option value="rainbow">虹色</option>
-            <option value="vivid">彩度強め</option>
-            <option value="muted">彩度控えめ</option>
-            <option value="accessible">色覚配慮</option>
-          </select>
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="pianoroll-grid-divisions">縦グリッドの分割数</label>
-          <select id="pianoroll-grid-divisions" class="program-select">
-            <option value="4">4</option>
-            <option value="8" selected>8</option>
-            <option value="16">16</option>
-          </select>
-        </div>
+      <div class="settings-group">
+        <h3 class="settings-group-title">動作設定</h3>
+        <section class="settings-section">
+          <h4 class="output-section-title">レンダリング</h4>
+          <div class="field-group">
+            <label class="field-label" for="render-workers">同時処理数</label>
+            <select id="render-workers" class="program-select">
+              <option value="auto" selected>自動</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+            </select>
+          </div>
+        </section>
       </div>
-    </section>
-    <section class="settings-section">
-      <h3 class="output-section-title">トラック一覧</h3>
-      <div class="convert-field is-checkbox">
-        <input type="checkbox" id="hide-empty-tracks" checked>
-        <label for="hide-empty-tracks">ノート数が0のトラックを非表示にする</label>
-      </div>
-    </section>
+    </div>
     <div class="dialog-actions">
       <button type="button" class="button primary" id="settings-close">閉じる</button>
     </div>
