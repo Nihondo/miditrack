@@ -26,8 +26,9 @@ class TestInstallScript(unittest.TestCase):
         self.assertIn("FluidSynth, ffmpeg,", result.stdout)
         self.assertNotIn("soundfonts/", result.stdout)
 
-    def test_installs_only_the_external_audio_tools_with_homebrew(self) -> None:
-        self.assertIn("for formula in fluid-synth ffmpeg rubberband; do", self.installer)
+    def test_installs_the_external_audio_tools_and_uv_with_homebrew(self) -> None:
+        self.assertIn("for formula in fluid-synth ffmpeg rubberband uv; do", self.installer)
+        self.assertIn('command -v uv >/dev/null 2>&1 || fail "uvが見つかりません', self.installer)
         self.assertNotIn("brew install python", self.installer)
         self.assertNotIn("brew install node", self.installer)
 

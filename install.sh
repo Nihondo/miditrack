@@ -7,7 +7,7 @@ Usage: ./install.sh
 
 Builds the same miditrack.app payload used for release distribution (Apple
 Silicon or Intel, matching this Mac) and installs it into ~/Applications.
-Homebrew is used only for FluidSynth, ffmpeg, and Rubber Band.
+Homebrew is used for FluidSynth, ffmpeg, Rubber Band, and uv.
 USAGE
 }
 
@@ -44,7 +44,6 @@ case "$(uname -m)" in
 esac
 [[ -x "$repository_dir/scripts/build_app_bundle.sh" ]] || fail "アプリ組み立てスクリプトが見つかりません"
 command -v brew >/dev/null 2>&1 || fail "Homebrewが必要です: https://brew.sh/"
-command -v uv >/dev/null 2>&1 || fail "固定Pythonランタイムの組み立てにuvが必要です: brew install uv"
 command_link="$(brew --prefix)/bin/miditrack"
 
 if [[ -e "$app_dir" || -L "$app_dir" ]]; then
@@ -55,7 +54,7 @@ if [[ -e "$command_link" || -L "$command_link" ]]; then
   [[ -L "$command_link" && "$(readlink "$command_link")" == "$cli_path" ]] || fail "既存のmiditrackコマンドを上書きしません: $command_link"
 fi
 
-for formula in fluid-synth ffmpeg rubberband; do
+for formula in fluid-synth ffmpeg rubberband uv; do
   info "Homebrew依存をインストールしています: $formula"
   if ! brew install "$formula"; then
     printf '⚠ %sの導入に失敗しました。既存の別tap版を利用できる場合は続行します。\n' "$formula" >&2
@@ -65,6 +64,7 @@ done
 command -v fluidsynth >/dev/null 2>&1 || fail "fluidsynthが見つかりません。FluidSynthをPATHへ追加してください"
 command -v ffmpeg >/dev/null 2>&1 || fail "ffmpegが見つかりません。利用可能なffmpegをPATHへ追加してください"
 command -v rubberband >/dev/null 2>&1 || fail "rubberbandが見つかりません。Rubber BandをPATHへ追加してください"
+command -v uv >/dev/null 2>&1 || fail "uvが見つかりません。固定Pythonランタイムの組み立てにuvが必要です: brew install uv"
 
 mkdir -p "$HOME/Applications"
 info "配布版と同じmiditrack.appを組み立てています"
