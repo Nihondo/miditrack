@@ -4295,18 +4295,44 @@ including Cmd+Q (a `WKWebView` window has no menu bar unless the app builds
 one itself — `installMainMenu()` constructs Application/Edit/View/Window
 menus with the standard `#selector` bindings by hand).
 
-**`CFBundleIdentifier` is now `com.nihondo.miditrack`** (dropped the
-`.launcher` suffix along with the rename from "miditrack Launcher" back to
-"miditrack" — the name collision with a Safari-saved PWA that motivated the
-old split no longer applies now that the Dock app is a full replacement for
-a browser tab, not a thing meant to coexist with one). This identifier must
-not change again once users have it pinned to their Dock, for the same
-LaunchServices-stable-key reason as before. A user who separately saves
-miditrack as a PWA via Safari's "Add to Dock" should still give it a name
-other than "miditrack", since Safari places saved apps directly under
-`~/Applications/` — the same directory `install.sh` uses — and
-`validate_app_bundle()`'s marker check will refuse to overwrite a bundle it
-didn't create rather than silently clobbering either one.
+**`CFBundleIdentifier` was `com.nihondo.miditrack`, then renamed to
+`com.dmng.miditrack`** (dropped the `.launcher` suffix along with the rename
+from "miditrack Launcher" back to "miditrack" — the name collision with a
+Safari-saved PWA that motivated the old split no longer applies now that the
+Dock app is a full replacement for a browser tab, not a thing meant to
+coexist with one). This identifier must not change again once users have it
+pinned to their Dock, for the LaunchServices-stable-key reason explained
+below — this note itself is the record of the one exception made to that
+rule, and why.
+
+**Why the one exception (`com.nihondo` → `com.dmng`)**: made deliberately,
+with `v0.1.0`/`v0.2.0` already published on the GitHub Releases page, while
+the project is still marked "Under development" in the root README — the
+last point in its lifecycle where a LaunchServices-identity break is
+low-cost. All eight `com.nihondo.miditrack*` strings in
+`scripts/build_app_bundle.sh`'s embedded `Info.plist` (the app's own
+`CFBundleIdentifier`, plus the `.project`/`.nsf`/`.nsfe`/`.spc`/`.spc2`/
+`.vgm`/`.vgz` UTI identifiers) were renamed together — an app-identity
+change without also renaming the file-type UTIs would leave the exported
+`.miditrack` project format's identifier orphaned from the app that owns it.
+Anyone who installed a build before this rename will see it as a distinct
+app after upgrading: their Dock pin stops resolving to the new bundle (needs
+re-pinning) and any per-format "Open With → Change All" association reverts
+to its previous default (needs redoing) — `install.sh`'s own upgrade-in-place
+check is unaffected, since it keys off a marker file inside
+`Contents/Resources`, not the bundle identifier. The window-size autosave
+keyed off `UserDefaults.standard`'s per-bundle-ID domain (mentioned above)
+also silently resets for upgraders, same as any other bundle ID change —
+cosmetic, not functional. No entitlement, Keychain access group, or App
+Group in this project is scoped to the old identifier, so nothing else
+needed updating.
+
+A user who separately saves miditrack as a PWA via Safari's "Add to Dock"
+should still give it a name other than "miditrack", since Safari places
+saved apps directly under `~/Applications/` — the same directory
+`scripts/install.sh` uses — and that script's marker-file check will refuse
+to overwrite a bundle it didn't create rather than silently clobbering
+either one.
 
 **Why `install_app_bundle()` signs the bundle ad hoc
 (`codesign --force --deep --sign -`), reversing an earlier decision not to

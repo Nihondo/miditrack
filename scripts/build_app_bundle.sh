@@ -104,7 +104,7 @@ cat > "$bundle_contents/Info.plist" <<PLIST
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleName</key><string>miditrack</string>
 <key>CFBundleDisplayName</key><string>miditrack</string>
-<key>CFBundleIdentifier</key><string>com.nihondo.miditrack</string>
+<key>CFBundleIdentifier</key><string>com.dmng.miditrack</string>
 <key>CFBundleExecutable</key><string>miditrack</string>
 <key>CFBundleIconFile</key><string>miditrack</string>
 <key>CFBundleIconName</key><string>miditrack</string>
@@ -114,21 +114,21 @@ cat > "$bundle_contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 <key>CFBundleDocumentTypes</key><array>
-<dict><key>CFBundleTypeName</key><string>miditrack Project</string><key>CFBundleTypeRole</key><string>Editor</string><key>LSHandlerRank</key><string>Owner</string><key>LSItemContentTypes</key><array><string>com.nihondo.miditrack.project</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>miditrack Project</string><key>CFBundleTypeRole</key><string>Editor</string><key>LSHandlerRank</key><string>Owner</string><key>LSItemContentTypes</key><array><string>com.dmng.miditrack.project</string></array></dict>
 <dict><key>CFBundleTypeName</key><string>MIDI File</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.midi-audio</string></array></dict>
-<dict><key>CFBundleTypeName</key><string>Chiptune Source File</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>com.nihondo.miditrack.nsf</string><string>com.nihondo.miditrack.nsfe</string><string>com.nihondo.miditrack.spc</string><string>com.nihondo.miditrack.spc2</string><string>com.nihondo.miditrack.vgm</string><string>com.nihondo.miditrack.vgz</string></array></dict>
+<dict><key>CFBundleTypeName</key><string>Chiptune Source File</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>com.dmng.miditrack.nsf</string><string>com.dmng.miditrack.nsfe</string><string>com.dmng.miditrack.spc</string><string>com.dmng.miditrack.spc2</string><string>com.dmng.miditrack.vgm</string><string>com.dmng.miditrack.vgz</string></array></dict>
 <dict><key>CFBundleTypeName</key><string>ZIP Archive</string><key>CFBundleTypeRole</key><string>Viewer</string><key>LSHandlerRank</key><string>Alternate</string><key>LSItemContentTypes</key><array><string>public.zip-archive</string></array></dict>
 </array>
 <key>UTExportedTypeDeclarations</key><array>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.project</string><key>UTTypeDescription</key><string>miditrack Project</string><key>UTTypeConformsTo</key><array><string>public.data</string><string>public.archive</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>miditrack</string></array><key>public.mime-type</key><string>application/vnd.miditrack.project+zip</string></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.project</string><key>UTTypeDescription</key><string>miditrack Project</string><key>UTTypeConformsTo</key><array><string>public.data</string><string>public.archive</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>miditrack</string></array><key>public.mime-type</key><string>application/vnd.miditrack.project+zip</string></dict></dict>
 </array>
 <key>UTImportedTypeDeclarations</key><array>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.nsf</string><key>UTTypeDescription</key><string>NSF File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>nsf</string></array></dict></dict>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.nsfe</string><key>UTTypeDescription</key><string>NSFE File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>nsfe</string></array></dict></dict>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.spc</string><key>UTTypeDescription</key><string>SPC File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spc</string></array></dict></dict>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.spc2</string><key>UTTypeDescription</key><string>SPC2 File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spc2</string></array></dict></dict>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.vgm</string><key>UTTypeDescription</key><string>VGM File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>vgm</string></array></dict></dict>
-<dict><key>UTTypeIdentifier</key><string>com.nihondo.miditrack.vgz</string><key>UTTypeDescription</key><string>VGZ File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>vgz</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.nsf</string><key>UTTypeDescription</key><string>NSF File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>nsf</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.nsfe</string><key>UTTypeDescription</key><string>NSFE File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>nsfe</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.spc</string><key>UTTypeDescription</key><string>SPC File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spc</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.spc2</string><key>UTTypeDescription</key><string>SPC2 File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>spc2</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.vgm</string><key>UTTypeDescription</key><string>VGM File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>vgm</string></array></dict></dict>
+<dict><key>UTTypeIdentifier</key><string>com.dmng.miditrack.vgz</string><key>UTTypeDescription</key><string>VGZ File</string><key>UTTypeConformsTo</key><array><string>public.data</string></array><key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>vgz</string></array></dict></dict>
 </array>
 </dict></plist>
 PLIST
