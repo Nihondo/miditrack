@@ -4023,7 +4023,7 @@ same-origin `Origin` check in that same function are **not** conditional on
 `require_token` and remain fully in effect either way; only the
 token-comparison step is skipped. `run_server(require_token=...)` threads
 the CLI flag through to `create_app()`, and prints an explicit warning to
-the terminal on every `--no-token` launch (`"警告: --no-token指定により..."`)
+the terminal on every `--no-token` launch (`"Warning: --no-token disables..."`)
 so the trade-off is visible every time, not just in `--help`.
 
 **Why the frontend needs to learn `require_token` from the server, not just

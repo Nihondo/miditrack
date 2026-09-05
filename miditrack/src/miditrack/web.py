@@ -3307,19 +3307,19 @@ def run_server(
     else:
         url = f"http://127.0.0.1:{port}/"
         print(
-            "警告: --no-token指定により起動トークン認証を無効化しています。"
-            "このMacの他のユーザー・プロセスからも127.0.0.1経由でアクセスできる"
-            "状態です。"
+            "Warning: --no-token disables launch-token authentication. "
+            "Other users and processes on this Mac can also reach it via "
+            "127.0.0.1."
         )
     print(f"miditrack Web UI: {url}")
-    print("終了するにはこのターミナルで Ctrl-C を押してください。")
+    print("Press Ctrl-C in this terminal to quit.")
     sys.stdout.flush()
     if open_browser:
         threading.Timer(0.2, webbrowser.open, args=(url,)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nmiditrack Web UIを終了しました。")
+        print("\nmiditrack Web UI stopped.")
     finally:
         server.shutdown()
         session.clear()

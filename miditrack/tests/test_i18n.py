@@ -199,6 +199,20 @@ def _extract_ensemble_preset_name_msgids() -> set[str]:
     return {preset["name"] for preset in preferences.DEFAULT_ENSEMBLE_PRESETS}
 
 
+def _extract_source_format_label_msgids() -> set[str]:
+    """`convert.SOURCE_FORMATS`の`label`もmsgid扱いにする。
+
+    `web.py`は`"formatLabel": t(fmt.label)`のように変数呼び出しでt()を通す
+    ため、`t("...")`のリテラル引数だけを拾うASTベースの抽出では見つからない
+    — `_extract_ensemble_preset_name_msgids()`と全く同じ理由の訳抜けを、
+    実際に「Detected as VGM / VGZ (メガドライブ・...)」の括弧内だけ未翻訳の
+    まま出ているユーザー報告で見つけて追加した。
+    """
+    from miditrack import convert
+
+    return {fmt.label for fmt in convert.SOURCE_FORMATS}
+
+
 class TestCatalogCompleteness(unittest.TestCase):
     """en.jsonがソース上の全msgidを網羅しているか（訳抜け検出）。"""
 
@@ -210,6 +224,7 @@ class TestCatalogCompleteness(unittest.TestCase):
             | _extract_js_msgids()
             | _extract_html_msgids()
             | _extract_ensemble_preset_name_msgids()
+            | _extract_source_format_label_msgids()
         )
 
     def test_every_source_msgid_has_a_translation(self) -> None:
