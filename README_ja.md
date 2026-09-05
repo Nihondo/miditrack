@@ -249,7 +249,7 @@ vgm2midi song.vgz --loops 3
 
 ## Intel Mac向けにmiditrack.appをビルドする
 
-[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)で配布している`miditrack-<バージョン>-macos-arm64.zip`はApple Silicon上でビルドした、Apple Silicon専用のものです。同梱のPythonバックエンド・Node.jsランタイム・ネイティブアプリランチャーはすべてApple Siliconバイナリのため、Intel Macでは起動できません。現時点でIntel版やUniversal版のリリースはありません（同梱の`nsf2midi`・`spc2midi`・VGMネイティブヘルパーはUniversalなので問題ありません——アプリ自体が対応するPython・Node.jsランタイムとランチャーが無いために起動できないだけです）。
+[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)で配布している`miditrack.zip`はApple Silicon上でビルドした、Apple Silicon専用のものです。同梱のPythonバックエンド・Node.jsランタイム・ネイティブアプリランチャーはすべてApple Siliconバイナリのため、Intel Macでは起動できません。現時点でIntel版やUniversal版のリリースはありません（同梱の`nsf2midi`・`spc2midi`・VGMネイティブヘルパーはUniversalなので問題ありません——アプリ自体が対応するPython・Node.jsランタイムとランチャーが無いために起動できないだけです）。
 
 Intel Macで今すぐmiditrackを使うには、そのMac上で`miditrack.app`を自分でビルドしてください。
 

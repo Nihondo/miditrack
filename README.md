@@ -251,7 +251,7 @@ only when comparing output with FluidSynth's eager-loading behaviour.
 
 ## Building miditrack.app for Intel Mac
 
-The `miditrack-<version>-macos-arm64.zip` published on the [Releases page](https://github.com/Nihondo/miditrack/releases/latest) is built on, and only for, Apple Silicon. Its bundled Python backend, Node.js runtime, and native app launcher are all Apple Silicon binaries and will not launch on an Intel Mac — there is currently no separate Intel or universal release. (The bundled `nsf2midi`, `spc2midi`, and VGM native helper are universal and are not the problem; the app simply cannot start without a matching Python/Node runtime and launcher.)
+The `miditrack.zip` published on the [Releases page](https://github.com/Nihondo/miditrack/releases/latest) is built on, and only for, Apple Silicon. Its bundled Python backend, Node.js runtime, and native app launcher are all Apple Silicon binaries and will not launch on an Intel Mac — there is currently no separate Intel or universal release. (The bundled `nsf2midi`, `spc2midi`, and VGM native helper are universal and are not the problem; the app simply cannot start without a matching Python/Node runtime and launcher.)
 
 To use miditrack on an Intel Mac today, build your own `miditrack.app` on that Mac:
 
