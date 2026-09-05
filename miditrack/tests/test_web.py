@@ -242,8 +242,8 @@ class TestWebApp(unittest.TestCase):
             soundfont_row.index("soundfont-select"),
             soundfont_row.index("render-mode-field"),
         )
-        self.assertIn('<label for="render-mode-fast">高速</label>', soundfont_row)
-        self.assertIn('<label for="render-mode-quality">品質</label>', soundfont_row)
+        self.assertIn('<label for="render-mode-fast" data-i18n>高速</label>', soundfont_row)
+        self.assertIn('<label for="render-mode-quality" data-i18n>品質</label>', soundfont_row)
         self.assertNotIn("22.05kHzで素早く確認", html)
         self.assertNotIn("最終WAVと同じ44.1kHz", html)
         row_rule = css.split(".soundfont-row {", 1)[1].split("}", 1)[0]
@@ -298,8 +298,8 @@ class TestWebApp(unittest.TestCase):
         self.assertIn('options.className = "render-mode-options track-source-options"', source_control)
         self.assertIn('input.className = "render-mode-input track-source-input"', source_control)
         self.assertIn('input.type = "radio"', source_control)
-        self.assertIn('label.textContent = source === "game" ? "原曲" : "SF"', source_control)
-        self.assertIn("legend.textContent = `${track.name}の音源`", source_control)
+        self.assertIn('label.textContent = source === "game" ? t("原曲") : "SF"', source_control)
+        self.assertIn('legend.textContent = t("{name}の音源", { name: track.name });', source_control)
         self.assertNotIn('document.createElement("select")', source_control)
         self.assertIn(".track-source-field {", css)
         self.assertIn(".track-source-options {", css)
@@ -4711,7 +4711,7 @@ class TestWebAppPreferences(unittest.TestCase):
         # 分離され、旧チェックボックス群が.pianoroll-footer/トラック一覧
         # から消えている（ダイアログ内へ移設された）ことを確認する。
         self.assertIn('id="settings-open"', html)
-        self.assertIn('class="header-actions" aria-label="表示操作"', html)
+        self.assertIn('class="header-actions" aria-label="表示操作" data-i18n-attr="aria-label"', html)
         header_actions = html.split('class="header-actions"', 1)[1].split("</div>", 1)[0]
         self.assertLess(
             header_actions.index('id="open-dialog-button"'),
@@ -4732,11 +4732,11 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn('id="pianoroll-grid-reset"', html)
         self.assertIn('id="pianoroll-grid-divisions"', html)
         self.assertIn('id="track-color-palette"', html)
-        self.assertIn('<option value="vivid">彩度強め</option>', html)
+        self.assertIn('<option value="vivid" data-i18n>彩度強め</option>', html)
         self.assertIn('id="output-card"', html)
         output_heading = html.split('class="card-heading output-card-heading"', 1)[1].split("</div>", 2)[0]
         self.assertIn('<span class="step-number">4</span>', output_heading)
-        self.assertIn('id="output-card-title">出力</h2>', output_heading)
+        self.assertIn('id="output-card-title" data-i18n>出力</h2>', output_heading)
         self.assertLess(html.index('id="audition-card"'), html.index('id="output-card"'))
         self.assertNotIn("MIDIはこのMacの中だけで処理されます。", html)
         self.assertIn('body.is-fullscreen #output-card { display: contents; }', css)

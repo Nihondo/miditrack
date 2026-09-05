@@ -94,6 +94,109 @@ let maxOpenBatchCount = 64
 let localOpenStagingURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
     .appendingPathComponent("miditrack-open-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
 
+// MARK: - A2. メニュー・アラートの日英ローカライズ
+//
+// Web UI（i18n.py/app.js）と同じgettext方式: 新しいキー体系を発明せず、
+// 既存の日本語文字列そのものをmsgidとして使い、EnglishMenuCatalogに無い
+// キーは日本語のまま返す（未翻訳が安全側に倒れる）。.lproj/NSLocalizedString
+// は使わない — この方式ならtest_app_launcher.pyの`"ファイルを開く…"`のような
+// 日本語リテラルの存在チェックが変更不要のまま通り続ける。
+//
+// 言語は起動時に一度だけpreferences.jsonのappLanguageから解決する。メニューは
+// 起動時に一度だけ構築されるため、Web UI側で言語を切り替えても反映には
+// アプリの再起動が必要（Web側はページ再読み込みだけで反映できるが、Swift側の
+// メニューバーはNSApp.mainMenuを起動後に丸ごと再構築する経路を持たないため）。
+
+/// preferences.jsonのパスを解決する。miditrack.preferences.preferences_path()と
+/// 同じ既定値・同じMIDITRACK_PREFERENCES_PATH環境変数オーバーライド
+/// （テストが実ユーザー設定を汚染しないためのシーム）を踏襲する。
+func resolvePreferencesFileURL() -> URL {
+    if let override = ProcessInfo.processInfo.environment["MIDITRACK_PREFERENCES_PATH"], !override.isEmpty {
+        return URL(fileURLWithPath: override)
+    }
+    return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("miditrack", isDirectory: true)
+        .appendingPathComponent("preferences.json")
+}
+
+/// Locale.preferredLanguagesの最優先言語から日本語/英語を選ぶ。
+/// miditrack.i18n.resolve_language()のAccept-Language解決と同じ「先頭要素の
+/// 言語サブタグだけを見る」考え方。
+func resolveSystemLanguage() -> String {
+    for language in Locale.preferredLanguages {
+        if language.hasPrefix("en") { return "en" }
+        if language.hasPrefix("ja") { return "ja" }
+    }
+    return "ja"
+}
+
+/// preferences.jsonのappLanguage（"system"/"ja"/"en"）を読み、具体的な
+/// "ja"/"en"を決定する。ファイルが無い・壊れている・"system"の場合は
+/// resolveSystemLanguage()にフォールバックする — load_preferences()が
+/// 「無くても機能が空の状態で動く」性質の設定として扱うのと同じ姿勢。
+func resolveAppLanguage() -> String {
+    guard let data = try? Data(contentsOf: resolvePreferencesFileURL()),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let stored = json["appLanguage"] as? String
+    else {
+        return resolveSystemLanguage()
+    }
+    if stored == "ja" || stored == "en" { return stored }
+    return resolveSystemLanguage()
+}
+
+let currentAppLanguage = resolveAppLanguage()
+
+/// 日本語原文（msgid）から英語訳を引く。現在言語が日本語、またはカタログに
+/// キーが無い場合はjapanese自身を返す。
+func T(_ japanese: String) -> String {
+    guard currentAppLanguage == "en" else { return japanese }
+    return EnglishMenuCatalog[japanese] ?? japanese
+}
+
+/// アプリ表示名（`applicationName`）を埋め込む文言専用のオーバーロード。
+/// msgidは`{app}`プレースホルダを持つテンプレートで、翻訳後にreplacingOccurrences
+/// で埋め込む——Python側i18n.t()の`{name}`パラメータ化と同じ考え方。
+func T(_ japaneseTemplate: String, app: String) -> String {
+    T(japaneseTemplate).replacingOccurrences(of: "{app}", with: app)
+}
+
+let EnglishMenuCatalog: [String: String] = [
+    "{app} について": "About {app}",
+    "設定…": "Settings…",
+    "{app} を隠す": "Hide {app}",
+    "ほかを隠す": "Hide Others",
+    "すべてを表示": "Show All",
+    "{app} を終了": "Quit {app}",
+    "ファイル": "File",
+    "ファイルを開く…": "Open File…",
+    "MIDIを保存…": "Save MIDI…",
+    "WAVを保存…": "Save WAV…",
+    "プロジェクトを保存…": "Save Project…",
+    "編集": "Edit",
+    "取り消す": "Undo",
+    "やり直す": "Redo",
+    "カット": "Cut",
+    "コピー": "Copy",
+    "ペースト": "Paste",
+    "すべてを選択": "Select All",
+    "表示": "View",
+    "再読み込み": "Reload",
+    "フルスクリーンにする": "Enter Full Screen",
+    "ウインドウ": "Window",
+    "しまう": "Minimize",
+    "閉じる": "Close",
+    "ヘルプ": "Help",
+    "{app} ヘルプ": "{app} Help",
+    "キャンセル": "Cancel",
+    "miditrackのバックエンドが見つかりません: {path}。install.shを再実行してください。":
+        "The miditrack backend could not be found: {path}. Please run install.sh again.",
+    "バックエンドが起動中に終了しました。": "The backend exited while starting up.",
+    "バックエンドを起動できませんでした: {error}": "Couldn't start the backend: {error}",
+    "バックエンドが{seconds}秒以内に応答しませんでした。": "The backend didn't respond within {seconds} seconds.",
+    "詳細: {path}": "Details: {path}",
+]
+
 // MARK: - B. 純粋関数（--self-test で検証可能）
 
 /// run_server()が標準出力へ出す起動行からWeb UIのURLを取り出す。
@@ -274,7 +377,10 @@ final class BackendController {
         self.onFailure = onFailure
 
         guard FileManager.default.isExecutableFile(atPath: backendExecutableURL.path) else {
-            onFailure("miditrackのバックエンドが見つかりません: \(backendExecutableURL.path)。install.shを再実行してください。")
+            onFailure(
+                T("miditrackのバックエンドが見つかりません: {path}。install.shを再実行してください。")
+                    .replacingOccurrences(of: "{path}", with: backendExecutableURL.path)
+            )
             return
         }
 
@@ -286,7 +392,7 @@ final class BackendController {
         process.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self, !self.isUrlDelivered else { return }
-                onFailure("バックエンドが起動中に終了しました。")
+                onFailure(T("バックエンドが起動中に終了しました。"))
             }
         }
 
@@ -300,7 +406,10 @@ final class BackendController {
         do {
             try process.run()
         } catch {
-            onFailure("バックエンドを起動できませんでした: \(error.localizedDescription)")
+            onFailure(
+                T("バックエンドを起動できませんでした: {error}")
+                    .replacingOccurrences(of: "{error}", with: error.localizedDescription)
+            )
         }
     }
 
@@ -431,7 +540,7 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
         let alert = NSAlert()
         alert.messageText = message
         alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "キャンセル")
+        alert.addButton(withTitle: T("キャンセル"))
         completionHandler(alert.runModal() == .alertFirstButtonReturn)
     }
 
@@ -706,20 +815,20 @@ func addTargetedMenuItem(
 func makeApplicationMenu(applicationName: String, target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
     let menu = NSMenu()
-    menu.addItem(withTitle: "\(applicationName) について", action: #selector(MiditrackAppDelegate.presentAboutPanel), keyEquivalent: "")
+    menu.addItem(withTitle: T("{app} について", app: applicationName), action: #selector(MiditrackAppDelegate.presentAboutPanel), keyEquivalent: "")
         .target = target
     menu.addItem(.separator())
     addTargetedMenuItem(
-        to: menu, title: "設定…", action: #selector(MiditrackAppDelegate.openSettingsFromMenu),
+        to: menu, title: T("設定…"), action: #selector(MiditrackAppDelegate.openSettingsFromMenu),
         keyEquivalent: ",", target: target, symbolName: "gearshape"
     )
     menu.addItem(.separator())
-    menu.addItem(withTitle: "\(applicationName) を隠す", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-    menu.addItem(withTitle: "ほかを隠す", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+    menu.addItem(withTitle: T("{app} を隠す", app: applicationName), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+    menu.addItem(withTitle: T("ほかを隠す"), action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         .keyEquivalentModifierMask = [.command, .option]
-    menu.addItem(withTitle: "すべてを表示", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+    menu.addItem(withTitle: T("すべてを表示"), action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
     menu.addItem(.separator())
-    menu.addItem(withTitle: "\(applicationName) を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    menu.addItem(withTitle: T("{app} を終了", app: applicationName), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     item.submenu = menu
     return item
 }
@@ -729,22 +838,22 @@ func makeApplicationMenu(applicationName: String, target: AnyObject) -> NSMenuIt
 /// 実装（clickWebViewElement参照）。
 func makeFileMenu(target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
-    let menu = NSMenu(title: "ファイル")
+    let menu = NSMenu(title: T("ファイル"))
     addTargetedMenuItem(
-        to: menu, title: "ファイルを開く…", action: #selector(MiditrackAppDelegate.openFileFromMenu),
+        to: menu, title: T("ファイルを開く…"), action: #selector(MiditrackAppDelegate.openFileFromMenu),
         keyEquivalent: "o", target: target, symbolName: "folder"
     )
     menu.addItem(.separator())
     addTargetedMenuItem(
-        to: menu, title: "MIDIを保存…", action: #selector(MiditrackAppDelegate.saveMidiFromMenu),
+        to: menu, title: T("MIDIを保存…"), action: #selector(MiditrackAppDelegate.saveMidiFromMenu),
         keyEquivalent: "", target: target, symbolName: "pianokeys"
     )
     addTargetedMenuItem(
-        to: menu, title: "WAVを保存…", action: #selector(MiditrackAppDelegate.saveWavFromMenu),
+        to: menu, title: T("WAVを保存…"), action: #selector(MiditrackAppDelegate.saveWavFromMenu),
         keyEquivalent: "e", target: target, symbolName: "waveform"
     )
     addTargetedMenuItem(
-        to: menu, title: "プロジェクトを保存…", action: #selector(MiditrackAppDelegate.saveProjectFromMenu),
+        to: menu, title: T("プロジェクトを保存…"), action: #selector(MiditrackAppDelegate.saveProjectFromMenu),
         keyEquivalent: "s", target: target, symbolName: "doc.zipper"
     )
 
@@ -754,23 +863,23 @@ func makeFileMenu(target: AnyObject) -> NSMenuItem {
 
 func makeEditMenu() -> NSMenuItem {
     let item = NSMenuItem()
-    let menu = NSMenu(title: "編集")
-    menu.addItem(withTitle: "取り消す", action: Selector(("undo:")), keyEquivalent: "z")
-    menu.addItem(withTitle: "やり直す", action: Selector(("redo:")), keyEquivalent: "Z")
+    let menu = NSMenu(title: T("編集"))
+    menu.addItem(withTitle: T("取り消す"), action: Selector(("undo:")), keyEquivalent: "z")
+    menu.addItem(withTitle: T("やり直す"), action: Selector(("redo:")), keyEquivalent: "Z")
     menu.addItem(.separator())
-    menu.addItem(withTitle: "カット", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-    menu.addItem(withTitle: "コピー", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-    menu.addItem(withTitle: "ペースト", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-    menu.addItem(withTitle: "すべてを選択", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    menu.addItem(withTitle: T("カット"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    menu.addItem(withTitle: T("コピー"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    menu.addItem(withTitle: T("ペースト"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    menu.addItem(withTitle: T("すべてを選択"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     item.submenu = menu
     return item
 }
 
 func makeViewMenu() -> NSMenuItem {
     let item = NSMenuItem()
-    let menu = NSMenu(title: "表示")
-    menu.addItem(withTitle: "再読み込み", action: #selector(WKWebView.reload(_:)), keyEquivalent: "r")
-    menu.addItem(withTitle: "フルスクリーンにする", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
+    let menu = NSMenu(title: T("表示"))
+    menu.addItem(withTitle: T("再読み込み"), action: #selector(WKWebView.reload(_:)), keyEquivalent: "r")
+    menu.addItem(withTitle: T("フルスクリーンにする"), action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         .keyEquivalentModifierMask = [.command, .control]
     item.submenu = menu
     return item
@@ -778,9 +887,9 @@ func makeViewMenu() -> NSMenuItem {
 
 func makeWindowMenu() -> NSMenuItem {
     let item = NSMenuItem()
-    let menu = NSMenu(title: "ウインドウ")
-    menu.addItem(withTitle: "しまう", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-    menu.addItem(withTitle: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    let menu = NSMenu(title: T("ウインドウ"))
+    menu.addItem(withTitle: T("しまう"), action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+    menu.addItem(withTitle: T("閉じる"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     item.submenu = menu
     return item
 }
@@ -790,8 +899,8 @@ func makeWindowMenu() -> NSMenuItem {
 /// 同等の見た目になる）。
 func makeHelpMenu(applicationName: String, target: AnyObject) -> NSMenuItem {
     let item = NSMenuItem()
-    let menu = NSMenu(title: "ヘルプ")
-    menu.addItem(withTitle: "\(applicationName) ヘルプ", action: #selector(MiditrackAppDelegate.openHelpFromMenu), keyEquivalent: "")
+    let menu = NSMenu(title: T("ヘルプ"))
+    menu.addItem(withTitle: T("{app} ヘルプ", app: applicationName), action: #selector(MiditrackAppDelegate.openHelpFromMenu), keyEquivalent: "")
         .target = target
     item.submenu = menu
     return item
@@ -1078,7 +1187,10 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
     private func scheduleStartupTimeout() {
         let workItem = DispatchWorkItem { [weak self] in
-            self?.handleBackendFailure(message: "バックエンドが\(Int(serverStartupTimeoutSeconds))秒以内に応答しませんでした。")
+            self?.handleBackendFailure(
+                message: T("バックエンドが{seconds}秒以内に応答しませんでした。")
+                    .replacingOccurrences(of: "{seconds}", with: String(Int(serverStartupTimeoutSeconds)))
+            )
         }
         startupTimeoutWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + serverStartupTimeoutSeconds, execute: workItem)
@@ -1123,7 +1235,7 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "miditrack"
-        alert.informativeText = "\(message)\n\n詳細: \(logFileURL.path)"
+        alert.informativeText = "\(message)\n\n" + T("詳細: {path}").replacingOccurrences(of: "{path}", with: logFileURL.path)
         alert.addButton(withTitle: "OK")
         alert.runModal()
         NSApp.terminate(nil)

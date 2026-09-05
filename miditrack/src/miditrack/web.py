@@ -37,7 +37,8 @@ try:
 except ImportError as import_error:  # pragma: no cover - exercised via cli.py's own guard
     raise ImportError("miditrack requires Flask") from import_error
 
-from . import convert, libvgm, midi, mix, nsf_chip, pianoroll, preferences, project, render, rubberband
+from . import convert, i18n, libvgm, midi, mix, nsf_chip, pianoroll, preferences, project, render, rubberband
+from .i18n import t
 from .convert import SourceFormat
 from .errors import (
     ConvertError,
@@ -432,7 +433,7 @@ class WebSession:
 
     def require_tracks(self) -> list[TrackInfo]:
         if not self.tracks:
-            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+            raise WebValidationError(t("先にMIDIファイルをアップロードしてください"))
         return self.tracks
 
 
@@ -539,12 +540,12 @@ def _validate_track_sources(
             track = tracks_by_index[track_index]
             if source == "game":
                 if session.game_soundfont_path is None or track.note_count == 0:
-                    raise WebValidationError(f"トラック{track_index}では原曲の音色を選べません")
+                    raise WebValidationError(t("トラック{track_index}では原曲の音色を選べません", track_index=track_index))
                 validated[track_index] = source
             elif source == "soundfont":
                 validated[track_index] = source
             else:
-                raise WebValidationError(f"未知のトラック音源です: {source}")
+                raise WebValidationError(t("未知のトラック音源です: {source}", source=source))
         return validated
     if session.source_format == "vgm":
         assert session.chip_metadata is None or isinstance(session.chip_metadata, libvgm.LibvgmMetadata)
@@ -556,7 +557,7 @@ def _validate_track_sources(
     validated = {}
     for track_index, source in raw_sources.items():
         if source != "soundfont":
-            raise WebValidationError(f"未知のトラック音源です: {source}")
+            raise WebValidationError(t("未知のトラック音源です: {source}", source=source))
         validated[track_index] = source
     return validated
 
@@ -643,7 +644,7 @@ def source_payload(session: WebSession) -> dict[str, Any] | None:
     return {
         "name": session.source_name,
         "format": fmt.key,
-        "formatLabel": fmt.label,
+        "formatLabel": t(fmt.label),
         "metadata": session.source_metadata,
         "songs": session.source_songs,
         "options": convert.option_schema(fmt),
@@ -687,10 +688,10 @@ def session_payload(session: WebSession) -> dict[str, Any]:
 def _project_member_path(root: Path, member: str, label: str) -> Path:
     """プロジェクト展開先配下のファイルだけを解決する。"""
     if not isinstance(member, str) or not member:
-        raise WebValidationError(f"プロジェクトの{label}が不正です")
+        raise WebValidationError(t("プロジェクトの{label}が不正です", label=label))
     candidate = (root / member).resolve()
     if candidate == root or root not in candidate.parents or not candidate.is_file():
-        raise WebValidationError(f"プロジェクトの{label}が見つかりません")
+        raise WebValidationError(t("プロジェクトの{label}が見つかりません", label=label))
     return candidate
 
 
@@ -834,13 +835,19 @@ def create_app(
 
     @app.before_request
     def validate_local_request() -> Response | None:
+        # preferences.jsonのappLanguage（"system"ならAccept-Languageヘッダー、
+        # 明示指定ならそれを最優先）から、このリクエストで使う言語を最初に
+        # 確定する。以降のraise/jsonify(error=...)は全てこのContextVar経由で
+        # t()が参照するので、後続処理より前に必ず設定しておく必要がある。
+        stored_language = preferences.load_preferences().get("appLanguage")
+        i18n.set_language(i18n.resolve_language(stored_language, request.headers.get("Accept-Language")))
         host = request.host.split(":", 1)[0].strip("[]")
         if host not in {"127.0.0.1", "localhost", "::1"}:
-            return jsonify(error="ローカルホスト以外からは接続できません"), 403
+            return jsonify(error=t("ローカルホスト以外からは接続できません")), 403
         if request.origin:
             origin_host = urlparse(request.origin).hostname
             if origin_host not in {"127.0.0.1", "localhost", "::1"}:
-                return jsonify(error="外部Originからの操作は拒否されました"), 403
+                return jsonify(error=t("外部Originからの操作は拒否されました")), 403
         if request.path.startswith("/api/") and require_token:
             # <audio>要素はカスタムヘッダーを送れないため、GETの /api/audio に
             # 限りクエリ文字列トークンも許可する（Rangeシーク対応をfetch+blob
@@ -850,7 +857,7 @@ def create_app(
             if not supplied and request.method == "GET" and request.path == "/api/audio":
                 supplied = request.args.get("token", "")
             if not secrets.compare_digest(supplied, launch_token):
-                return jsonify(error="起動トークンが一致しません"), 403
+                return jsonify(error=t("起動トークンが一致しません")), 403
         return None
 
     @app.after_request
@@ -879,7 +886,7 @@ def create_app(
 
     @app.errorhandler(RequestEntityTooLarge)
     def handle_large_upload(_error: RequestEntityTooLarge) -> tuple[Response, int]:
-        return jsonify(error="ファイルのサイズが大きすぎます"), 413
+        return jsonify(error=t("ファイルのサイズが大きすぎます")), 413
 
     def project_member_for_source(relative_path: str) -> str:
         """通常アップロードと読込済みプロジェクトの両方で安定した保存名を返す。"""
@@ -890,7 +897,7 @@ def create_app(
     def validate_project_loop(raw_loop: Any) -> dict[str, Any]:
         """プロジェクトの区間ループ設定を検証する。"""
         if not isinstance(raw_loop, dict):
-            raise WebValidationError("区間ループ設定が不正です")
+            raise WebValidationError(t("区間ループ設定が不正です"))
         start = raw_loop.get("start")
         end = raw_loop.get("end")
         enabled = raw_loop.get("enabled", False)
@@ -906,30 +913,30 @@ def create_app(
             and isinstance(enabled, bool)
         )
         if not is_valid:
-            raise WebValidationError("区間ループの開始・終了設定が不正です")
+            raise WebValidationError(t("区間ループの開始・終了設定が不正です"))
         return {"start": float(start), "end": float(end), "enabled": enabled}
 
     def validate_project_roles(raw_roles: Any, track_indices: set[int]) -> dict[str, str]:
         """プロジェクトのトラック役割を検証する。"""
         if not isinstance(raw_roles, dict):
-            raise WebValidationError("トラック役割設定が不正です")
+            raise WebValidationError(t("トラック役割設定が不正です"))
         roles: dict[str, str] = {}
         for raw_index, role_id in raw_roles.items():
             try:
                 track_index = int(raw_index)
             except (TypeError, ValueError):
-                raise WebValidationError("トラック役割のトラック番号が不正です") from None
+                raise WebValidationError(t("トラック役割のトラック番号が不正です")) from None
             if str(track_index) != str(raw_index) or track_index not in track_indices:
-                raise WebValidationError("トラック役割のトラック番号が不正です")
+                raise WebValidationError(t("トラック役割のトラック番号が不正です"))
             if not isinstance(role_id, str) or role_id not in TRACK_ROLE_IDS:
-                raise WebValidationError("トラック役割が不正です")
+                raise WebValidationError(t("トラック役割が不正です"))
             roles[str(track_index)] = role_id
         return roles
 
     def validate_preset_snapshot(raw_snapshot: Any, track_indices: set[int]) -> dict[str, Any]:
         """プリセット解除時に戻す音源・楽器設定を検証する。"""
         if not isinstance(raw_snapshot, dict):
-            raise WebValidationError("編成プリセットの復元設定が不正です")
+            raise WebValidationError(t("編成プリセットの復元設定が不正です"))
         raw_assignments = raw_snapshot.get("assignments")
         raw_sources = raw_snapshot.get("sources")
         expected_keys = {str(track_index) for track_index in track_indices}
@@ -939,7 +946,7 @@ def create_app(
             or set(raw_assignments) != expected_keys
             or set(raw_sources) != expected_keys
         ):
-            raise WebValidationError("編成プリセットの復元設定が不正です")
+            raise WebValidationError(t("編成プリセットの復元設定が不正です"))
         assignments: dict[str, int | None] = {}
         sources: dict[str, str] = {}
         for key in expected_keys:
@@ -951,7 +958,7 @@ def create_app(
                 or (isinstance(assignment, int) and not 0 <= assignment <= 127)
                 or source not in {"soundfont", "game"}
             ):
-                raise WebValidationError("編成プリセットの復元設定が不正です")
+                raise WebValidationError(t("編成プリセットの復元設定が不正です"))
             assignments[key] = assignment
             sources[key] = source
         return {"assignments": assignments, "sources": sources}
@@ -959,7 +966,7 @@ def create_app(
     def validate_project_ui(raw_ui: Any, tracks: list[TrackInfo]) -> dict[str, Any]:
         """プロジェクトへ保存するブラウザUI状態を検証する。"""
         if not isinstance(raw_ui, dict):
-            raise WebValidationError("プロジェクトの画面設定はオブジェクトで指定してください")
+            raise WebValidationError(t("プロジェクトの画面設定はオブジェクトで指定してください"))
         validated: dict[str, Any] = {
             "renderMode": _validate_render_mode(raw_ui.get("renderMode"))
         }
@@ -969,21 +976,21 @@ def create_app(
         preset_id = raw_ui.get("ensemblePreset")
         preset_definition = None
         if "ensemblePresetDefinition" in raw_ui and preset_id is None:
-            raise WebValidationError("編成プリセットが指定されていません")
+            raise WebValidationError(t("編成プリセットが指定されていません"))
         if preset_id is not None:
             if not isinstance(preset_id, str):
-                raise WebValidationError("編成プリセットが不正です")
+                raise WebValidationError(t("編成プリセットが不正です"))
             raw_definition = raw_ui.get("ensemblePresetDefinition")
             if raw_definition is not None:
                 definitions = preferences.validate_ensemble_presets([raw_definition])
                 preset_definition = definitions[0]
                 if preset_definition["id"] != preset_id:
-                    raise WebValidationError("編成プリセットの定義が一致しません")
+                    raise WebValidationError(t("編成プリセットの定義が一致しません"))
             configured_ids = {
                 preset["id"] for preset in preferences.load_preferences()["ensemblePresets"]
             }
             if preset_id not in configured_ids and preset_definition is None:
-                raise WebValidationError("編成プリセットが見つかりません")
+                raise WebValidationError(t("編成プリセットが見つかりません"))
             validated["ensemblePreset"] = preset_id
             if preset_definition is not None:
                 validated["ensemblePresetDefinition"] = preset_definition
@@ -997,13 +1004,13 @@ def create_app(
             "trackRoles", "ensemblePresetDefinition", "ensemblePresetSnapshot",
         }
         if dependent_fields.intersection(validated) and preset_id is None:
-            raise WebValidationError("編成プリセットが指定されていません")
+            raise WebValidationError(t("編成プリセットが指定されていません"))
         return validated
 
     def build_project_archive(ui_state: dict[str, Any]) -> Path:
         """現在の編集可能なセッションを`.miditrack`へ書き出す。"""
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("先にMIDIファイルを読み込んでください")
+            raise WebValidationError(t("先にMIDIファイルを読み込んでください"))
         files: dict[str, Path] = {"midi/original.mid": web_session.original_path}
         source_section: dict[str, Any] | None = None
         if web_session.source_format is not None:
@@ -1013,8 +1020,8 @@ def create_app(
                 raw_path = entry.get("path")
                 name = entry.get("name")
                 if not isinstance(raw_path, str) or not isinstance(name, str):
-                    raise WebValidationError("セッションの音源ファイル情報が不正です")
-                source_path = _project_member_path(web_session.root, raw_path, "音源ファイル")
+                    raise WebValidationError(t("セッションの音源ファイル情報が不正です"))
+                source_path = _project_member_path(web_session.root, raw_path, t("音源ファイル"))
                 member = project_member_for_source(raw_path)
                 files[member] = source_path
                 source_members[raw_path] = member
@@ -1026,7 +1033,7 @@ def create_app(
                 if active_file is None:
                     active_file = project_member_for_source(raw_active)
                     files[active_file] = _project_member_path(
-                        web_session.root, raw_active, "選択中の音源ファイル"
+                        web_session.root, raw_active, t("選択中の音源ファイル")
                     )
                     source_files.append({"path": active_file, "name": web_session.source_path.name})
             source_section = {
@@ -1081,15 +1088,15 @@ def create_app(
     def parse_project_index_map(raw: Any, label: str) -> dict[int, Any]:
         """JSONオブジェクトのトラック番号キーを整数へ戻す。"""
         if not isinstance(raw, dict):
-            raise WebValidationError(f"プロジェクトの{label}が不正です")
+            raise WebValidationError(t("プロジェクトの{label}が不正です", label=label))
         parsed: dict[int, Any] = {}
         for key, value in raw.items():
             try:
                 index = int(key)
             except (TypeError, ValueError):
-                raise WebValidationError(f"プロジェクトの{label}のトラック番号が不正です: {key}") from None
+                raise WebValidationError(t("プロジェクトの{label}のトラック番号が不正です: {key}", label=label, key=key)) from None
             if str(index) != str(key):
-                raise WebValidationError(f"プロジェクトの{label}のトラック番号が不正です: {key}")
+                raise WebValidationError(t("プロジェクトの{label}のトラック番号が不正です: {key}", label=label, key=key))
             parsed[index] = value
         return parsed
 
@@ -1102,11 +1109,11 @@ def create_app(
             raw_midi = manifest.get("midi")
             raw_edits = manifest.get("edits")
             if not isinstance(raw_midi, dict) or not isinstance(raw_edits, dict):
-                raise WebValidationError("プロジェクトのMIDIまたは編集情報が不正です")
-            original_path = _project_member_path(extracted.root, raw_midi.get("path"), "基準MIDI")
+                raise WebValidationError(t("プロジェクトのMIDIまたは編集情報が不正です"))
+            original_path = _project_member_path(extracted.root, raw_midi.get("path"), t("基準MIDI"))
             original_name = raw_midi.get("originalName")
             if not isinstance(original_name, str) or not original_name:
-                raise WebValidationError("プロジェクトの元ファイル名が不正です")
+                raise WebValidationError(t("プロジェクトの元ファイル名が不正です"))
             midi_file, tracks = midi.analyze_midi_file(original_path)
             candidate = WebSession(root=project_root)
             candidate.load_midi(original_path, sanitize_stem(original_name), midi_file.ticks_per_beat, tracks)
@@ -1114,56 +1121,56 @@ def create_app(
             raw_source = manifest.get("source")
             if raw_source is not None:
                 if not isinstance(raw_source, dict):
-                    raise WebValidationError("プロジェクトの音源情報が不正です")
+                    raise WebValidationError(t("プロジェクトの音源情報が不正です"))
                 source_format = raw_source.get("format")
                 source_name = raw_source.get("name")
                 source_files = raw_source.get("files")
                 active_file = raw_source.get("activeFile")
                 if not isinstance(source_format, str) or not isinstance(source_name, str):
-                    raise WebValidationError("プロジェクトの音源情報が不正です")
+                    raise WebValidationError(t("プロジェクトの音源情報が不正です"))
                 convert.format_by_key(source_format)
                 if not isinstance(source_files, list) or not isinstance(active_file, str):
-                    raise WebValidationError("プロジェクトの音源ファイル情報が不正です")
+                    raise WebValidationError(t("プロジェクトの音源ファイル情報が不正です"))
                 candidate.source_format = source_format
                 candidate.source_name = sanitize_stem(source_name)
                 candidate.source_files = []
                 for entry in source_files:
                     if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("name"), str):
-                        raise WebValidationError("プロジェクトの音源ファイル情報が不正です")
-                    path = _project_member_path(extracted.root, entry["path"], "音源ファイル")
+                        raise WebValidationError(t("プロジェクトの音源ファイル情報が不正です"))
+                    path = _project_member_path(extracted.root, entry["path"], t("音源ファイル"))
                     candidate.source_files.append(
                         {"path": path.relative_to(project_root).as_posix(), "name": entry["name"]}
                     )
-                active_path = _project_member_path(extracted.root, active_file, "選択中の音源ファイル")
+                active_path = _project_member_path(extracted.root, active_file, t("選択中の音源ファイル"))
                 if active_path.relative_to(project_root).as_posix() not in {entry["path"] for entry in candidate.source_files}:
-                    raise WebValidationError("選択中の音源ファイルが一覧に含まれていません")
+                    raise WebValidationError(t("選択中の音源ファイルが一覧に含まれていません"))
                 candidate.source_path = active_path
                 metadata = raw_source.get("metadata", {})
                 songs = raw_source.get("songs", [])
                 playlists = raw_source.get("playlists", [])
                 if not isinstance(metadata, dict) or not isinstance(songs, list) or not isinstance(playlists, list) or not all(isinstance(item, str) for item in playlists):
-                    raise WebValidationError("プロジェクトの音源詳細が不正です")
+                    raise WebValidationError(t("プロジェクトの音源詳細が不正です"))
                 candidate.source_metadata = metadata
                 candidate.source_songs = songs
                 candidate.source_m3u_texts = playlists
                 song_index = raw_source.get("songIndex")
                 if song_index is not None and (isinstance(song_index, bool) or not isinstance(song_index, int)):
-                    raise WebValidationError("プロジェクトの曲番号が不正です")
+                    raise WebValidationError(t("プロジェクトの曲番号が不正です"))
                 candidate.source_song_index = song_index
                 converted_options = raw_source.get("convertedOptions", {})
                 if not isinstance(converted_options, dict):
-                    raise WebValidationError("プロジェクトの変換オプションが不正です")
+                    raise WebValidationError(t("プロジェクトの変換オプションが不正です"))
                 candidate.converted_options = convert.validate_convert_options(
                     convert.format_by_key(source_format), songs, converted_options
                 )
 
             raw_assets = manifest.get("assets", {})
             if not isinstance(raw_assets, dict):
-                raise WebValidationError("プロジェクトの追加資産情報が不正です")
+                raise WebValidationError(t("プロジェクトの追加資産情報が不正です"))
             raw_metadata = raw_assets.get("chipMetadata")
             if raw_metadata is not None:
                 if not isinstance(raw_metadata, dict) or not isinstance(raw_metadata.get("type"), str) or not isinstance(raw_metadata.get("payload"), dict):
-                    raise WebValidationError("プロジェクトの実機音源メタデータが不正です")
+                    raise WebValidationError(t("プロジェクトの実機音源メタデータが不正です"))
                 metadata_path = project_root / ".miditrack-metadata.json"
                 metadata_path.write_text(json.dumps(raw_metadata["payload"]), encoding="utf-8")
                 if raw_metadata["type"] == "vgm":
@@ -1171,19 +1178,19 @@ def create_app(
                 elif raw_metadata["type"] == "nsf":
                     candidate.chip_metadata = nsf_chip.load_metadata(metadata_path, len(tracks))
                 else:
-                    raise WebValidationError("未対応の実機音源メタデータです")
+                    raise WebValidationError(t("未対応の実機音源メタデータです"))
             for key, attribute, label in (
-                ("chipStem", "chip_stem_path", "チップステム"),
-                ("dacStem", "dac_stem_path", "DACステム"),
-                ("gameSoundfont", "game_soundfont_path", "ゲームSoundFont"),
+                ("chipStem", "chip_stem_path", t("チップステム")),
+                ("dacStem", "dac_stem_path", t("DACステム")),
+                ("gameSoundfont", "game_soundfont_path", t("ゲームSoundFont")),
             ):
                 value = raw_assets.get(key)
                 if value is not None:
                     setattr(candidate, attribute, _project_member_path(extracted.root, value, label))
 
-            assignments = parse_project_index_map(raw_edits.get("assignments", {}), "音色設定")
-            volumes = parse_project_index_map(raw_edits.get("volumes", {}), "音量設定")
-            sources = parse_project_index_map(raw_edits.get("sources", {}), "音源設定")
+            assignments = parse_project_index_map(raw_edits.get("assignments", {}), t("音色設定"))
+            volumes = parse_project_index_map(raw_edits.get("volumes", {}), t("音量設定"))
+            sources = parse_project_index_map(raw_edits.get("sources", {}), t("音源設定"))
             candidate.assignments = midi.validate_assignments(tracks, assignments)
             candidate.volumes = midi.validate_volumes(tracks, volumes)
             validated_sources = _validate_track_sources(candidate, tracks, sources)
@@ -1194,19 +1201,19 @@ def create_app(
             candidate.transpose_semitones = midi.validate_transpose_semitones(raw_edits.get("transpose"))
             download_stem = raw_midi.get("downloadStem", "")
             if not isinstance(download_stem, str):
-                raise WebValidationError("プロジェクトのダウンロード名が不正です")
+                raise WebValidationError(t("プロジェクトのダウンロード名が不正です"))
             candidate.download_stem = sanitize_stem(download_stem) if download_stem.strip() else ""
 
             warnings: list[str] = []
             saved_soundfont = manifest.get("soundfontPath")
             if saved_soundfont is not None:
                 if not isinstance(saved_soundfont, str):
-                    raise WebValidationError("プロジェクトのSoundFont参照が不正です")
+                    raise WebValidationError(t("プロジェクトのSoundFont参照が不正です"))
                 soundfont_path = Path(saved_soundfont)
                 if render.is_soundfont_file(soundfont_path):
                     candidate.soundfont_override = soundfont_path
                 else:
-                    warnings.append("保存されたSoundFontが見つからないため、既定を使用します。")
+                    warnings.append(t("保存されたSoundFontが見つからないため、既定を使用します。"))
 
             raw_ui = manifest.get("ui", {})
             ui_state = validate_project_ui(raw_ui, tracks)
@@ -1218,7 +1225,7 @@ def create_app(
     def _ingest_midi_upload(original_name: str, save: UploadSaver) -> dict[str, Any]:
         """保存方法を問わずMIDIを新しいセッションへ取り込む。"""
         if not original_name.lower().endswith(ALLOWED_MIDI_EXTENSIONS):
-            raise WebValidationError("拡張子が .mid または .midi のファイルを選択してください")
+            raise WebValidationError(t("拡張子が .mid または .midi のファイルを選択してください"))
 
         temp_root = Path(tempfile.mkdtemp(prefix="miditrack-"))
         try:
@@ -1240,7 +1247,7 @@ def create_app(
     def _ingest_source_uploads(entries: list[tuple[str, UploadSaver]]) -> dict[str, Any]:
         """保存方法を問わず音源・ZIP・m3uを新しい音源セッションへ取り込む。"""
         if not entries:
-            raise WebValidationError("音源ファイルを選択してください")
+            raise WebValidationError(t("音源ファイルを選択してください"))
 
         # resolve()しておかないと、extract_zip_members()内部のdest_dir.resolve()
         # （macOSの/var -> /private/var シンボリックリンク解決）と食い違い、
@@ -1320,6 +1327,13 @@ def create_app(
         html = html.replace(
             "__MIDITRACK_TOKEN_REQUIRED__", "true" if require_token else "false"
         )
+        # 言語もここでサーバー側確定させる。app.jsは<script defer>で初回ペイント
+        # より後にしか実行できず（CSPがインラインscriptを禁止しており、
+        # ダークモードの白フラッシュと同型の問題になる — i18n.localize_html()
+        # のdocstring参照）、静的テキストはHTML文字列の時点で言語を確定させる
+        # 必要がある。before_requestで既に確定済みの言語をそのまま使う。
+        html = html.replace("__MIDITRACK_LANG__", i18n.get_language())
+        html = i18n.localize_html(html, i18n.get_language())
         return Response(html, mimetype="text/html")
 
     @app.get("/favicon.ico")
@@ -1332,7 +1346,7 @@ def create_app(
 
     @app.get("/api/preferences")
     def get_preferences() -> Response:
-        return jsonify(**preferences.load_preferences())
+        return jsonify(**preferences.localize_preferences_payload(preferences.load_preferences()))
 
     @app.patch("/api/preferences")
     def update_preferences() -> Response:
@@ -1345,8 +1359,8 @@ def create_app(
         """
         body = request.get_json(silent=True) or {}
         if not any(field in body for field in preferences.PATCHABLE_PREFERENCE_FIELDS):
-            raise WebValidationError("更新する設定を指定してください")
-        return jsonify(**preferences.save_preferences(body))
+            raise WebValidationError(t("更新する設定を指定してください"))
+        return jsonify(**preferences.localize_preferences_payload(preferences.save_preferences(body)))
 
     @app.get("/api/soundfonts")
     def get_soundfonts() -> Response:
@@ -1360,10 +1374,10 @@ def create_app(
             web_session.soundfont_override = None
         else:
             if not isinstance(raw_path, str) or not raw_path:
-                raise WebValidationError("SoundFontのパスが不正です")
+                raise WebValidationError(t("SoundFontのパスが不正です"))
             candidate = Path(raw_path)
             if not render.is_soundfont_file(candidate):
-                raise WebValidationError(f"SoundFontファイルが見つかりません: {raw_path}")
+                raise WebValidationError(t("SoundFontファイルが見つかりません: {raw_path}", raw_path=raw_path))
             web_session.soundfont_override = candidate
         web_session.invalidate_render()
         # ブラウザでの選択を次回起動でも復元できるよう永続化する
@@ -1378,7 +1392,7 @@ def create_app(
         web_session.require_tracks()
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict):
-            raise WebValidationError("プロジェクトの画面設定はオブジェクトで指定してください")
+            raise WebValidationError(t("プロジェクトの画面設定はオブジェクトで指定してください"))
         archive_path = build_project_archive(validate_project_ui(body, web_session.require_tracks()))
         download_name = f"{_effective_download_stem(web_session)}{PROJECT_EXTENSION}"
         return send_file(
@@ -1396,9 +1410,9 @@ def create_app(
         request.max_content_length = MAX_PROJECT_UPLOAD_BYTES
         upload = request.files.get("project")
         if upload is None or not upload.filename:
-            raise WebValidationError(".miditrackファイルを選択してください")
+            raise WebValidationError(t(".miditrackファイルを選択してください"))
         if not upload.filename.lower().endswith(PROJECT_EXTENSION):
-            raise WebValidationError("拡張子が .miditrack のファイルを選択してください")
+            raise WebValidationError(t("拡張子が .miditrack のファイルを選択してください"))
         payload, ui_state, warnings = _import_project_upload(upload.save)
         return jsonify(session=payload, uiState=ui_state, warnings=warnings)
 
@@ -1410,7 +1424,7 @@ def create_app(
     def create_session() -> tuple[Response, int]:
         upload = request.files.get("midi")
         if upload is None or not upload.filename:
-            raise WebValidationError("MIDIファイルを選択してください")
+            raise WebValidationError(t("MIDIファイルを選択してください"))
         return jsonify(**_ingest_midi_upload(upload.filename, upload.save)), 201
 
     @app.delete("/api/session")
@@ -1426,22 +1440,22 @@ def create_app(
         raw_volumes = body.get("volumes", {})
         raw_sources = body.get("sources", {})
         if not isinstance(raw_assignments, dict):
-            raise WebValidationError("assignmentsはオブジェクトで指定してください")
+            raise WebValidationError(t("assignmentsはオブジェクトで指定してください"))
         if not isinstance(raw_volumes, dict):
-            raise WebValidationError("volumesはオブジェクトで指定してください")
+            raise WebValidationError(t("volumesはオブジェクトで指定してください"))
         if not isinstance(raw_sources, dict):
-            raise WebValidationError("sourcesはオブジェクトで指定してください")
+            raise WebValidationError(t("sourcesはオブジェクトで指定してください"))
         if not raw_assignments and not raw_volumes and not raw_sources:
-            raise WebValidationError("assignments、volumes、sourcesのいずれかを指定してください")
+            raise WebValidationError(t("assignments、volumes、sourcesのいずれかを指定してください"))
 
         parsed_assignments: dict[int, int | None] = {}
         for key, value in raw_assignments.items():
             try:
                 track_index = int(key)
             except (TypeError, ValueError):
-                raise WebValidationError(f"トラック番号が不正です: {key}") from None
+                raise WebValidationError(t("トラック番号が不正です: {key}", key=key)) from None
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-                raise WebValidationError(f"GMプログラム番号は整数で指定してください: {value}")
+                raise WebValidationError(t("GMプログラム番号は整数で指定してください: {value}", value=value))
             parsed_assignments[track_index] = value
 
         parsed_volumes: dict[int, int | None] = {}
@@ -1449,9 +1463,9 @@ def create_app(
             try:
                 track_index = int(key)
             except (TypeError, ValueError):
-                raise WebValidationError(f"トラック番号が不正です: {key}") from None
+                raise WebValidationError(t("トラック番号が不正です: {key}", key=key)) from None
             if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-                raise WebValidationError(f"トラック音量は整数で指定してください: {value}")
+                raise WebValidationError(t("トラック音量は整数で指定してください: {value}", value=value))
             parsed_volumes[track_index] = value
 
         parsed_sources: dict[int, str] = {}
@@ -1460,11 +1474,11 @@ def create_app(
             try:
                 track_index = int(key)
             except (TypeError, ValueError):
-                raise WebValidationError(f"トラック番号が不正です: {key}") from None
+                raise WebValidationError(t("トラック番号が不正です: {key}", key=key)) from None
             if not isinstance(value, str):
-                raise WebValidationError(f"トラック音源は文字列で指定してください: {value}")
+                raise WebValidationError(t("トラック音源は文字列で指定してください: {value}", value=value))
             if track_index not in valid_track_indices:
-                raise WebValidationError(f"トラック番号が不正です: {track_index}")
+                raise WebValidationError(t("トラック番号が不正です: {track_index}", track_index=track_index))
             parsed_sources[track_index] = value
 
         validated_assignments = midi.validate_assignments(tracks, parsed_assignments)
@@ -1516,7 +1530,7 @@ def create_app(
         web_session.require_tracks()
         body = request.get_json(silent=True) or {}
         if "speed" not in body and "transpose" not in body:
-            raise WebValidationError("speedまたはtransposeを指定してください")
+            raise WebValidationError(t("speedまたはtransposeを指定してください"))
 
         if "speed" in body:
             web_session.speed_ratio = midi.validate_speed_ratio(body["speed"])
@@ -1541,10 +1555,10 @@ def create_app(
         web_session.require_tracks()
         body = request.get_json(silent=True) or {}
         if "name" not in body:
-            raise WebValidationError("nameを指定してください")
+            raise WebValidationError(t("nameを指定してください"))
         raw_name = body["name"]
         if not isinstance(raw_name, str):
-            raise WebValidationError("nameは文字列で指定してください")
+            raise WebValidationError(t("nameは文字列で指定してください"))
         new_stem = sanitize_stem(raw_name) if raw_name.strip() else ""
         if new_stem != web_session.download_stem:
             web_session.download_stem = new_stem
@@ -1557,7 +1571,7 @@ def create_app(
         """現在のMIDIから、レンダリング非依存のピアノロール情報を返す。"""
         web_session.require_tracks()
         if web_session.original_path is None:
-            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+            raise WebValidationError(t("先にMIDIファイルをアップロードしてください"))
         original_path = web_session.original_path
         speed = web_session.speed_ratio
         transpose = web_session.transpose_semitones
@@ -1569,7 +1583,7 @@ def create_app(
         """APIから受け取った試聴モードを検証して返す。"""
         mode = raw_mode if raw_mode is not None else FAST_RENDER_MODE
         if mode not in RENDER_SAMPLE_RATES:
-            raise WebValidationError("renderModeはfastまたはqualityで指定してください")
+            raise WebValidationError(t("renderModeはfastまたはqualityで指定してください"))
         return mode
 
     def _path_signature(path: Path | None) -> tuple[str, int, int] | None:
@@ -1754,7 +1768,7 @@ def create_app(
         「未適用」は常に「割り当て変更後まだ一度もapplyしていない」と一致する。
         """
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("MIDIファイルがアップロードされていません")
+            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
         for _attempt in range(3):
             if web_session.applied_path is not None:
                 return web_session.applied_path
@@ -1772,7 +1786,7 @@ def create_app(
             web_session.applied_duration_seconds = float(apply_summary["durationSeconds"])
             web_session.applied_path = applied_path
             return applied_path
-        raise WebValidationError("設定が連続して変更されたため、MIDIの適用をやり直してください")
+        raise WebValidationError(t("設定が連続して変更されたため、MIDIの適用をやり直してください"))
 
     def _plan_render_jobs(
         applied_path: Path, gm_soundfont: Path | None, render_id: int
@@ -2287,9 +2301,7 @@ def create_app(
                     _cache_store(cache_key, wav_path)
                 break
             else:
-                raise WebValidationError(
-                    "設定が連続して変更されたため、レンダリングをやり直してください"
-                )
+                raise WebValidationError(t("設定が連続して変更されたため、レンダリングをやり直してください"))
 
             if activate_player:
                 is_new_player_source = (
@@ -2387,7 +2399,7 @@ def create_app(
                     if raw_path is None:
                         for path in temporary_paths:
                             path.unlink(missing_ok=True)
-                        raise WebValidationError("原曲音源の短区間プレビューを温めています")
+                        raise WebValidationError(t("原曲音源の短区間プレビューを温めています"))
                     # 集合WAVには基準音量のこのチャンネルが既に含まれるため、差分だけ
                     # を加える。ミュートを含む場合は集合WAVを使わず、下の個別経路で
                     # 可聴チャンネルだけを使う。
@@ -2404,7 +2416,7 @@ def create_app(
                 if raw_path is None:
                     for path in temporary_paths:
                         path.unlink(missing_ok=True)
-                    raise WebValidationError("原曲音源の短区間プレビューを温めています")
+                    raise WebValidationError(t("原曲音源の短区間プレビューを温めています"))
                 add_trimmed_stem(
                     raw_path,
                     f"chip{index}",
@@ -2422,7 +2434,7 @@ def create_app(
         従来どおり全尺WAVだけを対象にできるようにするためである。
         """
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("MIDIファイルがアップロードされていません")
+            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
         with web_session.render_lock:
             started_at = time.perf_counter()
             state_key = _render_state_key(mode)
@@ -2493,9 +2505,7 @@ def create_app(
                     entry = _preview_cache_store(cache_key, wav_path, window)
                     break
                 else:
-                    raise WebValidationError(
-                        "設定が連続して変更されたため、短区間プレビューをやり直してください"
-                    )
+                    raise WebValidationError(t("設定が連続して変更されたため、短区間プレビューをやり直してください"))
             else:
                 breakdown = RenderBreakdown()
 
@@ -2521,7 +2531,7 @@ def create_app(
     def render_endpoint() -> Response:
         web_session.require_tracks()
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+            raise WebValidationError(t("先にMIDIファイルをアップロードしてください"))
 
         body = request.get_json(silent=True) or {}
         mode = _validate_render_mode(body.get("renderMode"))
@@ -2544,7 +2554,7 @@ def create_app(
         """現在状態の試聴WAVを生成するが、プレイヤー音源は切り替えない。"""
         web_session.require_tracks()
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+            raise WebValidationError(t("先にMIDIファイルをアップロードしてください"))
         body = request.get_json(silent=True) or {}
         mode = _validate_render_mode(body.get("renderMode"))
         outcome = ensure_render(mode, activate_player=False)
@@ -2562,11 +2572,11 @@ def create_app(
         """現在の曲全体タイムライン位置付近の短区間WAVを返す。"""
         web_session.require_tracks()
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("先にMIDIファイルをアップロードしてください")
+            raise WebValidationError(t("先にMIDIファイルをアップロードしてください"))
         body = request.get_json(silent=True) or {}
         requested_revision = body.get("stateRevision")
         if requested_revision is not None and requested_revision != web_session.state_revision:
-            return jsonify(error="設定が更新されたため短区間プレビューを破棄しました"), 409
+            return jsonify(error=t("設定が更新されたため短区間プレビューを破棄しました")), 409
         timeline_seconds = body.get("timelineSeconds", 0.0)
         if (
             isinstance(timeline_seconds, bool)
@@ -2574,7 +2584,7 @@ def create_app(
             or not math.isfinite(timeline_seconds)
             or timeline_seconds < 0
         ):
-            raise WebValidationError("timelineSecondsは0以上の有限な秒数で指定してください")
+            raise WebValidationError(t("timelineSecondsは0以上の有限な秒数で指定してください"))
         mode = _validate_render_mode(body.get("renderMode"))
         try:
             outcome, window = ensure_preview(mode, float(timeline_seconds))
@@ -2617,13 +2627,16 @@ def create_app(
                 if candidate is not None and candidate.exists():
                     audio_path = candidate
         if audio_path is None or not audio_path.exists():
-            raise WebValidationError("先に「適用して試聴」を実行してください")
+            # 「適用して試聴」ボタンは自動レンダリングへの置き換えで既に廃止済み
+            # （存在しないボタン名を案内していた）。他の未アップロード時ガードと
+            # 同じ文言に揃える。
+            raise WebValidationError(t("先にMIDIファイルをアップロードしてください"))
         return send_file(audio_path, mimetype="audio/wav", conditional=True, max_age=0)
 
     @app.get("/api/download")
     def get_download() -> Response:
         if web_session.original_path is None or web_session.root is None:
-            raise WebValidationError("MIDIファイルがアップロードされていません")
+            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
         applied_path = ensure_applied()
         download_name = f"{_effective_download_stem(web_session)}_miditrack.mid"
         return send_file(
@@ -2636,7 +2649,7 @@ def create_app(
     @app.get("/api/download/wav")
     def get_download_wav() -> Response:
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("MIDIファイルがアップロードされていません")
+            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
         outcome = ensure_render(QUALITY_RENDER_MODE, activate_player=False)
         download_name = f"{_effective_download_stem(web_session)}_miditrack.wav"
         return send_file(
@@ -2665,7 +2678,7 @@ def create_app(
         """
         web_session.require_tracks()
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("MIDIファイルがアップロードされていません")
+            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
 
         body = request.get_json(silent=True) or {}
         speeds, transposes = midi.validate_variation_options(
@@ -2673,7 +2686,7 @@ def create_app(
         )
         include_midi = body.get("includeMidi", True)
         if not isinstance(include_midi, bool):
-            raise WebValidationError("includeMidiはtrue/falseで指定してください")
+            raise WebValidationError(t("includeMidiはtrue/falseで指定してください"))
 
         work_dir = web_session.root / "variations_work"
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -2764,7 +2777,7 @@ def create_app(
             web_session.variations_zip_path is None
             or not web_session.variations_zip_path.exists()
         ):
-            raise WebValidationError("先に「バリエーションをまとめて生成」を実行してください")
+            raise WebValidationError(t("先に「バリエーションをまとめて生成」を実行してください"))
         download_name = f"{_effective_download_stem(web_session)}_variations.zip"
         return send_file(
             web_session.variations_zip_path,
@@ -2792,12 +2805,12 @@ def create_app(
         """
         web_session.require_tracks()
         if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError("MIDIファイルがアップロードされていません")
+            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
 
         body = request.get_json(silent=True) or {}
         group_chip_tracks = body.get("groupChipTracks", False)
         if not isinstance(group_chip_tracks, bool):
-            raise WebValidationError("groupChipTracksはtrue/falseで指定してください")
+            raise WebValidationError(t("groupChipTracksはtrue/falseで指定してください"))
 
         work_dir = web_session.root / "track_export_work"
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -2976,7 +2989,7 @@ def create_app(
                         filename = unique_wav_name(f"{download_stem}_chiptracks_orig")
                         dest = work_dir / filename
                         shutil.move(str(combined), dest)
-                        items.append({"track": "原曲の音源（まとめ）", "file": filename, "kind": "orig"})
+                        items.append({"track": t("原曲の音源（まとめ）"), "file": filename, "kind": "orig"})
                         export_paths.append(dest)
                     else:
                         for index, (raw_path, gain) in zip(selected_chip_indices, chip_plan.inputs):
@@ -3000,7 +3013,7 @@ def create_app(
                     filename = unique_wav_name(f"{download_stem}_noise_orig")
                     dest = work_dir / filename
                     shutil.move(str(final_stem), dest)
-                    items.append({"track": "ノイズ/DPCM", "file": filename, "kind": "orig"})
+                    items.append({"track": t("ノイズ/DPCM"), "file": filename, "kind": "orig"})
                     export_paths.append(dest)
                 if dac_stem is not None:
                     final_dac = work_dir / "dac_stem_gain.wav"
@@ -3012,7 +3025,7 @@ def create_app(
                     export_paths.append(dest)
 
                 if not items:
-                    raise WebValidationError("出力できるトラックがありません")
+                    raise WebValidationError(t("出力できるトラックがありません"))
 
             zip_path = web_session.root / "track_export.zip"
             if web_session.track_export_zip_path is not None:
@@ -3032,7 +3045,7 @@ def create_app(
             web_session.track_export_zip_path is None
             or not web_session.track_export_zip_path.exists()
         ):
-            raise WebValidationError("先に「トラックごとに出力」を実行してください")
+            raise WebValidationError(t("先に「トラックごとに出力」を実行してください"))
         download_name = f"{_effective_download_stem(web_session)}_tracks.zip"
         return send_file(
             web_session.track_export_zip_path,
@@ -3078,15 +3091,15 @@ def create_app(
         def open_local() -> tuple[Response, int] | Response:
             """miditrack.appがステージングしたファイルだけを既存の取込処理へ渡す。"""
             if not require_token:
-                return jsonify(error="Finderからのファイル読み込みには起動トークンが必要です"), 403
+                return jsonify(error=t("Finderからのファイル読み込みには起動トークンが必要です")), 403
             if not local_open_root.is_dir():
-                raise WebValidationError("ローカルファイル用の一時領域を確認できません")
+                raise WebValidationError(t("ローカルファイル用の一時領域を確認できません"))
             body = request.get_json(silent=True)
             paths = body.get("paths") if isinstance(body, dict) else None
             if not isinstance(paths, list) or not paths:
-                raise WebValidationError("読み込むファイルのパスを指定してください")
+                raise WebValidationError(t("読み込むファイルのパスを指定してください"))
             if len(paths) > 64:
-                raise WebValidationError("一度に読み込めるファイルは64件までです")
+                raise WebValidationError(t("一度に読み込めるファイルは64件までです"))
 
             allowed_extensions = {
                 *ALLOWED_MIDI_EXTENSIONS,
@@ -3097,21 +3110,23 @@ def create_app(
             entries: list[tuple[str, UploadSaver]] = []
             for raw_path in paths:
                 if not isinstance(raw_path, str) or not raw_path:
-                    raise WebValidationError("ローカルファイルのパスが不正です")
+                    raise WebValidationError(t("ローカルファイルのパスが不正です"))
                 source_path = Path(raw_path)
                 try:
                     resolved_path = source_path.resolve(strict=True)
                     resolved_path.relative_to(local_open_root)
                     source_status = source_path.lstat()
                 except (OSError, ValueError):
-                    raise WebValidationError("ローカルファイルはアプリの一時領域内にある必要があります") from None
+                    raise WebValidationError(t("ローカルファイルはアプリの一時領域内にある必要があります")) from None
                 if source_path.is_symlink() or not stat.S_ISREG(source_status.st_mode):
-                    raise WebValidationError("ローカルファイルは通常ファイルで指定してください")
+                    raise WebValidationError(t("ローカルファイルは通常ファイルで指定してください"))
                 if resolved_path.suffix.lower() not in allowed_extensions:
-                    raise WebValidationError(f"対応していない拡張子です: {resolved_path.suffix or '(なし)'}")
+                    raise WebValidationError(
+                        t("対応していない拡張子です: {suffix}", suffix=resolved_path.suffix or t("(なし)"))
+                    )
                 size_limit = MAX_PROJECT_UPLOAD_BYTES if resolved_path.suffix.lower() == PROJECT_EXTENSION else MAX_UPLOAD_BYTES
                 if source_status.st_size > size_limit:
-                    raise WebValidationError("ローカルファイルのサイズが上限を超えています")
+                    raise WebValidationError(t("ローカルファイルのサイズが上限を超えています"))
                 entries.append((resolved_path.name, lambda destination, source=resolved_path: shutil.copyfile(source, destination)))
 
             project_entries = [entry for entry in entries if entry[0].lower().endswith(PROJECT_EXTENSION)]
@@ -3125,26 +3140,26 @@ def create_app(
     @app.post("/api/source/select-file")
     def select_source_file() -> Response:
         if web_session.root is None or not web_session.source_files:
-            raise WebValidationError("先に音源ファイルをアップロードしてください")
+            raise WebValidationError(t("先に音源ファイルをアップロードしてください"))
         body = request.get_json(silent=True) or {}
         relative = body.get("path")
         if not isinstance(relative, str) or not relative:
-            raise WebValidationError("pathを指定してください")
+            raise WebValidationError(t("pathを指定してください"))
         match = next((f for f in web_session.source_files if f["path"] == relative), None)
         if match is None:
-            raise WebValidationError(f"未知のファイルです: {relative}")
+            raise WebValidationError(t("未知のファイルです: {relative}", relative=relative))
         _activate_source_file(web_session.root / relative)
         return jsonify(**session_payload(web_session))
 
     @app.post("/api/source/convert")
     def convert_source() -> Response:
         if web_session.source_path is None or web_session.root is None or web_session.source_format is None:
-            raise WebValidationError("先に音源ファイルをアップロードしてください")
+            raise WebValidationError(t("先に音源ファイルをアップロードしてください"))
         fmt = convert.format_by_key(web_session.source_format)
 
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict):
-            raise WebValidationError("変換オプションはオブジェクトで指定してください")
+            raise WebValidationError(t("変換オプションはオブジェクトで指定してください"))
         options = convert.validate_convert_options(fmt, web_session.source_songs, body)
 
         output_path = web_session.root / "converted.mid"

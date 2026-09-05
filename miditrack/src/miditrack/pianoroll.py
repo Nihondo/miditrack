@@ -9,6 +9,7 @@ from typing import Any
 
 from . import midi
 from .errors import MidiTrackError
+from .i18n import t
 from .gm import PERCUSSION_CHANNEL
 
 MAX_PIANOROLL_NOTES = 20_000
@@ -58,9 +59,9 @@ def _read_midi(path: Path) -> Any:
     try:
         midi_file = mido.MidiFile(path)
     except (OSError, EOFError, ValueError) as error:
-        raise MidiTrackError(f"MIDIを読み込めません: {path}: {error}") from error
+        raise MidiTrackError(t("MIDIを読み込めません: {path}: {error}", path=path, error=error)) from error
     if midi_file.ticks_per_beat <= 0:
-        raise MidiTrackError("SMPTE形式のMIDIタイムコードには対応していません")
+        raise MidiTrackError(t("SMPTE形式のMIDIタイムコードには対応していません"))
     return midi_file
 
 

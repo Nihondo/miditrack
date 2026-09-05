@@ -4885,3 +4885,118 @@ builds and signs `dist/miditrack.app` and does not require
 change" checklist runs, so a routine sanity check never submits a real
 notarization request. Only `--notarize` runs `notarytool submit --wait`,
 staples, and archives.
+
+## Added: Japanese/English localization (Web UI + native menu)
+
+A prior investigation (`docs/webui-cli-encapsulated-crescent.md`, now stale —
+it predates `preferences.py`, `project.py`, `pianoroll.py`, and the settings
+dialog) scoped this to the Web UI and native macOS menu only. The CLI
+(`cli.py`) and the README's screenshots stay Japanese-only/unchanged; the
+scope decision and its rationale live in that doc's history, not repeated
+here.
+
+**Design: gettext-lite, not a new key namespace.** `src/miditrack/i18n.py`'s
+`t(message, **params)` uses the existing Japanese string itself as the msgid
+and looks it up in `web_assets/i18n/en.json` (a flat `{"日本語": "English"}`
+map); a missing key falls back to the Japanese message unchanged rather than
+an empty string or a raw key. This was chosen over inventing message IDs
+(`error.track.invalid`, etc.) because it makes the ~250 call-site edits
+mechanical (wrap the existing literal, don't rename it) and keeps almost
+every existing string-matching test green — `str(exception)` assertions,
+`option_schema()` label assertions, and Swift menu-title assertions all still
+see the Japanese literal on disk. `app.js` has its own independent `t()`
+(same msgid convention, fetches `/assets/i18n/en.json` once in `init()`
+before any rendering) and `miditrack_app.swift` has a third, independent
+`T()` backed by a Swift `EnglishMenuCatalog` dictionary — three catalogs, not
+one shared file, because each layer's msgids are only ever produced and
+consumed by that layer.
+
+**Why the current language lives in a `contextvars.ContextVar`, not
+`WebSession` or a global.** `midi.py`, `convert.py`, `project.py`, and
+`preferences.py` don't import Flask and must not start doing so just to call
+`t()`. A `ContextVar` is stdlib, thread-and-async-safe, and lets
+`web.py`'s `before_request` be the single place that resolves and sets the
+language per request (`i18n.resolve_language(stored_appLanguage,
+request.headers.get("Accept-Language"))`) without any of those modules
+depending on Flask or on each other. `WebSession` was rejected the same way
+`POST /api/variations`'s design note already rejected it for other
+per-request values: the server is `threaded=True`, so anything on the shared
+session object is visible to a concurrent request.
+
+**Why static HTML is translated server-side, not by `app.js`.** `app.js` is
+`<script defer>`, so it only runs after the document has parsed — the same
+constraint that already forced the dark-mode flash fix (see "Theme
+selection" above) to live at the top of `app.js` instead of an inline
+`<head>` script (CSP's `script-src 'self'` blocks inline scripts outright).
+Translating static text in JS would mean an English user's first paint shows
+Japanese, then flips to English a beat later. Instead, `index.html`'s
+translatable nodes carry a `data-i18n` (element's own text is the msgid) or
+`data-i18n-attr="aria-label placeholder ..."` (named attributes' current
+values are the msgids) marker, and `web.py`'s `index()` — which already does
+one `str.replace()` for `__MIDITRACK_TOKEN_REQUIRED__` — runs
+`i18n.localize_html(html, language)` right after. That function is a
+`html.parser.HTMLParser` subclass that rewrites only marked nodes/attributes
+and is a complete no-op (returns the original string unchanged, byte for
+byte) when `language == "ja"`, so the default Japanese path carries zero risk
+from this feature. The same `index()` call also substitutes `<html
+lang="__MIDITRACK_LANG__">` and injects `<meta name="miditrack-lang"
+content="...">` — `app.js` reads that meta (never `navigator.language`) so
+the server-rendered static text and the client-rendered dynamic text always
+agree on which language "system" resolved to for this request.
+
+**Language storage and the settings-dialog control.** `appLanguage`
+(`"system"`/`"ja"`/`"en"`, default `"system"`) is a `preferences.py` field
+added the same two-line way `appTheme` was (`_empty_preferences()` default +
+one `_FIELD_VALIDATORS` entry using the existing `_validate_choice()`
+helper) — see "`preferences.py`: a validator table instead of one `if` per
+field" above. It is server-side for the same reason every other preference
+is: `make_server(..., 0, ...)` picks a fresh port on every launch, so
+`localStorage` would silently forget the choice on every restart. Unlike
+`appTheme`, changing `#app-language` does **not** re-render in place —
+`app.js`'s handler `PATCH`es the field and calls `location.reload()`,
+because the static half of the page can only be re-rendered by a fresh
+request to `index()`. `init()`'s existing `GET /api/session` restore means
+the reload does not lose in-progress edits.
+
+**What stays Japanese on purpose.** `RenderError`/`ConvertError`/
+`RubberBandError`/`MixError` (the 502-status family — missing binaries,
+subprocess timeouts, environment problems) were deliberately left
+untranslated; only the 400-status family (`WebValidationError`,
+`MidiTrackError`) and `convert.option_schema()` are localized. Export
+filenames and ZIP member names (`_orig`, `_midi`, the noise/DPCM stem name)
+stay Japanese in both languages — only their on-screen labels are
+translated — so a user's downloaded file names don't change out from under
+them when they flip the language setting. Built-in ensemble presets
+(`ゲームリード`/`アコースティック`/`ジャズカルテット`) are stored in
+`preferences.json` in Japanese always; `preferences.localize_preferences_payload()`
+swaps in the translated display name only in the API response, and only for
+presets whose `id` matches a built-in and whose `name` still equals that
+built-in's original Japanese name — a user-renamed preset (in either
+language) is left alone. `midi.py`'s `reason_message` dict and `app.js`'s
+`reasonLabel()` are two independent implementations of the same
+percussion/multi-channel/no-notes track-lock explanation (pre-existing
+duplication, not introduced by this change) — they were reworded to share
+one exact Japanese string so both feed the same `en.json` entry instead of
+independently drifting again.
+
+**Test coverage.** `tests/test_i18n.py` extracts every `t(...)` msgid from
+`src/miditrack/*.py` (via `ast`, so implicit adjacent-string-literal
+concatenation like `t("A" "B")` is read as one joined string, not two — a
+naive regex over source text gets this wrong), every `t(...)` msgid from
+`app.js`, and every `data-i18n`/`data-i18n-attr` msgid from `index.html`,
+then asserts `en.json`'s keys are exactly that set (catches both missed
+translations and stale entries) with matching `{placeholder}` sets on both
+sides of each entry (a mismatch would only surface as a `KeyError` at
+request time, in English mode only). It also exercises `resolve_language()`,
+`t()`'s Japanese-passthrough/English-fallback behavior, and
+`localize_html()`'s no-op guarantee directly.
+
+**Native menu bar reflects the language at launch only.** `miditrack_app.swift`
+reads `appLanguage` from `preferences.json` (same path-resolution helper
+shape as `preferences.preferences_path()`, including the
+`MIDITRACK_PREFERENCES_PATH` test seam) once, before `installMainMenu()`
+builds the menu bar — there is no code path that rebuilds `NSApp.mainMenu`
+after launch, so switching the Web UI's language takes effect in the native
+menu only on the next launch of the app. This asymmetry (Web UI: reload;
+native menu: relaunch) is intentional rather than a bug to fix — see the
+README's Preferences section.

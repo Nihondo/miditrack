@@ -33,6 +33,43 @@ if (queryToken) {
 const isTokenRequired =
   document.querySelector('meta[name="miditrack-token-required"]')?.content !== "false";
 
+// 静的テキスト（index.html）は既にweb.pyのindex()がサーバー側でこの言語へ
+// 差し替え済み。ここではapp.jsが動的に生成する文字列だけをt()で翻訳する
+// ので、両者が別々に"system"を解決して言語が割れないよう、常にこのmetaを
+// 正とする（navigator.languageは見ない）。
+const uiLang = document.querySelector('meta[name="miditrack-lang"]')?.content || "ja";
+let i18nCatalog = {};
+
+// 日本語原文（msgid）をキーに英語訳を引くgettext方式。キーが無ければ日本語の
+// まま返す（未翻訳が安全側に倒れる）。paramsは`{name}`プレースホルダを単純に
+// 文字列置換する — Python側のi18n.t()と違いフォーマット指定子は使わない
+// （app.js側のmsgidは全てこのファイル自身が持つ、サーバーの都合を持ち込まない
+// 独立した文字列のため）。
+function t(message, params) {
+  let text = uiLang === "en" ? i18nCatalog[message] || message : message;
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      text = text.replaceAll(`{${key}}`, value);
+    }
+  }
+  return text;
+}
+
+// 英語カタログの読み込み。日本語表示のときはfetch自体が不要なので早期return。
+// init()の最初（loadPreferences()より前）で1回だけawaitし、以降の全ての
+// 動的レンダリングがt()を安全に呼べる状態にしてから残りの初期化を進める。
+async function loadI18nCatalog() {
+  if (uiLang !== "en") return;
+  try {
+    const response = await fetch("/assets/i18n/en.json");
+    i18nCatalog = await response.json();
+  } catch (_error) {
+    // カタログを読み込めなくても日本語へ安全にフォールバックするだけなので、
+    // ここでUIを止めない。
+    i18nCatalog = {};
+  }
+}
+
 // miditrack_app.swiftのmakeWebView()がWKUserScript（atDocumentStart）で
 // ページ内スクリプトより先に注入するフラグ。ネイティブアプリのときだけ
 // 全画面レイアウトを固定する。WKUserScriptはbody生成時にもクラスを付与し、
@@ -56,6 +93,7 @@ const MIN_LOOP_SECONDS = 0.1;
 const PREWARM_DELAY_MS = 500;
 const BLACK_PIANO_KEY_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
 const THEME_MODES = new Set(["system", "light", "dark"]);
+const LANGUAGE_MODES = new Set(["system", "ja", "en"]);
 const PIANOROLL_HEIGHTS = new Set(["compact", "standard", "tall"]);
 const PIANOROLL_GRID_DIVISIONS = new Set([4, 8, 16]);
 // "auto"のみ文字列で、それ以外はサーバーの/api/preferencesが返すJSON数値のまま。
@@ -117,6 +155,7 @@ const state = {
   hasOutlinedPianorollNotes: true, // ピアノロールのノートに濃い縁取りを描くか。設定として永続化する。
   isPianorollKeyboardVisible: true, // ピアノロール左端の鍵盤を表示するか。設定として永続化する。
   appTheme: "system", // 全体テーマ（system/light/dark）。設定として永続化する。
+  appLanguage: "system", // 表示言語（system/ja/en）。設定として永続化する。変更時はページ再読み込みが必要。
   pianorollHeight: "standard", // ピアノロールカードの高さ（compact/standard/tall）。
   isPianorollGridVisible: true, // ピアノロールのグリッド線を描くか。
   pianorollGridDivisions: 8, // 縦グリッドの分割数（4/8/16）。
@@ -313,7 +352,7 @@ async function applyPendingPianorollReload() {
   // 反映するより先に、さらに新しい編集やセッション読み込みで追い越されていたら捨てる。
   if (result.loadId !== state.pianorollLoadId) return;
   if (result.error) {
-    clearPianoroll("ピアノロールを読み込めませんでした。");
+    clearPianoroll(t("ピアノロールを読み込めませんでした。"));
     $("#pianoroll-status").textContent = result.error.message;
     return;
   }
@@ -344,6 +383,7 @@ async function loadPreferences() {
     state.hasOutlinedPianorollNotes = payload.outlinedPianorollNotes !== false;
     state.isPianorollKeyboardVisible = payload.showPianorollKeyboard !== false;
     state.appTheme = THEME_MODES.has(payload.appTheme) ? payload.appTheme : "system";
+    state.appLanguage = LANGUAGE_MODES.has(payload.appLanguage) ? payload.appLanguage : "system";
     state.pianorollHeight = PIANOROLL_HEIGHTS.has(payload.pianorollHeight)
       ? payload.pianorollHeight
       : "standard";
@@ -425,6 +465,7 @@ function applyPianorollColors() {
 // 無い間は現在の実効色（テーマ既定の解決結果）を表示する。
 function syncSettingsDialogControls() {
   $("#app-theme").value = state.appTheme;
+  $("#app-language").value = state.appLanguage;
   $("#pianoroll-height").value = state.pianorollHeight;
   $("#pianoroll-show-grid").checked = state.isPianorollGridVisible;
   $("#pianoroll-grid-divisions").value = String(state.pianorollGridDivisions);
@@ -518,7 +559,7 @@ function buildFavoriteProgramsOptgroup() {
   if (ordered.length === 0) return null;
 
   const optgroup = document.createElement("optgroup");
-  optgroup.label = "よく使う";
+  optgroup.label = t("よく使う");
   optgroup.dataset.favorites = "true";
   for (const program of ordered) {
     const option = document.createElement("option");
@@ -571,7 +612,7 @@ async function apiFetch(path, options = {}) {
   headers.set("X-Miditrack-Token", token);
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
-    let message = `処理に失敗しました（HTTP ${response.status}）`;
+    let message = t("処理に失敗しました（HTTP {status}）", { status: response.status });
     try {
       const payload = await response.json();
       if (payload.error) message = payload.error;
@@ -806,7 +847,7 @@ function renderSoundfontOptions(payload) {
 
   const defaultOption = document.createElement("option");
   defaultOption.value = "";
-  defaultOption.textContent = "既定（自動選択）";
+  defaultOption.textContent = t("既定（自動選択）");
   select.appendChild(defaultOption);
 
   for (const item of payload.items) {
@@ -819,16 +860,18 @@ function renderSoundfontOptions(payload) {
 
   const help = $("#soundfont-help");
   if (payload.items.length === 0) {
-    help.textContent =
-      "SoundFontが見つかりません。MIDI2WAV_SOUNDFONT環境変数か起動時の --soundfont で指定してください。";
+    help.textContent = t(
+      "SoundFontが見つかりません。MIDI2WAV_SOUNDFONT環境変数か起動時の --soundfont で指定してください。"
+    );
   } else if (payload.isOverride) {
-    help.textContent = "選択したSoundFontを使用します。";
+    help.textContent = t("選択したSoundFontを使用します。");
   } else {
-    help.textContent =
-      "既定の解決順（起動時の --soundfont / MIDI2WAV_SOUNDFONT環境変数 / 検索ディレクトリ）で選ばれます。";
+    help.textContent = t(
+      "既定の解決順（起動時の --soundfont / MIDI2WAV_SOUNDFONT環境変数 / 検索ディレクトリ）で選ばれます。"
+    );
   }
   if (state.session && state.session.hasGameSoundfont) {
-    help.textContent += " ここで選んだSoundFontは、音源をSoundFontにしたトラックに適用されます。";
+    help.textContent += " " + t("ここで選んだSoundFontは、音源をSoundFontにしたトラックに適用されます。");
   }
 }
 
@@ -861,9 +904,9 @@ async function handleSoundfontChange() {
 
 function formatCurrentProgram(track) {
   if (track.currentProgram === null || track.currentProgram === undefined) {
-    return "未設定";
+    return t("未設定");
   }
-  return state.programNames[track.currentProgram] || `${track.currentProgram + 1}番`;
+  return state.programNames[track.currentProgram] || t("{program}番", { program: track.currentProgram + 1 });
 }
 
 // "game"（原曲の音源）が実機チップレンダリング（libvgm/nsf2midi）を意味する
@@ -881,15 +924,17 @@ function isChipHardwareFormat() {
 }
 
 function reasonLabel(reason) {
+  // Python側midi.pyのreason_message辞書と同じmsgidを使う（同じコードから
+  // 独立に日本語化していたため、以前は文言が微妙にずれていた）。
   switch (reason) {
     case "percussion":
-      return "パーカッション（ch10）のため変更できません";
+      return t("パーカッションチャンネル（ch10）のため変更できません");
     case "multi-channel":
-      return "複数チャンネルを含むため変更できません";
+      return t("複数チャンネルを含むため変更できません");
     case "no-notes":
-      return "ノートがないため変更できません";
+      return t("ノートがないため変更できません");
     default:
-      return "変更できません";
+      return t("変更できないトラックです");
   }
 }
 
@@ -922,7 +967,7 @@ function createTrackWarningControl(track, warningText) {
   button.type = "button";
   button.className = "track-warning-button";
   button.textContent = "⚠";
-  button.setAttribute("aria-label", `${track.name}の警告`);
+  button.setAttribute("aria-label", t("{name}の警告", { name: track.name }));
   button.setAttribute("aria-describedby", tooltip.id);
   button.addEventListener("mouseenter", () => showTrackWarningTooltip(button, tooltip));
   button.addEventListener("mouseleave", () => {
@@ -980,7 +1025,7 @@ function createTrackSourceOption(track, row, source) {
   input.checked = source === track.source;
   const label = document.createElement("label");
   label.htmlFor = input.id;
-  label.textContent = source === "game" ? "原曲" : "SF";
+  label.textContent = source === "game" ? t("原曲") : "SF";
   input.addEventListener("change", () => {
     if (input.checked) updateTrackSource(track, row, input.value);
   });
@@ -995,7 +1040,7 @@ function createTrackSourceControl(track, row, trackRowRef) {
   fieldset.className = "render-mode-field track-source-field";
   const legend = document.createElement("legend");
   legend.className = "visually-hidden";
-  legend.textContent = `${track.name}の音源`;
+  legend.textContent = t("{name}の音源", { name: track.name });
   const options = document.createElement("div");
   options.className = "render-mode-options track-source-options";
   const sourceInputs = track.availableSources.map((source) => {
@@ -1004,7 +1049,9 @@ function createTrackSourceControl(track, row, trackRowRef) {
     return option.input;
   });
   if (track.sourceGroupSize > 1) {
-    fieldset.title = `同じ物理チャンネルを共有する${track.sourceGroupSize}トラックを同時に切り替えます`;
+    fieldset.title = t("同じ物理チャンネルを共有する{count}トラックを同時に切り替えます", {
+      count: track.sourceGroupSize,
+    });
   }
   fieldset.append(legend, options);
   trackRowRef.sourceInputs = sourceInputs;
@@ -1075,15 +1122,15 @@ function createTrackRoleControl(track, trackRowRef) {
   const select = document.createElement("select");
   select.className = "program-select role-select";
   select.dataset.trackIndex = String(track.index);
-  select.setAttribute("aria-label", `${track.name}の役割`);
+  select.setAttribute("aria-label", t("{name}の役割", { name: track.name }));
   const emptyOption = document.createElement("option");
   emptyOption.value = "";
-  emptyOption.textContent = "役割を選択";
+  emptyOption.textContent = t("役割を選択");
   select.appendChild(emptyOption);
   for (const role of TRACK_ROLES) {
     const option = document.createElement("option");
     option.value = role.id;
-    option.textContent = role.label;
+    option.textContent = t(role.label);
     select.appendChild(option);
   }
   select.value = state.trackRoles[track.index] || "";
@@ -1116,7 +1163,7 @@ async function buildTrackRow(track, rowState = state) {
   const nameLabel = document.createElement("button");
   nameLabel.type = "button";
   nameLabel.className = "track-name";
-  nameLabel.setAttribute("aria-label", `${track.name}を押している間、ピアノロールで強調表示`);
+  nameLabel.setAttribute("aria-label", t("{name}を押している間、ピアノロールで強調表示", { name: track.name }));
   const colorBar = document.createElement("span");
   colorBar.className = "track-color-bar";
   colorBar.setAttribute("aria-hidden", "true");
@@ -1140,7 +1187,7 @@ async function buildTrackRow(track, rowState = state) {
   if (track.availableSources.length > 1) {
     sourceCell.appendChild(createTrackSourceControl(track, row, trackRowRef));
   } else {
-    sourceCell.textContent = track.source === "game" ? "原曲の音源" : "SoundFont";
+    sourceCell.textContent = track.source === "game" ? t("原曲の音源") : "SoundFont";
   }
   row.classList.toggle("is-hardware", track.source === "game" && isChipHardwareFormat());
   row.appendChild(sourceCell);
@@ -1168,8 +1215,8 @@ async function buildTrackRow(track, rowState = state) {
       track.currentProgram !== null &&
       track.currentProgram !== undefined;
     keepOption.textContent = hasGameSource
-      ? "GM音色を選択してください"
-      : `変更しない（現在: ${formatCurrentProgram(track)}）`;
+      ? t("GM音色を選択してください")
+      : t("変更しない（現在: {current}）", { current: formatCurrentProgram(track) });
     keepOption.disabled = hasGameSource;
     select.appendChild(keepOption);
     const favoritesGroup = buildFavoriteProgramsOptgroup();
@@ -1187,12 +1234,12 @@ async function buildTrackRow(track, rowState = state) {
     const pinButton = document.createElement("button");
     pinButton.type = "button";
     pinButton.className = "pin-button";
-    pinButton.setAttribute("aria-label", "よく使う楽器としてピン留め");
+    pinButton.setAttribute("aria-label", t("よく使う楽器としてピン留め"));
     const updatePinButton = () => {
       const program = select.value === KEEP_ORIGINAL ? null : Number(select.value);
       const pinned = isProgramPinned(program);
       pinButton.textContent = pinned ? "★" : "☆";
-      pinButton.title = pinned ? "ピン留めを解除" : "よく使う楽器としてピン留め";
+      pinButton.title = pinned ? t("ピン留めを解除") : t("よく使う楽器としてピン留め");
       pinButton.classList.toggle("is-pinned", pinned);
       pinButton.disabled = program === null || select.disabled;
     };
@@ -1223,7 +1270,7 @@ async function buildTrackRow(track, rowState = state) {
     selectRow.appendChild(select);
     selectRow.appendChild(pinButton);
     if (track.programChangeCount > 1) {
-      const warningText = "曲中で楽器が変わります。適用するとすべて上書きされます";
+      const warningText = t("曲中で楽器が変わります。適用するとすべて上書きされます");
       const warningControl = createTrackWarningControl(track, warningText);
       selectRow.appendChild(warningControl.button);
       instrumentCell.appendChild(warningControl.tooltip);
@@ -1247,7 +1294,7 @@ async function buildTrackRow(track, rowState = state) {
     const label = document.createElement("label");
     label.className = "visually-hidden";
     label.htmlFor = inputId;
-    label.textContent = `${track.name}の音量`;
+    label.textContent = t("{name}の音量", { name: track.name });
 
     const slider = document.createElement("input");
     slider.id = inputId;
@@ -1279,8 +1326,11 @@ async function buildTrackRow(track, rowState = state) {
     const updateMuteButton = () => {
       const isMuted = Number(slider.value) === 0;
       muteButton.textContent = isMuted ? "🔇" : "🔊";
-      muteButton.title = isMuted ? "ミュートを解除" : "ミュート";
-      muteButton.setAttribute("aria-label", `${track.name}を${isMuted ? "ミュート解除" : "ミュート"}`);
+      muteButton.title = isMuted ? t("ミュートを解除") : t("ミュート");
+      muteButton.setAttribute(
+        "aria-label",
+        isMuted ? t("{name}のミュートを解除", { name: track.name }) : t("{name}をミュート", { name: track.name })
+      );
       muteButton.classList.toggle("is-muted", isMuted);
     };
     updateMuteButton();
@@ -1323,8 +1373,11 @@ async function buildTrackRow(track, rowState = state) {
     const updateSoloButton = () => {
       const isSolo = state.soloTrackIndex === track.index;
       soloButton.textContent = "🎧";
-      soloButton.title = isSolo ? "ソロ試聴を解除" : "このトラックだけを試聴";
-      soloButton.setAttribute("aria-label", `${track.name}を${isSolo ? "ソロ試聴解除" : "ソロ試聴"}`);
+      soloButton.title = isSolo ? t("ソロ試聴を解除") : t("このトラックだけを試聴");
+      soloButton.setAttribute(
+        "aria-label",
+        isSolo ? t("{name}のソロ試聴を解除", { name: track.name }) : t("{name}をソロ試聴", { name: track.name })
+      );
       soloButton.classList.toggle("is-solo", isSolo);
     };
     updateSoloButton();
@@ -1496,7 +1549,7 @@ function renderEnsemblePresetOptions() {
   select.replaceChildren();
   const clearOption = document.createElement("option");
   clearOption.value = "";
-  clearOption.textContent = "プリセット解除";
+  clearOption.textContent = t("プリセット解除");
   select.appendChild(clearOption);
   for (const preset of state.ensemblePresets) {
     const option = document.createElement("option");
@@ -1516,7 +1569,7 @@ function updateEnsemblePresetControls() {
   $("#ensemble-preset-edit").disabled = !activeEnsemblePreset();
   $("#ensemble-preset-delete").disabled = !activeEnsemblePreset();
   const header = $(".track-instrument-header-label");
-  if (header) header.textContent = state.ensemblePresetId ? "役割" : "楽器";
+  if (header) header.textContent = state.ensemblePresetId ? t("役割") : t("楽器");
 }
 
 async function handleEnsemblePresetChange(event) {
@@ -1559,7 +1612,7 @@ async function handleEnsemblePresetChange(event) {
   if (Object.keys(state.trackRoles).length === 0) {
     const suggestionCount = suggestTrackRoles();
     if (suggestionCount > 0) {
-      showStatus(`${suggestionCount}トラックの役割を提案しました。必要に応じて変更できます。`);
+      showStatus(t("{count}トラックの役割を提案しました。必要に応じて変更できます。", { count: suggestionCount }));
     }
   }
   for (const [trackIndex, roleId] of Object.entries(state.trackRoles)) {
@@ -1593,7 +1646,7 @@ async function populateEnsemblePresetDialog(preset = null) {
   const isEditing = !!preset;
   const programs = preset?.programs || NEW_ENSEMBLE_PRESET_PROGRAMS;
   form.dataset.presetId = preset?.id || "";
-  $("#ensemble-preset-dialog-title").textContent = isEditing ? "編成プリセットを編集" : "編成プリセットを新規作成";
+  $("#ensemble-preset-dialog-title").textContent = isEditing ? t("編成プリセットを編集") : t("編成プリセットを新規作成");
   $("#ensemble-preset-name").value = preset?.name || "";
   const instrumentOptions = await loadInstrumentOptions();
   for (const role of TRACK_ROLES) {
@@ -1604,7 +1657,7 @@ async function populateEnsemblePresetDialog(preset = null) {
     if (!Array.from(select.options).some((option) => option.value === String(programs[role.id]))) {
       const option = document.createElement("option");
       option.value = String(programs[role.id]);
-      option.textContent = `ドラムキット（プログラム ${Number(programs[role.id]) + 1}）`;
+      option.textContent = t("ドラムキット（プログラム {program}）", { program: Number(programs[role.id]) + 1 });
       select.appendChild(option);
     }
     select.value = String(programs[role.id]);
@@ -1669,7 +1722,7 @@ async function handleEnsemblePresetSave(event) {
     await saveEnsemblePresets(nextPresets);
     $("#ensemble-preset-dialog").close();
     if (state.ensemblePresetId === presetId) await applyActiveEnsemblePreset();
-    showStatus(`編成プリセット「${preset.name}」を保存しました。`, "success");
+    showStatus(t("編成プリセット「{name}」を保存しました。", { name: preset.name }), "success");
   } catch (error) {
     showStatus(error.message, "error");
   }
@@ -1677,11 +1730,11 @@ async function handleEnsemblePresetSave(event) {
 
 async function handleEnsemblePresetDelete() {
   const preset = activeEnsemblePreset();
-  if (!preset || !window.confirm(`編成プリセット「${preset.name}」を削除しますか？`)) return;
+  if (!preset || !window.confirm(t("編成プリセット「{name}」を削除しますか？", { name: preset.name }))) return;
   try {
     if (!(await handleEnsemblePresetChange({ target: { value: "" } }))) return;
     await saveEnsemblePresets(state.ensemblePresets.filter((item) => item.id !== preset.id));
-    showStatus(`編成プリセット「${preset.name}」を削除しました。`, "success");
+    showStatus(t("編成プリセット「{name}」を削除しました。", { name: preset.name }), "success");
   } catch (error) {
     showStatus(error.message, "error");
   }
@@ -1869,7 +1922,7 @@ function compareTrackValues(left, right, key) {
     if (leftValue === rightValue) return 0;
     return leftValue === null ? 1 : -1;
   }
-  if (typeof leftValue === "string") return leftValue.localeCompare(rightValue, "ja");
+  if (typeof leftValue === "string") return leftValue.localeCompare(rightValue, uiLang);
   return leftValue - rightValue;
 }
 
@@ -2005,7 +2058,9 @@ function formatPianorollTime(seconds) {
   const safeSeconds = Math.max(0, Number(seconds) || 0);
   const minutes = Math.floor(safeSeconds / 60);
   const remainder = Math.floor(safeSeconds % 60);
-  return minutes > 0 ? `${minutes}分${remainder}秒` : `${remainder}秒`;
+  return minutes > 0
+    ? t("{minutes}分{seconds}秒", { minutes, seconds: remainder })
+    : t("{seconds}秒", { seconds: remainder });
 }
 
 function formatPlaybackClock(seconds) {
@@ -2085,7 +2140,7 @@ function setPianorollMessage(message, status = "") {
   $("#pianoroll-status").textContent = status;
 }
 
-function clearPianoroll(message = "MIDIを読み込むとここに表示されます。") {
+function clearPianoroll(message = t("MIDIを読み込むとここに表示されます。")) {
   state.pianoroll = null;
   updatePianorollKeyboardVisibility();
   clearPianorollLoop();
@@ -2108,9 +2163,9 @@ function applyPianorollPayload(payload) {
   }
   updatePlaybackTime();
   const status = payload.truncated
-    ? "ノート数が表示上限を超えたため、先頭部分のみ表示しています。"
+    ? t("ノート数が表示上限を超えたため、先頭部分のみ表示しています。")
     : "";
-  setPianorollMessage(payload.noteCount > 0 ? "" : "表示できるノートがありません。", status);
+  setPianorollMessage(payload.noteCount > 0 ? "" : t("表示できるノートがありません。"), status);
   updatePianorollKeyboardVisibility();
   refreshPianorollLayout();
   updatePianorollInteraction();
@@ -2123,7 +2178,7 @@ async function loadPianoroll() {
     clearPianoroll();
     return;
   }
-  setPianorollMessage("ピアノロールを読み込み中…");
+  setPianorollMessage(t("ピアノロールを読み込み中…"));
   try {
     const response = await apiFetch("/api/pianoroll");
     const payload = await response.json();
@@ -2131,7 +2186,7 @@ async function loadPianoroll() {
     applyPianorollPayload(payload);
   } catch (error) {
     if (loadId !== state.pianorollLoadId) return;
-    clearPianoroll("ピアノロールを読み込めませんでした。");
+    clearPianoroll(t("ピアノロールを読み込めませんでした。"));
     $("#pianoroll-status").textContent = error.message;
   }
 }
@@ -2946,7 +3001,7 @@ async function flushTransform() {
   const speed = Number(speedInput.value);
   const transpose = Number(transposeInput.value);
   if (Number.isNaN(speed) || Number.isNaN(transpose)) {
-    showStatus("速度・ピッチには数値を入力してください", "error");
+    showStatus(t("速度・ピッチには数値を入力してください"), "error");
     return false;
   }
   // トランスポーズが実際に変わるかどうかで、ピアノロールのノート再描画が要るかを
@@ -3053,7 +3108,7 @@ async function handleUpload(files) {
 }
 
 async function uploadMidi(file) {
-  setBusy(true, "読み込み中…");
+  setBusy(true, t("読み込み中…"));
   const formData = new FormData();
   formData.append("midi", file);
   try {
@@ -3061,7 +3116,7 @@ async function uploadMidi(file) {
     resetPlayer();
     await refreshFromSession(await response.json());
     showUploadCard();
-    showStatus("MIDIを読み込みました。", "success");
+    showStatus(t("MIDIを読み込みました。"), "success");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -3070,7 +3125,7 @@ async function uploadMidi(file) {
 }
 
 async function uploadSource(files) {
-  setBusy(true, "音源を解析中…");
+  setBusy(true, t("音源を解析中…"));
   const formData = new FormData();
   for (const file of files) formData.append("source", file);
   try {
@@ -3078,7 +3133,7 @@ async function uploadSource(files) {
     resetPlayer();
     await refreshFromSession(await response.json());
     showUploadCard();
-    showStatus("音源を読み込みました。曲とオプションを選んで変換してください。", "success");
+    showStatus(t("音源を読み込みました。曲とオプションを選んで変換してください。"), "success");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -3091,7 +3146,7 @@ async function uploadSource(files) {
 function formatSongLabel(song) {
   const parts = [`${song.index}: ${song.label}`];
   if (song.durationSeconds !== null && song.durationSeconds !== undefined) {
-    parts.push(`(${song.durationSeconds.toFixed(1)}秒)`);
+    parts.push(`(${t("{seconds}秒", { seconds: song.durationSeconds.toFixed(1) })})`);
   }
   if (song.detail) parts.push(`— ${song.detail}`);
   return parts.join(" ");
@@ -3192,7 +3247,9 @@ function updateConvertFieldConflicts() {
     entry.input.disabled = blocked;
     entry.wrapper.classList.toggle("is-disabled", blocked);
     entry.wrapper.title = blocked
-      ? `${blockingNames.map((name) => labelsByName[name] || name).join("・")}と同時に指定できません`
+      ? t("{names}と同時に指定できません", {
+          names: blockingNames.map((name) => labelsByName[name] || name).join(t("・")),
+        })
       : "";
   }
 }
@@ -3246,7 +3303,10 @@ function renderConvertPanel(source, restoredConvertedOptions = null) {
     "has-timing-group",
     source.options.some((field) => field.layoutGroup === "timing"),
   );
-  $("#convert-panel-title").textContent = `${source.formatLabel} として検出しました（${source.name}）`;
+  $("#convert-panel-title").textContent = t("{format} として検出しました（{name}）", {
+    format: source.formatLabel,
+    name: source.name,
+  });
 
   if (source.files && source.files.length > 1) {
     fileGroup.hidden = false;
@@ -3292,7 +3352,7 @@ function renderConvertPanel(source, restoredConvertedOptions = null) {
 async function handleSelectFile() {
   const path = $("#convert-file-select").value;
   if (!path) return;
-  setBusy(true, "ファイルを切り替え中…");
+  setBusy(true, t("ファイルを切り替え中…"));
   try {
     const response = await apiFetch("/api/source/select-file", {
       method: "POST",
@@ -3320,7 +3380,7 @@ function gatherConvertOptions() {
 }
 
 async function handleConvert() {
-  setBusy(true, "変換中…");
+  setBusy(true, t("変換中…"));
   try {
     const options = gatherConvertOptions();
     const response = await apiFetch("/api/source/convert", {
@@ -3332,11 +3392,9 @@ async function handleConvert() {
     const payload = await response.json();
     await refreshFromSession(payload);
     if (options.gameSoundfont && !payload.hasGameSoundfont) {
-      showStatus(
-        "MIDIに変換しました。ただしこの曲には音色データが無いため、ゲーム音源は使えません。"
-      );
+      showStatus(t("MIDIに変換しました。ただしこの曲には音色データが無いため、ゲーム音源は使えません。"));
     } else {
-      showStatus("MIDIに変換しました。", "success");
+      showStatus(t("MIDIに変換しました。"), "success");
     }
     hideUploadCard();
   } catch (error) {
@@ -3529,7 +3587,7 @@ async function playPreparedPlayer(player) {
   try {
     await player.play();
   } catch (_error) {
-    showStatus("ブラウザが試聴音声の再生を許可しませんでした。もう一度再生してください。", "error");
+    showStatus(t("ブラウザが試聴音声の再生を許可しませんでした。もう一度再生してください。"), "error");
   }
 }
 
@@ -3641,7 +3699,7 @@ function updatePlayerVolume() {
   volumeSlider.setAttribute("aria-valuetext", `${volumePercent}%`);
   $("#player-volume-value").textContent = `${volumePercent}%`;
   muteButton.setAttribute("aria-pressed", String(state.isUserMuted));
-  muteButton.setAttribute("aria-label", state.isUserMuted ? "ミュートを解除" : "ミュート");
+  muteButton.setAttribute("aria-label", state.isUserMuted ? t("ミュートを解除") : t("ミュート"));
 }
 
 function updatePlaybackProgress() {
@@ -3901,7 +3959,7 @@ function handleDownloadWav() {
   return downloadFrom(
     "/api/download/wav",
     "miditrack_edited.wav",
-    "最終WAVを生成中…",
+    t("最終WAVを生成中…"),
   );
 }
 
@@ -3931,7 +3989,7 @@ function projectUiStatePayload() {
 
 async function handleSaveProject() {
   if (!state.session || state.session.tracks.length === 0) return;
-  setBusy(true, "プロジェクトを保存中…");
+  setBusy(true, t("プロジェクトを保存中…"));
   try {
     const didSaveTracks = await flushPendingTrackSettings();
     const didSaveTransform = await flushPendingTransform();
@@ -3948,7 +4006,7 @@ async function handleSaveProject() {
         body: JSON.stringify(projectUiStatePayload()),
       },
     );
-    if (didDownload) showStatus("プロジェクトを保存しました。", "success");
+    if (didDownload) showStatus(t("プロジェクトを保存しました。"), "success");
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -3962,11 +4020,11 @@ function canReplaceCurrentSession() {
 
 async function handleOpenProject(file) {
   if (!file) return;
-  if (canReplaceCurrentSession() && !window.confirm("現在のセッションを置き換えます。保存していない変更は失われます。続けますか？")) {
+  if (canReplaceCurrentSession() && !window.confirm(t("現在のセッションを置き換えます。保存していない変更は失われます。続けますか？"))) {
     $("#project-input").value = "";
     return;
   }
-  setBusy(true, "プロジェクトを読み込み中…");
+  setBusy(true, t("プロジェクトを読み込み中…"));
   const formData = new FormData();
   formData.append("project", file);
   try {
@@ -3994,7 +4052,7 @@ async function applyProjectImportPayload(payload) {
   });
   await loadSoundfonts();
   if (payload.warnings?.length) showStatus(payload.warnings.join(" "));
-  else showStatus("プロジェクトを読み込みました。", "success");
+  else showStatus(t("プロジェクトを読み込みました。"), "success");
   showUploadCard();
 }
 
@@ -4018,12 +4076,12 @@ async function handleVariations() {
   const speeds = parseNumberList($("#variation-speeds").value);
   const transposes = parseNumberList($("#variation-transposes").value);
   if (speeds === null || transposes === null) {
-    showStatus("速度・ピッチには数値をカンマ区切りで入力してください", "error");
+    showStatus(t("速度・ピッチには数値をカンマ区切りで入力してください"), "error");
     return;
   }
   const includeMidi = $("#variation-include-midi").checked;
   const comboCount = (speeds.length || 3) * (transposes.length || 5);
-  setBusy(true, `バリエーションを生成中…（${comboCount}回レンダリングします）`);
+  setBusy(true, t("バリエーションを生成中…（{count}回レンダリングします）", { count: comboCount }));
   try {
     const response = await apiFetch("/api/variations", {
       method: "POST",
@@ -4035,8 +4093,13 @@ async function handleVariations() {
       }),
     });
     const payload = await response.json();
-    const contentsLabel = includeMidi ? "（WAV+MIDI）" : "（WAV）";
-    showStatus(`${payload.items.length}件のバリエーション${contentsLabel}を生成しました。ダウンロードします…`);
+    const contentsLabel = includeMidi ? t("（WAV+MIDI）") : t("（WAV）");
+    showStatus(
+      t("{count}件のバリエーション{contents}を生成しました。ダウンロードします…", {
+        count: payload.items.length,
+        contents: contentsLabel,
+      })
+    );
     const stem = (state.session && (state.session.downloadStem || state.session.filename)) || "miditrack";
     const filename = `${stem}_variations.zip`;
     await downloadFrom("/api/download/variations", filename);
@@ -4053,7 +4116,7 @@ async function handleVariations() {
 // hasDownload基準で活性化する）。
 async function handleTrackExport() {
   const groupChipTracks = $("#track-export-group-chip").checked;
-  setBusy(true, "トラックごとのWAVを生成中…");
+  setBusy(true, t("トラックごとのWAVを生成中…"));
   try {
     const response = await apiFetch("/api/tracks/export", {
       method: "POST",
@@ -4061,7 +4124,7 @@ async function handleTrackExport() {
       body: JSON.stringify({ groupChipTracks }),
     });
     const payload = await response.json();
-    showStatus(`${payload.items.length}件のトラックWAVを生成しました。ダウンロードします…`);
+    showStatus(t("{count}件のトラックWAVを生成しました。ダウンロードします…", { count: payload.items.length }));
     const stem = (state.session && (state.session.downloadStem || state.session.filename)) || "miditrack";
     const filename = `${stem}_tracks.zip`;
     await downloadFrom("/api/download/tracks", filename);
@@ -4091,7 +4154,7 @@ async function handleReset() {
     });
     $("#midi-input").value = "";
     showUploadCard();
-    showStatus("リセットしました。");
+    showStatus(t("リセットしました。"));
   } catch (error) {
     showStatus(error.message, "error");
   } finally {
@@ -4256,6 +4319,18 @@ function setupSettingsDialog() {
     savePreferenceFields({ appTheme: state.appTheme });
   });
 
+  // 言語切り替えはテーマと違い即時DOM差し替えをしない — 静的テキストは
+  // web.pyのindex()がサーバー側でHTML文字列の時点で確定させる方式
+  // （i18n.localize_html()参照）なので、JS側だけで書き換えても静的部分が
+  // 追従しない。保存を待ってページを再読み込みし、サーバーから新しい言語の
+  // HTMLを取得し直す。init()はGET /api/sessionでWebSession側の状態を
+  // 復元するため、reloadしても編集中の内容は失われない。
+  $("#app-language").addEventListener("change", async (event) => {
+    state.appLanguage = event.target.value;
+    await savePreferenceFields({ appLanguage: state.appLanguage });
+    window.location.reload();
+  });
+
   $("#pianoroll-height").addEventListener("change", (event) => {
     state.pianorollHeight = event.target.value;
     applyPianorollHeight();
@@ -4366,10 +4441,10 @@ if (isNativeApp) {
 
 async function openNativeLocalFiles(paths) {
   if (!Array.isArray(paths) || paths.length === 0) return;
-  if (canReplaceCurrentSession() && !window.confirm("現在のセッションを置き換えます。保存していない変更は失われます。続けますか？")) {
+  if (canReplaceCurrentSession() && !window.confirm(t("現在のセッションを置き換えます。保存していない変更は失われます。続けますか？"))) {
     return;
   }
-  setBusy(true, "読み込み中…");
+  setBusy(true, t("読み込み中…"));
   try {
     const response = await apiFetch("/api/open-local", {
       method: "POST",
@@ -4383,14 +4458,14 @@ async function openNativeLocalFiles(paths) {
       resetPlayer();
       await refreshFromSession(payload.session);
       showUploadCard();
-      showStatus("MIDIを読み込みました。", "success");
+      showStatus(t("MIDIを読み込みました。"), "success");
     } else if (payload.kind === "source") {
       resetPlayer();
       await refreshFromSession(payload.session);
       showNativeSourceSelectionDialog();
-      showStatus("音源を読み込みました。曲とオプションを選んで変換してください。", "success");
+      showStatus(t("音源を読み込みました。曲とオプションを選んで変換してください。"), "success");
     } else {
-      throw new Error("ローカルファイル読み込みの応答が不正です");
+      throw new Error(t("ローカルファイル読み込みの応答が不正です"));
     }
   } catch (error) {
     showStatus(error.message, "error");
@@ -4400,12 +4475,15 @@ async function openNativeLocalFiles(paths) {
 }
 
 async function init() {
+  // 起動トークン不足の早期returnを含め、init()内のどの経路でもt()が安全に
+  // 呼べるよう、他の初期化より前に必ずカタログを読み込む。
+  await loadI18nCatalog();
   // ネイティブ版は設定APIの応答を待たずに全画面レイアウトを完成させる。
   // Swift側のatDocumentStart注入と組み合わせ、通常レイアウトが一瞬見える
   // 起動時の切り替わりを防ぐ。
   if (isNativeApp) setFullscreenLayout(true);
   if (isTokenRequired && !token) {
-    showStatus("起動トークンがありません。ターミナルに表示されたURLから開いてください。", "error");
+    showStatus(t("起動トークンがありません。ターミナルに表示されたURLから開いてください。"), "error");
     await notifyNativeAppReady();
     return;
   }

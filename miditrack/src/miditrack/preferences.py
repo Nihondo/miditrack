@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from . import i18n
 from .errors import WebValidationError
 from .gm import GM_PROGRAM_NAMES
 
@@ -96,6 +97,7 @@ def _empty_preferences() -> dict[str, Any]:
         "outlinedPianorollNotes": True,
         "showPianorollKeyboard": True,
         "appTheme": "system",
+        "appLanguage": "system",
         "pianorollHeight": "standard",
         "showPianorollGrid": True,
         "pianorollGridDivisions": 8,
@@ -106,6 +108,39 @@ def _empty_preferences() -> dict[str, Any]:
         "renderWorkers": "auto",
         "ensemblePresets": build_default_ensemble_presets(),
     }
+
+
+_DEFAULT_PRESET_NAMES_BY_ID = {preset["id"]: preset["name"] for preset in DEFAULT_ENSEMBLE_PRESETS}
+
+
+def localize_preferences_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """API応答の直前でのみ使う、表示専用の変換。
+
+    保存ファイル（preferences.json）にはensemblePresetsの名前を常に日本語の
+    ままで書き込む — 起動のたびにポートが変わるため、この設定ファイルが
+    唯一の永続層であり、翻訳都合でデータ形式を言語依存にしたくないため
+    （英語UIで作成したユーザーの後にappLanguageを日本語へ戻すケースを壊さない）。
+    このため翻訳はAPIレスポンスを組み立てる瞬間にだけ行う。対象は「idが
+    組み込みプリセットのいずれかと一致し、かつ名前がその既定の日本語名から
+    一度も変更されていない」ものだけ — ユーザーが改名したプリセットは、
+    その文字列が偶然既定名と一致しない限り、言語に関わらずそのまま返す。
+    """
+    presets = data.get("ensemblePresets")
+    if not isinstance(presets, list):
+        return data
+    localized: list[Any] = []
+    changed = False
+    for preset in presets:
+        default_name = _DEFAULT_PRESET_NAMES_BY_ID.get(preset.get("id")) if isinstance(preset, dict) else None
+        if default_name is not None and preset.get("name") == default_name:
+            translated = i18n.t(default_name)
+            if translated != preset["name"]:
+                preset = {**preset, "name": translated}
+                changed = True
+        localized.append(preset)
+    if not changed:
+        return data
+    return {**data, "ensemblePresets": localized}
 
 
 def build_default_ensemble_presets() -> list[dict[str, Any]]:
@@ -150,14 +185,21 @@ def load_preferences() -> dict[str, Any]:
 
 def _validate_pinned_programs(value: Any) -> list[int]:
     if not isinstance(value, list):
-        raise WebValidationError("pinnedProgramsはリストで指定してください")
+        raise WebValidationError(i18n.t("pinnedProgramsはリストで指定してください"))
     validated: list[int] = []
     for program in value:
         if isinstance(program, bool) or not isinstance(program, int):
-            raise WebValidationError(f"pinnedProgramsの値は整数で指定してください: {program!r}")
+            raise WebValidationError(
+                i18n.t("pinnedProgramsの値は整数で指定してください: {program!r}", program=program)
+            )
         if not (MIN_PROGRAM <= program <= MAX_PROGRAM):
             raise WebValidationError(
-                f"pinnedProgramsの値は{MIN_PROGRAM}〜{MAX_PROGRAM}の範囲で指定してください: {program}"
+                i18n.t(
+                    "pinnedProgramsの値は{min_value}〜{max_value}の範囲で指定してください: {program}",
+                    min_value=MIN_PROGRAM,
+                    max_value=MAX_PROGRAM,
+                    program=program,
+                )
             )
         if program not in validated:
             validated.append(program)
@@ -166,19 +208,28 @@ def _validate_pinned_programs(value: Any) -> list[int]:
 
 def _validate_usage_counts(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
-        raise WebValidationError("usageCountsはオブジェクトで指定してください")
+        raise WebValidationError(i18n.t("usageCountsはオブジェクトで指定してください"))
     validated: dict[str, int] = {}
     for key, count in value.items():
         try:
             program = int(key)
         except (TypeError, ValueError):
-            raise WebValidationError(f"usageCountsのキーは整数で指定してください: {key!r}") from None
+            raise WebValidationError(
+                i18n.t("usageCountsのキーは整数で指定してください: {key!r}", key=key)
+            ) from None
         if not (MIN_PROGRAM <= program <= MAX_PROGRAM):
             raise WebValidationError(
-                f"usageCountsのキーは{MIN_PROGRAM}〜{MAX_PROGRAM}の範囲で指定してください: {program}"
+                i18n.t(
+                    "usageCountsのキーは{min_value}〜{max_value}の範囲で指定してください: {program}",
+                    min_value=MIN_PROGRAM,
+                    max_value=MAX_PROGRAM,
+                    program=program,
+                )
             )
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            raise WebValidationError(f"usageCountsの値は0以上の整数で指定してください: {count!r}")
+            raise WebValidationError(
+                i18n.t("usageCountsの値は0以上の整数で指定してください: {count!r}", count=count)
+            )
         validated[str(program)] = count
     return validated
 
@@ -187,20 +238,22 @@ def _validate_selected_soundfont(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise WebValidationError(f"selectedSoundfontは文字列またはnullで指定してください: {value!r}")
+        raise WebValidationError(
+            i18n.t("selectedSoundfontは文字列またはnullで指定してください: {value!r}", value=value)
+        )
     return value
 
 
 def _validate_display_mode(value: Any) -> str:
     if value not in DISPLAY_MODES:
-        raise WebValidationError("displayModeはnormalまたはfullscreenで指定してください")
+        raise WebValidationError(i18n.t("displayModeはnormalまたはfullscreenで指定してください"))
     return value
 
 
 def _validate_bool(value: Any, field: str) -> bool:
     """真偽値専用の汎用バリデータ。表示設定のON/OFFフィールドはすべてこれを使う。"""
     if not isinstance(value, bool):
-        raise WebValidationError(f"{field}はtrueまたはfalseで指定してください")
+        raise WebValidationError(i18n.t("{field}はtrueまたはfalseで指定してください", field=field))
     return value
 
 
@@ -211,7 +264,7 @@ def _validate_choice(value: Any, allowed: frozenset, field: str) -> Any:
     しまうため、明示的に弾く。
     """
     if isinstance(value, bool) or value not in allowed:
-        raise WebValidationError(f"{field}の値が不正です")
+        raise WebValidationError(i18n.t("{field}の値が不正です", field=field))
     return value
 
 
@@ -224,7 +277,9 @@ def _validate_hex_color(value: Any, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not HEX_COLOR_RE.fullmatch(value):
-        raise WebValidationError(f"{field}は#rrggbb形式の文字列またはnullで指定してください: {value!r}")
+        raise WebValidationError(
+            i18n.t("{field}は#rrggbb形式の文字列またはnullで指定してください: {value!r}", field=field, value=value)
+        )
     return value.lower()
 
 
@@ -234,11 +289,21 @@ def _validate_render_workers(value: Any) -> str | int:
         return "auto"
     if isinstance(value, bool) or not isinstance(value, int):
         raise WebValidationError(
-            f"renderWorkersは\"auto\"または{RENDER_WORKERS_MIN}〜{RENDER_WORKERS_MAX}の整数で指定してください: {value!r}"
+            i18n.t(
+                'renderWorkersは"auto"または{min_value}〜{max_value}の整数で指定してください: {value!r}',
+                min_value=RENDER_WORKERS_MIN,
+                max_value=RENDER_WORKERS_MAX,
+                value=value,
+            )
         )
     if not (RENDER_WORKERS_MIN <= value <= RENDER_WORKERS_MAX):
         raise WebValidationError(
-            f"renderWorkersは{RENDER_WORKERS_MIN}〜{RENDER_WORKERS_MAX}の範囲で指定してください: {value}"
+            i18n.t(
+                "renderWorkersは{min_value}〜{max_value}の範囲で指定してください: {value}",
+                min_value=RENDER_WORKERS_MIN,
+                max_value=RENDER_WORKERS_MAX,
+                value=value,
+            )
         )
     return value
 
@@ -268,29 +333,36 @@ def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
     if value is None:
         return build_default_ensemble_presets()
     if not isinstance(value, list) or len(value) > MAX_ENSEMBLE_PRESETS:
-        raise WebValidationError(f"ensemblePresetsは最大{MAX_ENSEMBLE_PRESETS}件のリストで指定してください")
+        raise WebValidationError(
+            i18n.t("ensemblePresetsは最大{max_presets}件のリストで指定してください", max_presets=MAX_ENSEMBLE_PRESETS)
+        )
     validated: list[dict[str, Any]] = []
     preset_ids: set[str] = set()
     preset_names: set[str] = set()
     for preset in value:
         if not isinstance(preset, dict):
-            raise WebValidationError("ensemblePresetsの各項目はオブジェクトで指定してください")
+            raise WebValidationError(i18n.t("ensemblePresetsの各項目はオブジェクトで指定してください"))
         preset_id = preset.get("id")
         name = preset.get("name")
         programs = preset.get("programs")
         if not isinstance(preset_id, str) or not PRESET_ID_RE.fullmatch(preset_id):
-            raise WebValidationError("編成プリセットIDが不正です")
+            raise WebValidationError(i18n.t("編成プリセットIDが不正です"))
         if not isinstance(name, str) or not (name := name.strip()) or len(name) > MAX_ENSEMBLE_PRESET_NAME_LENGTH:
-            raise WebValidationError(f"編成プリセット名は1〜{MAX_ENSEMBLE_PRESET_NAME_LENGTH}文字で指定してください")
+            raise WebValidationError(
+                i18n.t(
+                    "編成プリセット名は1〜{max_length}文字で指定してください",
+                    max_length=MAX_ENSEMBLE_PRESET_NAME_LENGTH,
+                )
+            )
         if preset_id in preset_ids or name.casefold() in preset_names:
-            raise WebValidationError("編成プリセットのIDまたは名前が重複しています")
+            raise WebValidationError(i18n.t("編成プリセットのIDまたは名前が重複しています"))
         if not isinstance(programs, dict) or set(programs) != set(TRACK_ROLE_IDS):
-            raise WebValidationError("編成プリセットの役割設定が不正です")
+            raise WebValidationError(i18n.t("編成プリセットの役割設定が不正です"))
         validated_programs: dict[str, int] = {}
         for role_id in TRACK_ROLE_IDS:
             program = programs[role_id]
             if isinstance(program, bool) or not isinstance(program, int) or not MIN_PROGRAM <= program <= MAX_PROGRAM:
-                raise WebValidationError(f"編成プリセットの{role_id}音色が不正です")
+                raise WebValidationError(i18n.t("編成プリセットの{role_id}音色が不正です", role_id=role_id))
             validated_programs[role_id] = program
         preset_ids.add(preset_id)
         preset_names.add(name.casefold())
@@ -310,6 +382,7 @@ _FIELD_VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "outlinedPianorollNotes": lambda value: _validate_bool(value, "outlinedPianorollNotes"),
     "showPianorollKeyboard": lambda value: _validate_bool(value, "showPianorollKeyboard"),
     "appTheme": lambda value: _validate_choice(value, THEME_MODES, "appTheme"),
+    "appLanguage": lambda value: _validate_choice(value, i18n.LANGUAGE_MODES, "appLanguage"),
     "pianorollHeight": lambda value: _validate_choice(value, PIANOROLL_HEIGHTS, "pianorollHeight"),
     "showPianorollGrid": lambda value: _validate_bool(value, "showPianorollGrid"),
     "pianorollGridDivisions": lambda value: _validate_choice(

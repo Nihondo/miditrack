@@ -16,6 +16,7 @@ from typing import Any
 
 from .errors import MidiTrackError, WebValidationError
 from .gm import PERCUSSION_CHANNEL
+from .i18n import get_language, t
 
 MIN_TRACK_VOLUME_PERCENT = 0
 MAX_TRACK_VOLUME_PERCENT = 200
@@ -54,9 +55,15 @@ def import_mido() -> Any:
     try:
         import mido
     except ImportError as error:
+        # README_ja.md/README.mdのどちらを案内するかは現在言語で切り替える
+        # （miditrack/CLAUDE.md参照。ファイル名のハードコードは日英対応前の
+        # 名残りで、英語UIでは英語版READMEを指す必要がある）。
+        readme_name = "README.md" if get_language() == "en" else "README_ja.md"
         raise MidiTrackError(
-            "MIDI処理にはmidoが必要です。miditrack/README_ja.mdの「インストール」に"
-            "従ってvenvを作成してください"
+            t(
+                "MIDI処理にはmidoが必要です。miditrack/{readme}の「インストール」に従ってvenvを作成してください",
+                readme=readme_name,
+            )
         ) from error
     return mido
 
@@ -180,10 +187,10 @@ def analyze_midi_file(path: Path) -> tuple[Any, list[TrackInfo]]:
     try:
         midi_file = mido.MidiFile(path)
     except (OSError, EOFError, ValueError) as error:
-        raise MidiTrackError(f"MIDIを読み込めません: {path}: {error}") from error
+        raise MidiTrackError(t("MIDIを読み込めません: {path}: {error}", path=path, error=error)) from error
 
     if len(midi_file.tracks) == 0:
-        raise MidiTrackError("トラックが1つもありません")
+        raise MidiTrackError(t("トラックが1つもありません"))
 
     tracks = [analyze_track(track, index) for index, track in enumerate(midi_file.tracks)]
 
@@ -207,7 +214,7 @@ def analyze_midi_file(path: Path) -> tuple[Any, list[TrackInfo]]:
     tracks = [_resolve_occupancy(track) for track in tracks]
 
     if not any(track.note_count > 0 for track in tracks):
-        raise MidiTrackError("演奏データのあるトラックがありません")
+        raise MidiTrackError(t("演奏データのあるトラックがありません"))
 
     return midi_file, tracks
 
@@ -226,16 +233,23 @@ def validate_assignments(
             continue
         track = tracks_by_index.get(track_index)
         if track is None:
-            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+            raise WebValidationError(t("トラック番号が不正です: {track_index}", track_index=track_index))
         if not track.editable:
-            reason_ja = {
-                "percussion": "パーカッションチャンネル（ch10）のため変更できません",
-                "multi-channel": "複数チャンネルを含むため変更できません",
-                "no-notes": "ノートがないため変更できません",
-            }.get(track.reason or "", "変更できないトラックです")
-            raise WebValidationError(f"トラック{track_index}: {reason_ja}")
+            # フロントエンドapp.jsのreasonLabel()と同じコード（percussion/
+            # multi-channel/no-notes）を日本語文へ変換する、独立した実装。
+            # 2箇所が別々にメンテされてきたため既に文言が微妙にずれていた
+            # （「パーカッション」/「パーカッションチャンネル」）— 日英対応の
+            # ついでにこの1箇所へ表現を揃える。
+            reason_message = {
+                "percussion": t("パーカッションチャンネル（ch10）のため変更できません"),
+                "multi-channel": t("複数チャンネルを含むため変更できません"),
+                "no-notes": t("ノートがないため変更できません"),
+            }.get(track.reason or "", t("変更できないトラックです"))
+            raise WebValidationError(
+                t("トラック{track_index}: {reason}", track_index=track_index, reason=reason_message)
+            )
         if not isinstance(program, int) or isinstance(program, bool) or not 0 <= program <= 127:
-            raise WebValidationError(f"GMプログラム番号は0-127の範囲で指定してください: {program}")
+            raise WebValidationError(t("GMプログラム番号は0-127の範囲で指定してください: {program}", program=program))
         validated[track_index] = program
     return validated
 
@@ -253,15 +267,19 @@ def validate_volumes(
             continue
         track = tracks_by_index.get(track_index)
         if track is None:
-            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+            raise WebValidationError(t("トラック番号が不正です: {track_index}", track_index=track_index))
         if track.note_count == 0:
-            raise WebValidationError(f"トラック{track_index}: ノートがないため音量を変更できません")
+            raise WebValidationError(t("トラック{track_index}: ノートがないため音量を変更できません", track_index=track_index))
         if not isinstance(volume, int) or isinstance(volume, bool):
-            raise WebValidationError(f"トラック音量は整数で指定してください: {volume}")
+            raise WebValidationError(t("トラック音量は整数で指定してください: {volume}", volume=volume))
         if not MIN_TRACK_VOLUME_PERCENT <= volume <= MAX_TRACK_VOLUME_PERCENT:
             raise WebValidationError(
-                f"トラック音量は{MIN_TRACK_VOLUME_PERCENT}-{MAX_TRACK_VOLUME_PERCENT}%の"
-                f"範囲で指定してください: {volume}"
+                t(
+                    "トラック音量は{min_value}-{max_value}%の範囲で指定してください: {volume}",
+                    min_value=MIN_TRACK_VOLUME_PERCENT,
+                    max_value=MAX_TRACK_VOLUME_PERCENT,
+                    volume=volume,
+                )
             )
         if volume == track.source_volume_percent:
             continue
@@ -272,11 +290,16 @@ def validate_volumes(
 def validate_speed_ratio(value: Any) -> float:
     """速度倍率を検証する。1.0が既定（変更なし）。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise WebValidationError(f"速度倍率は数値で指定してください: {value!r}")
+        raise WebValidationError(t("速度倍率は数値で指定してください: {value!r}", value=value))
     number = float(value)
     if not (MIN_SPEED_RATIO <= number <= MAX_SPEED_RATIO):
         raise WebValidationError(
-            f"速度倍率は{MIN_SPEED_RATIO}〜{MAX_SPEED_RATIO}の範囲で指定してください: {number}"
+            t(
+                "速度倍率は{min_value}〜{max_value}の範囲で指定してください: {number}",
+                min_value=MIN_SPEED_RATIO,
+                max_value=MAX_SPEED_RATIO,
+                number=number,
+            )
         )
     return number
 
@@ -284,11 +307,15 @@ def validate_speed_ratio(value: Any) -> float:
 def validate_transpose_semitones(value: Any) -> int:
     """移調量（半音）を検証する。小数は明示的に拒否する（ピッチベンドは非対応）。"""
     if isinstance(value, bool) or not isinstance(value, int):
-        raise WebValidationError(f"ピッチ（半音）は整数で指定してください: {value!r}")
+        raise WebValidationError(t("ピッチ（半音）は整数で指定してください: {value!r}", value=value))
     if not (MIN_TRANSPOSE_SEMITONES <= value <= MAX_TRANSPOSE_SEMITONES):
         raise WebValidationError(
-            f"ピッチ（半音）は{MIN_TRANSPOSE_SEMITONES}〜{MAX_TRANSPOSE_SEMITONES}の"
-            f"範囲で指定してください: {value}"
+            t(
+                "ピッチ（半音）は{min_value}〜{max_value}の範囲で指定してください: {value}",
+                min_value=MIN_TRANSPOSE_SEMITONES,
+                max_value=MAX_TRANSPOSE_SEMITONES,
+                value=value,
+            )
         )
     return value
 
@@ -309,9 +336,9 @@ def _validate_variation_axis(
     if values is None:
         return list(default)
     if not isinstance(values, list) or len(values) == 0:
-        raise WebValidationError(f"{label}は空でないリストで指定してください")
+        raise WebValidationError(t("{label}は空でないリストで指定してください", label=label))
     if len(values) > max_count:
-        raise WebValidationError(f"{label}は最大{max_count}個までです")
+        raise WebValidationError(t("{label}は最大{max_count}個までです", label=label, max_count=max_count))
     ordered: list[Any] = []
     for value in values:
         validated = validate_one(value)
@@ -335,20 +362,20 @@ def validate_variation_options(
     parsed_speeds = _validate_variation_axis(
         speeds,
         DEFAULT_VARIATION_SPEEDS,
-        label="速度倍率",
+        label=t("速度倍率"),
         max_count=MAX_VARIATION_SPEED_COUNT,
         validate_one=validate_speed_ratio,
     )
     parsed_transposes = _validate_variation_axis(
         transposes,
         DEFAULT_VARIATION_TRANSPOSES,
-        label="ピッチ",
+        label=t("ピッチ"),
         max_count=MAX_VARIATION_TRANSPOSE_COUNT,
         validate_one=validate_transpose_semitones,
     )
     if len(parsed_speeds) * len(parsed_transposes) > MAX_VARIATION_COUNT:
         raise WebValidationError(
-            f"速度×ピッチの組み合わせ数が多すぎます（最大{MAX_VARIATION_COUNT}件）"
+            t("速度×ピッチの組み合わせ数が多すぎます（最大{max_count}件）", max_count=MAX_VARIATION_COUNT)
         )
     return parsed_speeds, parsed_transposes
     return value
@@ -465,19 +492,19 @@ def apply_assignments(
     try:
         midi_file = mido.MidiFile(original_path)
     except (OSError, EOFError, ValueError) as error:
-        raise MidiTrackError(f"MIDIを読み込めません: {original_path}: {error}") from error
+        raise MidiTrackError(t("MIDIを読み込めません: {original_path}: {error}", original_path=original_path, error=error)) from error
 
     updated = 0
     inserted = 0
 
     for track_index, program in assignments.items():
         if track_index >= len(midi_file.tracks):
-            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+            raise WebValidationError(t("トラック番号が不正です: {track_index}", track_index=track_index))
         track = midi_file.tracks[track_index]
 
         channel = _single_note_channel(track)
         if channel is None or channel == PERCUSSION_CHANNEL:
-            raise WebValidationError(f"トラック{track_index}は編集対象外です")
+            raise WebValidationError(t("トラック{track_index}は編集対象外です", track_index=track_index))
 
         existing = [m for m in track if m.type == "program_change" and m.channel == channel]
         if existing:
@@ -494,7 +521,7 @@ def apply_assignments(
 
     for track_index, volume in (volumes or {}).items():
         if track_index >= len(midi_file.tracks):
-            raise WebValidationError(f"トラック番号が不正です: {track_index}")
+            raise WebValidationError(t("トラック番号が不正です: {track_index}", track_index=track_index))
         track = midi_file.tracks[track_index]
         if not any(message.type == "note_on" and message.velocity > 0 for message in track):
             # 短区間プレビューでは、曲全体では発音するトラックでも切り出し窓の
@@ -596,7 +623,7 @@ def write_track_subset(
     try:
         midi_file = mido.MidiFile(source_path)
     except (OSError, EOFError, ValueError) as error:
-        raise MidiTrackError(f"MIDIを読み込めません: {source_path}: {error}") from error
+        raise MidiTrackError(t("MIDIを読み込めません: {source_path}: {error}", source_path=source_path, error=error)) from error
 
     has_notes = False
     for index, track in enumerate(midi_file.tracks):
@@ -708,17 +735,17 @@ def write_time_window(
     ノートをtick 0へ復元するため、長いノートも短区間プレビューで鳴る。
     """
     if start_seconds < 0 or end_seconds <= start_seconds or speed <= 0:
-        raise WebValidationError("MIDI区間の開始・終了秒または速度が不正です")
+        raise WebValidationError(t("MIDI区間の開始・終了秒または速度が不正です"))
     mido = import_mido()
     try:
         source = mido.MidiFile(source_path)
     except (OSError, EOFError, ValueError) as error:
-        raise MidiTrackError(f"MIDIを読み込めません: {source_path}: {error}") from error
+        raise MidiTrackError(t("MIDIを読み込めません: {source_path}: {error}", source_path=source_path, error=error)) from error
 
     output_duration_seconds = calculate_duration_seconds(source) / speed
     effective_end_seconds = min(end_seconds, output_duration_seconds)
     if effective_end_seconds <= start_seconds:
-        raise WebValidationError("短区間プレビューを作成できる演奏時間がありません")
+        raise WebValidationError(t("短区間プレビューを作成できる演奏時間がありません"))
     start_tick = _seconds_to_tick(source, start_seconds * speed)
     end_tick = _seconds_to_tick(source, effective_end_seconds * speed)
     if end_tick <= start_tick:

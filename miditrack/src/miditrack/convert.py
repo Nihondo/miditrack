@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import ConvertError, WebValidationError
+from .i18n import t
 from .libvgm import metadata_path_for as libvgm_metadata_path_for
 from .nsf_chip import metadata_path_for as nsf_chip_metadata_path_for
 
@@ -113,7 +114,11 @@ def detect_format(filename: str) -> SourceFormat:
         suffix = Path(filename).suffix.lower()
         supported = ", ".join(ext for f in SOURCE_FORMATS for ext in f.extensions)
         raise WebValidationError(
-            f"対応していない拡張子です: {suffix or '(なし)'}（対応: {supported} / .mid / .midi）"
+            t(
+                "対応していない拡張子です: {suffix}（対応: {supported} / .mid / .midi）",
+                suffix=suffix or t("(なし)"),
+                supported=supported,
+            )
         )
     return fmt
 
@@ -144,10 +149,10 @@ def _safe_member_path(dest_dir: Path, member_name: str) -> Path:
     """
     posix = PurePosixPath(member_name)
     if posix.is_absolute() or ".." in posix.parts or not posix.parts:
-        raise WebValidationError(f"ZIP内の不正なパスを検出しました: {member_name}")
+        raise WebValidationError(t("ZIP内の不正なパスを検出しました: {member_name}", member_name=member_name))
     candidate = (dest_dir / Path(*posix.parts)).resolve()
     if candidate != dest_dir and dest_dir not in candidate.parents:
-        raise WebValidationError(f"ZIP内の不正なパスを検出しました: {member_name}")
+        raise WebValidationError(t("ZIP内の不正なパスを検出しました: {member_name}", member_name=member_name))
     return candidate
 
 
@@ -165,11 +170,11 @@ def extract_zip_members(zip_path: Path, dest_dir: Path) -> list[Path]:
             infos = [info for info in zf.infolist() if not info.is_dir()]
             if len(infos) > MAX_ARCHIVE_MEMBERS:
                 raise WebValidationError(
-                    f"ZIP内のファイル数が多すぎます（上限{MAX_ARCHIVE_MEMBERS}）"
+                    t("ZIP内のファイル数が多すぎます（上限{max_members}）", max_members=MAX_ARCHIVE_MEMBERS)
                 )
             total_bytes = sum(info.file_size for info in infos)
             if total_bytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
-                raise WebValidationError("ZIPの展開後サイズが大きすぎます")
+                raise WebValidationError(t("ZIPの展開後サイズが大きすぎます"))
 
             extracted: list[Path] = []
             resolved_dest = dest_dir.resolve()
@@ -180,7 +185,7 @@ def extract_zip_members(zip_path: Path, dest_dir: Path) -> list[Path]:
                     shutil.copyfileobj(src, dst)
                 extracted.append(member_path)
     except zipfile.BadZipFile as error:
-        raise WebValidationError("有効なZIPファイルではありません") from error
+        raise WebValidationError(t("有効なZIPファイルではありません")) from error
     return extracted
 
 
@@ -562,68 +567,68 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
     """
     if fmt.key == "nsf":
         return [
-            {"name": "songIndex", "type": "song", "label": "曲", "default": 0},
+            {"name": "songIndex", "type": "song", "label": t("曲"), "default": 0},
             {
                 "name": "loops",
                 "type": "number",
-                "label": "ループ回数",
+                "label": t("ループ回数"),
                 "default": None,
                 "layoutGroup": "timing",
                 "unavailable": True,
-                "placeholder": "指定不可",
-                "help": "実機のループ点を検出できないため、長さは秒数で指定します",
+                "placeholder": t("指定不可"),
+                "help": t("実機のループ点を検出できないため、長さは秒数で指定します"),
             },
             {
                 "name": "durationSeconds",
                 "type": "number",
-                "label": "秒数",
+                "label": t("秒数"),
                 "default": None,
                 "min": 1,
                 "layoutGroup": "timing",
-                "placeholder": "空欄で自動",
-                "help": "空欄ならNSFEのトラック長、それも無ければ180秒",
+                "placeholder": t("空欄で自動"),
+                "help": t("空欄ならNSFEのトラック長、それも無ければ180秒"),
             },
             {
                 "name": "chipNoise",
                 "type": "bool",
-                "label": "原曲の音源（実機）を初期選択",
+                "label": t("原曲の音源（実機）を初期選択"),
                 "default": False,
-                "help": (
+                "help": t(
                     "音符のある全チャンネルの音源を原曲の音源（チップエミュレーション）に"
                     "初期選択します。チェックを外していても、変換後にトラックごとSoundFont"
                     "や原曲の音源へ自由に切り替えられます"
                 ),
             },
-            {"name": "forcePal", "type": "bool", "label": "PALタイミングを使用", "default": False},
+            {"name": "forcePal", "type": "bool", "label": t("PALタイミングを使用"), "default": False},
         ]
     if fmt.key == "spc":
         return [
-            {"name": "songIndex", "type": "song", "label": "曲", "default": 0},
+            {"name": "songIndex", "type": "song", "label": t("曲"), "default": 0},
             {
                 "name": "loops",
                 "type": "number",
-                "label": "ループ回数",
+                "label": t("ループ回数"),
                 "default": 1,
                 "min": 0,
                 "layoutGroup": "timing",
-                "help": "無限ループ区間を展開する回数",
+                "help": t("無限ループ区間を展開する回数"),
             },
             {
                 "name": "durationSeconds",
                 "type": "number",
-                "label": "秒数",
+                "label": t("秒数"),
                 "default": None,
                 "layoutGroup": "timing",
                 "unavailable": True,
-                "placeholder": "指定不可",
-                "help": "曲の長さはループ回数で指定します",
+                "placeholder": t("指定不可"),
+                "help": t("曲の長さはループ回数で指定します"),
             },
             {
                 "name": "gameSoundfont",
                 "type": "bool",
-                "label": "原曲の音源（実機）を初期選択",
+                "label": t("原曲の音源（実機）を初期選択"),
                 "default": False,
-                "help": (
+                "help": t(
                     "SPCのBRRサンプルから生成したSoundFontを、音符のある全トラックの音源に"
                     "初期選択します。チェックを外していても、変換後にトラックごとSoundFont"
                     "や原曲の音源へ自由に切り替えられます"
@@ -635,31 +640,31 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
             {
                 "name": "loops",
                 "type": "number",
-                "label": "ループ回数",
+                "label": t("ループ回数"),
                 "default": None,
                 "min": 1,
                 "layoutGroup": "timing",
                 "conflicts": ["durationSeconds"],
-                "placeholder": "自動",
-                "help": "秒数と同時指定不可",
+                "placeholder": t("自動"),
+                "help": t("秒数と同時指定不可"),
             },
             {
                 "name": "durationSeconds",
                 "type": "number",
-                "label": "秒数",
+                "label": t("秒数"),
                 "default": None,
                 "min": 0.001,
                 "layoutGroup": "timing",
                 "conflicts": ["loops"],
-                "placeholder": "自動",
-                "help": "ループ回数と同時指定不可",
+                "placeholder": t("自動"),
+                "help": t("ループ回数と同時指定不可"),
             },
             {
                 "name": "chipNoise",
                 "type": "bool",
-                "label": "原曲の音源（実機）を初期選択",
+                "label": t("原曲の音源（実機）を初期選択"),
                 "default": False,
-                "help": (
+                "help": t(
                     "安全に判定できたノイズ/DAC/リズム系トラックの音源を原曲の音源"
                     "（libvgm）に初期選択します（曖昧な共有チャンネルはSoundFontのまま）。"
                     "チェックを外していても、変換後にトラックごとSoundFontや原曲の音源へ"
@@ -669,9 +674,9 @@ def option_schema(fmt: SourceFormat) -> list[dict[str, Any]]:
             {
                 "name": "ch3SpecialPercussion",
                 "type": "bool",
-                "label": "OPN Ch3 SpecialをGMドラムに変換",
+                "label": t("OPN Ch3 SpecialをGMドラムに変換"),
                 "default": False,
-                "help": (
+                "help": t(
                     "YM2203/YM2608/YM2612 Ch3 Specialの4オペレータを別々の音程トラックにせず、"
                     "複合アタックをGMのキック、スネア、ハイハット、シンバル、タムへ近似します"
                 ),
@@ -702,16 +707,16 @@ def validate_convert_options(fmt: SourceFormat, songs: list[dict[str, Any]], raw
         value = raw[name]
         if field["type"] == "song":
             if not isinstance(value, int) or isinstance(value, bool):
-                raise WebValidationError(f"{name}は整数で指定してください")
+                raise WebValidationError(t("{name}は整数で指定してください", name=name))
             if not songs or not (0 <= value < len(songs)):
-                raise WebValidationError(f"曲番号が範囲外です: {value}")
+                raise WebValidationError(t("曲番号が範囲外です: {value}", value=value))
             result[name] = value
         elif field["type"] == "number":
             if not isinstance(value, (int, float)) or isinstance(value, bool):
-                raise WebValidationError(f"{name}は数値で指定してください")
+                raise WebValidationError(t("{name}は数値で指定してください", name=name))
             minimum = field.get("min")
             if minimum is not None and value < minimum:
-                raise WebValidationError(f"{name}は{minimum}以上で指定してください")
+                raise WebValidationError(t("{name}は{minimum}以上で指定してください", name=name, minimum=minimum))
             result[name] = value
         elif field["type"] == "bool":
             result[name] = bool(value)
@@ -724,7 +729,7 @@ def validate_convert_options(fmt: SourceFormat, songs: list[dict[str, Any]], raw
             continue
         for other in conflicts:
             if result.get(other) is not None:
-                raise WebValidationError(f"{name}と{other}は同時に指定できません")
+                raise WebValidationError(t("{name}と{other}は同時に指定できません", name=name, other=other))
 
     return result
 

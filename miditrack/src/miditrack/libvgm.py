@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .errors import RenderError, WebValidationError
+from .i18n import t
 
 RENDER_TIMEOUT_SECONDS = 300
 
@@ -57,7 +58,7 @@ def metadata_path_for(output_path: Path) -> Path:
 
 def _read_uint(value: Any, label: str, maximum: int = 0xFFFFFFFF) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
-        raise WebValidationError(f"libvgmメタデータの{label}が不正です")
+        raise WebValidationError(t("libvgmメタデータの{label}が不正です", label=label))
     return value
 
 
@@ -68,12 +69,12 @@ def load_metadata(path: Path, track_count: int) -> LibvgmMetadata | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise WebValidationError(f"libvgmトラック情報を読み込めません: {error}") from error
+        raise WebValidationError(t("libvgmトラック情報を読み込めません: {error}", error=error)) from error
     if not isinstance(payload, dict) or payload.get("version") != 1:
-        raise WebValidationError("未対応のlibvgmトラック情報です")
+        raise WebValidationError(t("未対応のlibvgmトラック情報です"))
     sample_count = _read_uint(payload.get("sampleCount"), "sampleCount")
     if sample_count == 0 or not isinstance(payload.get("tracks"), list):
-        raise WebValidationError("libvgmトラック情報の内容が不正です")
+        raise WebValidationError(t("libvgmトラック情報の内容が不正です"))
 
     targets: dict[int, LibvgmTarget] = {}
     for entry in payload["tracks"]:
@@ -81,11 +82,11 @@ def load_metadata(path: Path, track_count: int) -> LibvgmMetadata | None:
             continue
         raw = entry["libvgm"]
         if not isinstance(raw, dict):
-            raise WebValidationError("libvgmトラック選択先が不正です")
+            raise WebValidationError(t("libvgmトラック選択先が不正です"))
         index = _read_uint(entry.get("trackIndex"), "trackIndex", track_count - 1)
         group_id = raw.get("groupId")
         if not isinstance(group_id, str) or not group_id:
-            raise WebValidationError("libvgmトラックgroupIdが不正です")
+            raise WebValidationError(t("libvgmトラックgroupIdが不正です"))
         targets[index] = LibvgmTarget(
             device_type=_read_uint(raw.get("deviceType"), "deviceType", 0xFF),
             instance=_read_uint(raw.get("instance"), "instance", 0xFFFF),
@@ -109,11 +110,11 @@ def validate_sources(
     validated: dict[int, str] = {}
     for track_index, source in raw_sources.items():
         if source not in {"soundfont", "game"}:
-            raise WebValidationError(f"未知のトラック音源です: {source}")
+            raise WebValidationError(t("未知のトラック音源です: {source}", source=source))
         target = metadata.targets.get(track_index) if metadata else None
         if target is None:
             if source == "game":
-                raise WebValidationError(f"トラック{track_index}は原曲の音源へ対応付けできません")
+                raise WebValidationError(t("トラック{track_index}は原曲の音源へ対応付けできません", track_index=track_index))
             validated[track_index] = source
             continue
         for related_index in metadata.group_indices(target.group_id):

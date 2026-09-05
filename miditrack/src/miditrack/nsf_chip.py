@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .errors import RenderError, WebValidationError
+from .i18n import t
 
 # convert.pyはmetadata_path_for()をここからimportするため（nsf_chip_metadata_path_for
 # という別名で）、モジュールトップレベルで`from . import convert`すると
@@ -62,7 +63,7 @@ def metadata_path_for(output_path: Path) -> Path:
 
 def _read_uint(value: Any, label: str, maximum: int = 0xFFFFFFFF) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
-        raise WebValidationError(f"NESチャンネルメタデータの{label}が不正です")
+        raise WebValidationError(t("NESチャンネルメタデータの{label}が不正です", label=label))
     return value
 
 
@@ -78,12 +79,12 @@ def load_metadata(path: Path, track_count: int) -> NsfChipMetadata | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise WebValidationError(f"NESチャンネル情報を読み込めません: {error}") from error
+        raise WebValidationError(t("NESチャンネル情報を読み込めません: {error}", error=error)) from error
     if not isinstance(payload, dict) or payload.get("version") != 1:
-        raise WebValidationError("未対応のNESチャンネル情報です")
+        raise WebValidationError(t("未対応のNESチャンネル情報です"))
     sample_count = _read_uint(payload.get("sampleCount"), "sampleCount")
     if sample_count == 0 or not isinstance(payload.get("tracks"), list):
-        raise WebValidationError("NESチャンネル情報の内容が不正です")
+        raise WebValidationError(t("NESチャンネル情報の内容が不正です"))
 
     targets: dict[int, NsfChipTarget] = {}
     for entry in payload["tracks"]:
@@ -91,14 +92,14 @@ def load_metadata(path: Path, track_count: int) -> NsfChipMetadata | None:
             continue
         raw = entry["chipRender"]
         if not isinstance(raw, dict):
-            raise WebValidationError("NESチャンネル選択先が不正です")
+            raise WebValidationError(t("NESチャンネル選択先が不正です"))
         index = _read_uint(entry.get("trackIndex"), "trackIndex", track_count - 1)
         channel = raw.get("channel")
         group_id = raw.get("groupId")
         if not isinstance(channel, str) or not channel:
-            raise WebValidationError("NESチャンネル名が不正です")
+            raise WebValidationError(t("NESチャンネル名が不正です"))
         if not isinstance(group_id, str) or not group_id:
-            raise WebValidationError("NESチャンネルgroupIdが不正です")
+            raise WebValidationError(t("NESチャンネルgroupIdが不正です"))
         targets[index] = NsfChipTarget(
             channel=channel,
             group_id=group_id,
@@ -114,11 +115,11 @@ def validate_sources(
     validated: dict[int, str] = {}
     for track_index, source in raw_sources.items():
         if source not in {"soundfont", "game"}:
-            raise WebValidationError(f"未知のトラック音源です: {source}")
+            raise WebValidationError(t("未知のトラック音源です: {source}", source=source))
         target = metadata.targets.get(track_index) if metadata else None
         if target is None:
             if source == "game":
-                raise WebValidationError(f"トラック{track_index}は原曲の音源へ対応付けできません")
+                raise WebValidationError(t("トラック{track_index}は原曲の音源へ対応付けできません", track_index=track_index))
             validated[track_index] = source
             continue
         for related_index in metadata.group_indices(target.group_id):

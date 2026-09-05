@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import WebValidationError
+from .i18n import t
 
 PROJECT_FORMAT = "miditrack-project"
 PROJECT_VERSION = 1
@@ -32,20 +33,20 @@ def _validate_member_name(name: str) -> PurePosixPath:
     """ZIP内メンバー名を正規化し、展開先外へのパスを拒否する。"""
     path = PurePosixPath(name)
     if path.is_absolute() or not path.parts or ".." in path.parts:
-        raise WebValidationError(f"プロジェクト内の不正なパスを検出しました: {name}")
+        raise WebValidationError(t("プロジェクト内の不正なパスを検出しました: {name}", name=name))
     if any(part in {"", "."} for part in path.parts):
-        raise WebValidationError(f"プロジェクト内の不正なパスを検出しました: {name}")
+        raise WebValidationError(t("プロジェクト内の不正なパスを検出しました: {name}", name=name))
     return path
 
 
 def _validate_manifest(value: Any) -> dict[str, Any]:
     """形式識別子とバージョンだけを共通層で検証する。"""
     if not isinstance(value, dict):
-        raise WebValidationError("プロジェクトmanifestはオブジェクトで指定してください")
+        raise WebValidationError(t("プロジェクトmanifestはオブジェクトで指定してください"))
     if value.get("format") != PROJECT_FORMAT:
-        raise WebValidationError("未対応のプロジェクト形式です")
+        raise WebValidationError(t("未対応のプロジェクト形式です"))
     if value.get("version") != PROJECT_VERSION:
-        raise WebValidationError("未対応のプロジェクトバージョンです")
+        raise WebValidationError(t("未対応のプロジェクトバージョンです"))
     return value
 
 
@@ -57,9 +58,9 @@ def create_archive(
     for name, source_path in files.items():
         _validate_member_name(name)
         if name == MANIFEST_NAME or name in entries:
-            raise WebValidationError(f"プロジェクト内のファイル名が重複しています: {name}")
+            raise WebValidationError(t("プロジェクト内のファイル名が重複しています: {name}", name=name))
         if not source_path.is_file():
-            raise WebValidationError(f"プロジェクト保存対象が見つかりません: {source_path}")
+            raise WebValidationError(t("プロジェクト保存対象が見つかりません: {source_path}", source_path=source_path))
         entries[name] = source_path
 
     _validate_manifest(manifest)
@@ -68,17 +69,17 @@ def create_archive(
             manifest, ensure_ascii=False, indent=2, sort_keys=True
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
-        raise WebValidationError(f"プロジェクトmanifestを保存できません: {error}") from error
+        raise WebValidationError(t("プロジェクトmanifestを保存できません: {error}", error=error)) from error
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
-        raise WebValidationError("プロジェクトmanifestが大きすぎます")
+        raise WebValidationError(t("プロジェクトmanifestが大きすぎます"))
 
     total_size = len(manifest_bytes) + sum(path.stat().st_size for path in entries.values())
     if len(entries) + 1 > MAX_PROJECT_MEMBERS:
         raise WebValidationError(
-            f"プロジェクト内のファイル数が多すぎます（上限{MAX_PROJECT_MEMBERS}）"
+            t("プロジェクト内のファイル数が多すぎます（上限{max_members}）", max_members=MAX_PROJECT_MEMBERS)
         )
     if total_size > MAX_PROJECT_UNCOMPRESSED_BYTES:
-        raise WebValidationError("プロジェクトの展開後サイズが大きすぎます")
+        raise WebValidationError(t("プロジェクトの展開後サイズが大きすぎます"))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -87,7 +88,7 @@ def create_archive(
             for name, source_path in sorted(entries.items()):
                 archive.write(source_path, arcname=name)
     except OSError as error:
-        raise WebValidationError(f"プロジェクトを保存できません: {error}") from error
+        raise WebValidationError(t("プロジェクトを保存できません: {error}", error=error)) from error
 
 
 def extract_archive(archive_path: Path, destination: Path) -> ExtractedProject:
@@ -99,46 +100,50 @@ def extract_archive(archive_path: Path, destination: Path) -> ExtractedProject:
             infos = archive.infolist()
             if len(infos) > MAX_PROJECT_MEMBERS:
                 raise WebValidationError(
-                    f"プロジェクト内のファイル数が多すぎます（上限{MAX_PROJECT_MEMBERS}）"
+                    t("プロジェクト内のファイル数が多すぎます（上限{max_members}）", max_members=MAX_PROJECT_MEMBERS)
                 )
             if any(info.is_dir() for info in infos):
-                raise WebValidationError("プロジェクトにディレクトリエントリは含められません")
+                raise WebValidationError(t("プロジェクトにディレクトリエントリは含められません"))
             if sum(info.file_size for info in infos) > MAX_PROJECT_UNCOMPRESSED_BYTES:
-                raise WebValidationError("プロジェクトの展開後サイズが大きすぎます")
+                raise WebValidationError(t("プロジェクトの展開後サイズが大きすぎます"))
 
             names: set[str] = set()
             manifest_info: zipfile.ZipInfo | None = None
             for info in infos:
                 _validate_member_name(info.filename)
                 if info.filename in names:
-                    raise WebValidationError(f"プロジェクト内のファイル名が重複しています: {info.filename}")
+                    raise WebValidationError(
+                        t("プロジェクト内のファイル名が重複しています: {name}", name=info.filename)
+                    )
                 names.add(info.filename)
                 mode = info.external_attr >> 16
                 if mode and stat.S_IFMT(mode) == stat.S_IFLNK:
-                    raise WebValidationError("プロジェクトにシンボリックリンクは含められません")
+                    raise WebValidationError(t("プロジェクトにシンボリックリンクは含められません"))
                 if info.filename == MANIFEST_NAME:
                     manifest_info = info
 
             if manifest_info is None:
-                raise WebValidationError("プロジェクトmanifestが見つかりません")
+                raise WebValidationError(t("プロジェクトmanifestが見つかりません"))
             if manifest_info.file_size > MAX_MANIFEST_BYTES:
-                raise WebValidationError("プロジェクトmanifestが大きすぎます")
+                raise WebValidationError(t("プロジェクトmanifestが大きすぎます"))
 
             for info in infos:
                 target = (resolved_destination / Path(*PurePosixPath(info.filename).parts)).resolve()
                 if target == resolved_destination or resolved_destination not in target.parents:
-                    raise WebValidationError(f"プロジェクト内の不正なパスを検出しました: {info.filename}")
+                    raise WebValidationError(
+                        t("プロジェクト内の不正なパスを検出しました: {name}", name=info.filename)
+                    )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(info) as source, target.open("wb") as output:
                     shutil.copyfileobj(source, output)
     except zipfile.BadZipFile as error:
-        raise WebValidationError("有効な.miditrackファイルではありません") from error
+        raise WebValidationError(t("有効な.miditrackファイルではありません")) from error
     except OSError as error:
-        raise WebValidationError(f"プロジェクトを読み込めません: {error}") from error
+        raise WebValidationError(t("プロジェクトを読み込めません: {error}", error=error)) from error
 
     try:
         raw_manifest = (resolved_destination / MANIFEST_NAME).read_text(encoding="utf-8")
         manifest = _validate_manifest(json.loads(raw_manifest))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise WebValidationError(f"プロジェクトmanifestを読み込めません: {error}") from error
+        raise WebValidationError(t("プロジェクトmanifestを読み込めません: {error}", error=error)) from error
     return ExtractedProject(root=resolved_destination, manifest=manifest)

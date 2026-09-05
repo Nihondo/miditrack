@@ -148,7 +148,9 @@ Open the preferences panel from the header's gear icon. Changes take effect imme
 
 **Display settings**
 
-**Theme** — **Global display** sets the colour scheme: follow the system setting, light, or dark.
+**Appearance** sets the colour scheme: follow the system setting, light, or dark.
+
+**Display language** switches the Web UI between Japanese and English, or follows the system setting. Changing it reloads the page. Error messages caused by an environment problem (a missing binary, a render timeout) stay in Japanese regardless of this setting. On the app version, the native menu bar picks up the language on the next launch, not immediately.
 
 **Piano roll**
 - *Round note corners*, *Add note outline*, *Show grid lines*, *Show keyboard* — toggle each element individually.
@@ -161,7 +163,7 @@ Open the preferences panel from the header's gear icon. Changes take effect imme
 
 **Behaviour settings**
 
-**Rendering** — *Concurrent render jobs* controls how many render jobs (FluidSynth track splits, chip/hardware channels, and bulk-variation combinations) run at once. **Auto** picks a conservative value from the machine's CPU count; choose a fixed number (1/2/4/8) to override it.
+**Concurrent render jobs** controls how many render jobs (FluidSynth track splits, chip/hardware channels, and bulk-variation combinations) run at once. **Auto** picks a conservative value from the machine's CPU count; choose a fixed number (1/2/4/8) to override it.
 
 ### Limits and behaviour
 
