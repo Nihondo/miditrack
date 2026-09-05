@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: ./install.sh
+Usage: ./scripts/install.sh
 
 Builds the same miditrack.app payload used for release distribution (Apple
 Silicon or Intel, matching this Mac) and installs it into ~/Applications.
@@ -33,7 +33,7 @@ case "${1:-}" in
 esac
 
 install_path="$(resolve_script_path "${BASH_SOURCE[0]}")"
-repository_dir="$(cd -P "$(dirname "$install_path")" >/dev/null 2>&1 && pwd)"
+repository_dir="$(cd -P "$(dirname "$install_path")/.." >/dev/null 2>&1 && pwd)"
 app_dir="$HOME/Applications/miditrack.app"
 cli_path="$app_dir/Contents/Resources/project/miditrack/miditrack.sh"
 marker_path="$app_dir/Contents/Resources/.installed-by-install-sh"

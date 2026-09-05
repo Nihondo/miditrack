@@ -10,7 +10,7 @@ Turn chiptune music — NES (`.nsf`/`.nsfe`), SNES (`.spc`/`.spc2`), or VGM (`.v
 
 ## Quick Start
 
-1. On an Apple Silicon or Intel Mac, download the latest `miditrack.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside.
+1. On an Apple Silicon Mac, download the latest `miditrack.zip` from the [Releases page](https://github.com/Nihondo/miditrack/releases/latest), unzip it, and move `miditrack.app` to `~/Applications` (or `/Applications`). The Python and Node.js runtimes it needs are already bundled inside. **Intel Mac**: the published build is Apple Silicon only — see [Building miditrack.app for Intel Mac](#building-miditrackapp-for-intel-mac) below.
 
 2. Install the runtime dependencies through [Homebrew](https://brew.sh/). If Homebrew itself is not installed yet, install it first.
 
@@ -70,7 +70,7 @@ Building from source instead is also available for contributors — see [miditra
   - `/opt/homebrew/share/fluid-synth/sf2` (Apple Silicon Homebrew)
   - `/usr/local/share/fluid-synth/sf2` (Intel Homebrew)
 
-The converter binaries, the pinned Python and Node.js runtimes, and the native helper for Original VGM sound (built for both Apple Silicon and Intel) are all bundled inside `miditrack.app`, so ordinary source conversion, Original VGM sound, real-audio stem mixing, per-track export, and speed/pitch changes need no build step. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. Intel Macs need an Intel or Universal helper binary.
+The converter binaries (`nsf2midi`, `spc2midi`) and the native helper for Original VGM sound are universal (Apple Silicon and Intel) and bundled inside `miditrack.app`, so ordinary source conversion, Original VGM sound, real-audio stem mixing, per-track export, and speed/pitch changes need no build step on either architecture. To rebuild the VGM helper after changing its source, install CMake and Ninja, then run `vgm2midi/scripts/build-native.sh`. The bundled **Python and Node.js runtimes**, however, match whatever Mac built that particular `miditrack.app` — the published release is built on Apple Silicon, so it will not launch on an Intel Mac. See [Building miditrack.app for Intel Mac](#building-miditrackapp-for-intel-mac) below.
 
 ## Using miditrack
 
@@ -248,6 +248,28 @@ See [vgm2midi/README.md](vgm2midi/README.md) for supported chips and advanced op
 `midi2wav.sh` uses FluidSynth's dynamic SoundFont sample loading by default to
 avoid loading unused samples before a render. Use `--no-dynamic-sample-loading`
 only when comparing output with FluidSynth's eager-loading behaviour.
+
+## Building miditrack.app for Intel Mac
+
+The `miditrack-<version>-macos-arm64.zip` published on the [Releases page](https://github.com/Nihondo/miditrack/releases/latest) is built on, and only for, Apple Silicon. Its bundled Python backend, Node.js runtime, and native app launcher are all Apple Silicon binaries and will not launch on an Intel Mac — there is currently no separate Intel or universal release. (The bundled `nsf2midi`, `spc2midi`, and VGM native helper are universal and are not the problem; the app simply cannot start without a matching Python/Node runtime and launcher.)
+
+To use miditrack on an Intel Mac today, build your own `miditrack.app` on that Mac:
+
+1. Install the Xcode Command Line Tools if you have not already: `xcode-select --install`.
+2. Install [Homebrew](https://brew.sh/) and `uv` (used to assemble the pinned Python runtime): `brew install uv`.
+3. Clone this repository and run the packaging script from its root:
+
+   ```bash
+   git clone https://github.com/Nihondo/miditrack.git
+   cd miditrack
+   ./scripts/build_app_bundle.sh --output ~/Applications/miditrack.app
+   ```
+
+   The script detects the host architecture automatically (`uname -m`) and downloads the matching Node.js build, assembles a matching PyInstaller backend, and compiles the Swift launcher for that architecture — no arguments beyond `--output` are needed on Intel.
+4. The first launch will be blocked by Gatekeeper, since a locally built app is unsigned: right-click `miditrack.app` and choose **Open**, or approve it under **System Settings → Privacy & Security**.
+5. Continue with the Homebrew audio tools and SoundFont setup from [Quick Start](#quick-start) steps 2–3.
+
+Rebuilding after a `git pull` uses the same command; the script refuses to overwrite an existing `--output` path, so remove or rename the previous `miditrack.app` first.
 
 ## Troubleshooting
 

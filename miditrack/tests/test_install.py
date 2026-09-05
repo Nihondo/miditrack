@@ -12,11 +12,11 @@ class TestInstallScript(unittest.TestCase):
 
     def setUp(self) -> None:
         self.repository_root = Path(__file__).resolve().parents[2]
-        self.installer = (self.repository_root / "install.sh").read_text(encoding="utf-8")
+        self.installer = (self.repository_root / "scripts" / "install.sh").read_text(encoding="utf-8")
 
     def test_shows_help_without_installing_dependencies(self) -> None:
         result = subprocess.run(
-            ["bash", str(self.repository_root / "install.sh"), "--help"],
+            ["bash", str(self.repository_root / "scripts" / "install.sh"), "--help"],
             capture_output=True,
             text=True,
             check=False,

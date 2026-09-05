@@ -1,6 +1,6 @@
 #!/usr/bin/swift
 //
-// このファイルはinstall.shが`xcrun swiftc -O`でコンパイルし、
+// このファイルはscripts/install.shが`xcrun swiftc -O`でコンパイルし、
 // ~/Applications/miditrack.app/Contents/MacOS/miditrackへ直接配置する
 // （Xcodeプロジェクトは使わない。シバン行はターミナルから
 // `./miditrack_app.swift --self-test`のように直接実行する開発用の経路
@@ -189,8 +189,8 @@ let EnglishMenuCatalog: [String: String] = [
     "ヘルプ": "Help",
     "{app} ヘルプ": "{app} Help",
     "キャンセル": "Cancel",
-    "miditrackのバックエンドが見つかりません: {path}。install.shを再実行してください。":
-        "The miditrack backend could not be found: {path}. Please run install.sh again.",
+    "miditrackのバックエンドが見つかりません: {path}。scripts/install.shを再実行してください。":
+        "The miditrack backend could not be found: {path}. Please run scripts/install.sh again.",
     "バックエンドが起動中に終了しました。": "The backend exited while starting up.",
     "バックエンドを起動できませんでした: {error}": "Couldn't start the backend: {error}",
     "バックエンドが{seconds}秒以内に応答しませんでした。": "The backend didn't respond within {seconds} seconds.",
@@ -378,7 +378,7 @@ final class BackendController {
 
         guard FileManager.default.isExecutableFile(atPath: backendExecutableURL.path) else {
             onFailure(
-                T("miditrackのバックエンドが見つかりません: {path}。install.shを再実行してください。")
+                T("miditrackのバックエンドが見つかりません: {path}。scripts/install.shを再実行してください。")
                     .replacingOccurrences(of: "{path}", with: backendExecutableURL.path)
             )
             return

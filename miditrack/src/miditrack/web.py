@@ -1286,8 +1286,10 @@ def create_app(
             if not candidates:
                 supported = ", ".join(ext for fmt in convert.SOURCE_FORMATS for ext in fmt.extensions)
                 raise WebValidationError(
-                    f"対応する音源ファイルが見つかりません（対応: {supported}。"
-                    "ZIPやm3uだけでは変換できません）"
+                    t(
+                        "対応する音源ファイルが見つかりません（対応: {supported}。ZIPやm3uだけでは変換できません）",
+                        supported=supported,
+                    )
                 )
 
             candidates.sort(key=lambda path: path.relative_to(temp_root).as_posix())
@@ -2589,7 +2591,11 @@ def create_app(
         try:
             outcome, window = ensure_preview(mode, float(timeline_seconds))
         except WebValidationError as error:
-            if "短区間プレビューを温めています" not in str(error):
+            # t()は現在言語で解決するため、raise側（原曲音源の短区間プレビューを
+            # 温めています）と同じ呼び出しで比較すれば英語UIでも一致する。
+            # 日本語原文をそのまま比較すると英語訳文とは絶対に一致せず、
+            # chip-warmup中の200応答が常に例外の再raiseへ化けてしまっていた。
+            if t("原曲音源の短区間プレビューを温めています") not in str(error):
                 raise
             return jsonify(available=False, reason="chip-warmup"), 200
         if outcome is None or window is None:

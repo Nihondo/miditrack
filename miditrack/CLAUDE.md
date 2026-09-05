@@ -25,7 +25,7 @@ runtime contracts, and verification. Keep detailed implementation history
 and invariants in this file, and keep converter-specific option references
 in each converter's own documentation.
 
-End users run the repository-root `install.sh` from an Apple Silicon checkout.
+End users run the repository's `scripts/install.sh` from an Apple Silicon checkout.
 It installs the Homebrew runtime tools, creates `miditrack/.venv`, installs
 the package and VGM Node.js runtime dependencies, and relies on FluidSynth's
 standard SoundFont. Keep the script self-contained, idempotent, and free of a

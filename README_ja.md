@@ -10,7 +10,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
 
 ## クイックスタート
 
-1. Apple SiliconまたはIntel Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。
+1. Apple Silicon Macで、[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)から最新の`miditrack.zip`をダウンロードし、展開して`miditrack.app`を`~/Applications`（または`/Applications`）へ移動します。必要なPython・Node.jsランタイムはあらかじめアプリ内に同梱されています。**Intel Mac**をお使いの場合、配布版はApple Silicon専用です——後述の[Intel Mac向けにmiditrack.appをビルドする](#intel-mac向けにmiditrackappをビルドする)を参照してください。
 
 2. Homebrewでランタイム依存を導入します。Homebrewが未導入の場合は先にインストールしてください。
 
@@ -70,7 +70,7 @@ NES（`.nsf`/`.nsfe`）、SNES（`.spc`/`.spc2`）、VGM（`.vgm`/`.vgz`）の�
   - `/opt/homebrew/share/fluid-synth/sf2`（Apple Silicon版Homebrew）
   - `/usr/local/share/fluid-synth/sf2`（Intel版Homebrew）
 
-コンバーターのバイナリ、固定バージョンのPython・Node.jsランタイム、VGM原曲音源のネイティブヘルパー（Apple Silicon・Intel両対応でビルド済み）はすべて`miditrack.app`内に同梱されているため、通常の音源変換、VGM原曲音源、実音声ステムのミックス、トラック別出力、速度／ピッチ変更のいずれにもビルドは不要です。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。Intel MacではIntel版またはUniversal版のヘルパーバイナリが必要です。
+コンバーターのバイナリ（`nsf2midi`・`spc2midi`）とVGM原曲音源のネイティブヘルパーはApple Silicon・Intel両対応（Universal）で`miditrack.app`内に同梱されているため、通常の音源変換、VGM原曲音源、実音声ステムのミックス、トラック別出力、速度／ピッチ変更のいずれもどちらのアーキテクチャでもビルド不要です。ヘルパーのソースを変更して再ビルドする場合だけ、CMakeとNinjaを導入してから`vgm2midi/scripts/build-native.sh`を実行してください。一方、同梱の**Python・Node.jsランタイム**は、その`miditrack.app`をビルドしたMac自身のアーキテクチャに固定されます——配布版はApple Silicon上でビルドしているため、Intel Macでは起動できません。後述の[Intel Mac向けにmiditrack.appをビルドする](#intel-mac向けにmiditrackappをビルドする)を参照してください。
 
 ## miditrackの使い方
 
@@ -246,6 +246,28 @@ vgm2midi song.vgz --loops 3
 ```
 
 `midi2wav.sh`は、レンダリング前に使わないサンプルまで読み込むことを避けるため、既定でFluidSynthのSoundFontサンプル動的読込を使います。FluidSynthの事前読込時の出力と比較する場合だけ、`--no-dynamic-sample-loading`を使います。
+
+## Intel Mac向けにmiditrack.appをビルドする
+
+[Releasesページ](https://github.com/Nihondo/miditrack/releases/latest)で配布している`miditrack-<バージョン>-macos-arm64.zip`はApple Silicon上でビルドした、Apple Silicon専用のものです。同梱のPythonバックエンド・Node.jsランタイム・ネイティブアプリランチャーはすべてApple Siliconバイナリのため、Intel Macでは起動できません。現時点でIntel版やUniversal版のリリースはありません（同梱の`nsf2midi`・`spc2midi`・VGMネイティブヘルパーはUniversalなので問題ありません——アプリ自体が対応するPython・Node.jsランタイムとランチャーが無いために起動できないだけです）。
+
+Intel Macで今すぐmiditrackを使うには、そのMac上で`miditrack.app`を自分でビルドしてください。
+
+1. Xcode Command Line Toolsが未導入なら導入します: `xcode-select --install`
+2. [Homebrew](https://brew.sh/)と`uv`（固定バージョンのPythonランタイムを組み立てるのに使用）を導入します: `brew install uv`
+3. このリポジトリをクローンし、ルートからパッケージングスクリプトを実行します。
+
+   ```bash
+   git clone https://github.com/Nihondo/miditrack.git
+   cd miditrack
+   ./scripts/build_app_bundle.sh --output ~/Applications/miditrack.app
+   ```
+
+   このスクリプトはホストのアーキテクチャを自動判定し（`uname -m`）、対応するNode.jsをダウンロードし、対応するPyInstallerバックエンドを組み立て、対応するアーキテクチャ向けにSwiftランチャーをコンパイルします——Intel Macでも`--output`以外の引数は不要です。
+4. ローカルビルドは未署名のため、初回起動はGatekeeperにブロックされます。`miditrack.app`を右クリックして**開く**を選ぶか、**システム設定 → プライバシーとセキュリティ**から許可してください。
+5. [クイックスタート](#クイックスタート)の手順2〜3（Homebrewの音声ツールとSoundFontの配置）に進んでください。
+
+`git pull`後の再ビルドも同じコマンドで行えます。スクリプトは`--output`の指定先が既に存在すると上書きを拒否するため、先に既存の`miditrack.app`を削除するかリネームしてください。
 
 ## トラブルシューティング
 

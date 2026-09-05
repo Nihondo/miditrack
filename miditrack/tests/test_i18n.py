@@ -27,6 +27,35 @@ _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)")
 _JP_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
 
 
+def _is_t_call(node: ast.expr) -> bool:
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id == "t")
+        or (isinstance(node.func, ast.Attribute) and node.func.attr == "t")
+    )
+
+
+def _literal_text(node: ast.expr) -> str | None:
+    """Constant文字列、またはf-string（JoinedStr）のベタ部分を`{}`で埋めて結合する。
+
+    f-stringは実行時式を挟むとASTノードが`ast.Constant`ではなく`ast.JoinedStr`
+    になるため、`isinstance(node, ast.Constant)`だけを見るチェックは
+    `f"..." "..."` のようなf-stringと通常文字列の暗黙連結を拾えない —
+    実際にweb.pyでこの形の`raise WebValidationError(f"...")`が`t()`で
+    包まれないまま残っていたのを見つけて追加した関数。
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                parts.append(str(value.value))
+            else:
+                parts.append("{}")
+        return "".join(parts)
+    return None
+
+
 def _extract_python_msgids() -> set[str]:
     """`src/miditrack/*.py`内の`t("...")`/`i18n.t("...")`呼び出しの第1引数を集める。
 
@@ -38,20 +67,55 @@ def _extract_python_msgids() -> set[str]:
 
     class Visitor(ast.NodeVisitor):
         def visit_Call(self, node: ast.Call) -> None:
-            func = node.func
-            is_t_call = (isinstance(func, ast.Name) and func.id == "t") or (
-                isinstance(func, ast.Attribute) and func.attr == "t"
-            )
-            if is_t_call and node.args:
-                first = node.args[0]
-                if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                    msgids.add(first.value)
+            if _is_t_call(node) and node.args:
+                text = _literal_text(node.args[0])
+                if text is not None:
+                    msgids.add(text)
             self.generic_visit(node)
 
     for path in SRC_DIR.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         Visitor().visit(tree)
     return msgids
+
+
+def _find_untranslated_web_validation_raises() -> list[tuple[str, int, str]]:
+    """`raise WebValidationError(...)`/`raise MidiTrackError(...)`のうち、
+    日本語を含む引数が`t()`で包まれていないものを探す。
+
+    `test_every_source_msgid_has_a_translation`は「`t()`に渡された文字列は
+    すべてen.jsonにあるか」しか見ないため、そもそも`t()`を通していない生の
+    日本語raise（400系なのにt()の書き忘れ）を検出できない。実際にweb.pyで
+    2箇所（f-string連結のためt()化スクリプトの正規表現に引っかからなかった
+    raiseと、警告メッセージの文字列一致チェック）がこの形で見落とされていた
+    のを見つけて追加した回帰テスト。
+    """
+    offenders: list[tuple[str, int, str]] = []
+    target_classes = {"WebValidationError", "MidiTrackError"}
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self, filename: str) -> None:
+            self.filename = filename
+
+        def visit_Raise(self, node: ast.Raise) -> None:
+            exc = node.exc
+            if isinstance(exc, ast.Call):
+                func = exc.func
+                cls_name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else (func.attr if isinstance(func, ast.Attribute) else None)
+                )
+                if cls_name in target_classes and exc.args and not _is_t_call(exc.args[0]):
+                    text = _literal_text(exc.args[0])
+                    if text and _JP_RE.search(text):
+                        offenders.append((self.filename, node.lineno, text[:80]))
+            self.generic_visit(node)
+
+    for path in SRC_DIR.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        Visitor(path.name).visit(tree)
+    return offenders
 
 
 def _extract_js_msgids() -> set[str]:
@@ -153,6 +217,14 @@ class TestCatalogCompleteness(unittest.TestCase):
         self.assertEqual(
             missing, [], f"{len(missing)}件のmsgidがen.jsonに存在しません: {missing[:10]}..."
         )
+
+    def test_no_untranslated_400_series_raises(self) -> None:
+        """400系（WebValidationError/MidiTrackError）のraiseがt()の書き忘れで
+        日本語固定になっていないか。502系（RenderError等）は対象外——今回の
+        ローカライズ方針で意図的に日本語のまま残す設計のため。
+        """
+        offenders = _find_untranslated_web_validation_raises()
+        self.assertEqual(offenders, [], f"t()で包まれていない400系raiseがあります: {offenders}")
 
     def test_catalog_has_no_stale_entries(self) -> None:
         """en.jsonに、もうソースのどこからも参照されないキーが残っていないか。

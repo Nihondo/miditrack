@@ -281,6 +281,7 @@
   "対応していない拡張子です: {suffix}": "Unsupported file extension: {suffix}",
   "対応していない拡張子です: {suffix}（対応: {supported} / .mid / .midi）": "Unsupported file extension: {suffix} (supported: {supported} / .mid / .midi)",
   "対応する曲では、各トラックの音源を「原曲の音源」またはSoundFontから選べます。": "For supported songs, each track's source can be set to the original sound or a SoundFont.",
+  "対応する音源ファイルが見つかりません（対応: {supported}。ZIPやm3uだけでは変換できません）": "No supported source file was found (supported: {supported}. A ZIP or m3u alone can't be converted)",
   "対旋律": "Counter-melody",
   "小": "Compact",
   "彩度強め": "Vivid",
