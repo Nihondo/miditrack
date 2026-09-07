@@ -242,8 +242,9 @@ the two visible labels `高速`/`品質`; profile-rate explanations belong in th
 manual, not this compact toolbar. In full-screen mode, `#tracks-card` is a
 column flex container: only `.table-scroll` grows and scrolls, while the
 SoundFont field is the final, fixed control at the bottom of the left column.
-The spinner is decorative, stays hidden outside rendering, and becomes static
-when reduced motion is requested.
+The spinner is decorative, stays hidden outside rendering, and always spins
+while visible — see "Phase 5" below for why it deliberately does not honor
+`prefers-reduced-motion`.
 
 The fast/quality segmented choice remains a native radio group with explicit
 `label[for]` associations. Its inputs use the dedicated `.render-mode-input`
@@ -365,13 +366,17 @@ Apply & Audition and paused-prewarm descriptions.
 
 ## Current automatic audition behavior
 
+**Superseded in part by "Phase 5: cutting the edit-to-sound latency further"
+below** — this section's description of `scheduleAutoRender()`'s debounce and
+which endpoint it activates predates that work. The generation-tracking
+machinery described in the rest of this section is unchanged.
+
 `index.html` has no Apply & Audition button. MIDI preparation calls
-`scheduleAutoRender(0)` after the track list and piano roll are ready; edits
-use the same function with the existing 500ms debounce. Both paths activate
-`POST /api/render`, so a paused player silently loads the newest WAV and a
-playing player reaches it through the existing A/B crossfade. The legacy
-`POST /api/render/prewarm` endpoint remains for API compatibility but has no
-standard-UI caller.
+`scheduleAutoRender(0)` after the track list and piano roll are ready. Edits
+use the same function; see "Phase 5" below for its current debounce and for
+when it prefers the short-preview path over `POST /api/render` directly. The
+legacy `POST /api/render/prewarm` endpoint remains for API compatibility but
+has no standard-UI caller.
 
 `state.renderGeneration` identifies the newest requested state.
 `requestRenderGeneration()` shares an in-flight render for that generation,
@@ -385,7 +390,8 @@ older source after an edit. It also flushes pending track and transform PATCH
 operations first.
 
 The only normal UI feedback is the decorative `#render-spinner`, which is
-visible while a current render runs and stops animating under
+visible while a current render runs. It keeps spinning unconditionally — see
+"Phase 5" below for why it deliberately does not honor
 `prefers-reduced-motion`. Start, success, and setting-change toasts are
 intentionally suppressed; render and playback failures continue to use the
 existing error toast.
@@ -822,6 +828,150 @@ same global position. Keep the request low-priority: it is background work and
 unsupported browsers safely ignore the hint. `renderGeneration()` must leave
 the spinner visible while `fullRenderTask` remains pending; the preview's early
 return may only end the outer task, never the background full-render indicator.
+
+## Phase 5: cutting the edit-to-sound latency further
+
+`docs/midi-cozy-liskov.md`'s Phase 0–3 got a cold full render from 1.90s to
+1.03s and a 12-second preview to 276ms on the project's representative song.
+Measuring the *actual* edit-to-sound latency afterward (not just render time)
+found it was still ≈1980ms for a playing-state edit — the short-preview
+mechanism Phase 2 built was never reached from that path, and roughly 700ms
+of pure client-side debounce sat in front of every edit regardless. This
+section documents the fixes; `docs/midi-cozy-liskov.md`'s own Phase 5 entry
+carries the measurement log.
+
+**The preview path was live but unused for the case that matters most.**
+`scheduleAutoRender()` never passed `preferPreview` — its own comment claimed
+"停止中の編集では短区間プレビューを作らず" but the code didn't distinguish
+paused from playing at all, so a *playing* edit went straight to the full
+`POST /api/render` (≈1030ms warm) instead of the ≈276ms preview
+`ensureLatestRender()` (Space, `enterSolo()`) already used. `scheduleAutoRender()`
+now computes `preferPreview = isActivePlayerPlaying() && selectedRenderMode()
+=== "fast"` at fire time (not schedule time, since play/pause can change
+during the debounce) — restricted to `fast` because a preview always renders
+at 22.05kHz, and a user who explicitly picked `quality` audition should never
+hear a momentary fast-mode sample. A stopped-state edit still goes straight to
+`POST /api/render`: there is nothing playing for a preview to serve, so
+paying for both a preview and a full render would only delay the full
+render's own arrival for Space to pick up.
+
+**Debounce went from 200ms (PATCH) + 500ms (`scheduleAutoRender`) in series to
+a single tier per operation kind.** `RENDER_DEBOUNCE_DISCRETE_MS = 0` covers
+every operation whose intent is already final the instant it fires — program
+select, volume slider `change` (drag release), mute, solo, SoundFont switch,
+fast/quality toggle, track-role assignment. `setTimeout(fn, 0)` still
+coalesces a synchronous burst (e.g. "mute every track") into one flush via
+the existing `clearTimeout`-then-reschedule pattern; it is not "immediate,"
+just no longer artificially delayed. `RENDER_DEBOUNCE_CONTINUOUS_MS = 250`
+covers only the speed/pitch numeric steppers, where a value can still be
+mid-change. `flushPendingTrackSettings()` now calls `markRenderStale()` +
+`scheduleAutoRender()` *before* `renderTrackList()` (which clones a
+128-instrument fragment per row) and `redrawPianorollStatic()`, so the render
+request is scheduled before, not after, that synchronous DOM work;
+`enterSolo()` moves `renderTrackList()` to after `ensureLatestRender()` for
+the same reason — sound before DOM. PATCH itself is not skipped or raced
+against the render request: `_render_state_key()` reads the session's live
+state directly, so a render fired before the PATCH lands would cache the
+*old* state under a key the client believes is new.
+
+**`ensure_preview()` no longer waits for an in-flight full render.**
+`ensure_render()` still takes `WebSession.render_lock` for its entire body —
+this is unchanged and still required (see "Why `ensure_render()` remains a
+locked wrapper..." below) — but `ensure_preview()` now serializes only
+against other previews, via its own `WebSession.preview_lock`, and never
+touches `render_lock` for the couple of seconds an external `fluidsynth`/
+`ffmpeg` call might run. The state actually shared between the two paths —
+`render_id`, `render_cache`/`render_cache_bytes`, `preview_cache`,
+`audio_sources` — moved behind a third, always-briefly-held
+`WebSession.state_lock` (an `RLock`, since e.g. `_cache_store()` calls the
+also-locking `_evict_render_cache()` from within its own critical section).
+`_cache_lookup()`/`_cache_store()`/`_preview_cache_lookup()`/
+`_preview_cache_store()` take it internally now, so every caller — including
+ones still holding `render_lock` for their own, unrelated reasons — gets
+correct mutual exclusion on the actual dict/counter without needing to know
+about `state_lock` at all. `_next_render_id()`/`_register_audio_source()` are
+the two new atomic helpers for the id counter and the `audio_sources` map.
+
+**This uncovered a response bug, not just a lock-granularity one.**
+`render_endpoint()` and `render_preview_endpoint()` used to build
+`audioUrl`/`renderId` by reading `web_session.render_id` *after* `ensure_render()`/
+`ensure_preview()` returned — harmless when the two were fully serialized by
+one lock, but wrong the moment they can interleave: a concurrent preview
+could advance the counter between a full render's completion and its own
+response being built, so the response would report an id that never actually
+pointed at the WAV it just rendered. `RenderOutcome` gained a `render_id`
+field, set once, inside the lock, from a value the generating code path
+captured locally (`work_id`, or a freshly minted id when activating a
+different already-cached WAV) — never by re-reading the mutable counter
+after the fact. Both endpoints now read `outcome.render_id`. The same
+local-capture discipline applies to `POST /api/variations`'s per-combination
+id preallocation, which already captured its ids into a tuple rather than
+re-reading the counter, and now goes through `_next_render_id()` for
+consistency rather than incrementing the field directly. `AUDIO_SOURCE_HISTORY_LIMIT`
+moved from 4 to 6: a playing-state edit now consumes two ids per edit
+(preview, then full render) instead of one, so the old limit could evict a
+still-fading crossfade's source under back-to-back edits.
+
+**The MIDI reparse inside `write_time_window()` was the largest remaining
+slice of preview time** (106ms of a 276ms preview, on the representative
+song) and was pure waste on every preview after the first: nothing in that
+function mutates its input, it only ever reads through `message.copy()`.
+`midi.parse_midi_readonly(path)` extracts that parse into a function whose
+result is safe to reuse across calls (see its own docstring for the
+read-only contract new callers must honor), and `write_time_window()` takes
+an optional `source_midi` to skip its own reparse when the caller already
+has one. `WebSession.source_midi_cache`/`source_midi_cache_revision` hold
+exactly one parsed `original_path`, keyed by `midi_revision` — the same
+counter `load_midi()` already increments in lockstep with reassigning
+`original_path`, so a revision match is proof the cached object still
+matches the file on disk. `reset_midi_state()` clears both fields (a fresh
+MIDI makes the cache meaningless); `invalidate_render()` deliberately leaves
+them alone, since an ordinary edit (volume, mute, instrument) never touches
+`original_path` and the whole point is for the cache to survive exactly
+those edits.
+
+**The preview cache was sized to never actually hit.** `preview_cache`'s key
+included `timelineSeconds` to millisecond precision, but a playing session
+sends a new value on every edit — so its 3-entry LRU was permanently
+churning distinct keys, not caching anything. `ensure_preview()` now floors
+`timelineSeconds` to a `PREVIEW_WINDOW_QUANTIZE_SECONDS = 1.0` grid before
+deriving the window; since `PREVIEW_PREROLL_SECONDS` (2.0) exceeds the
+quantization step, the actual playhead position always still falls at least
+1 second inside the resulting window regardless of which way it rounded.
+`PREVIEW_CACHE_MAX_ENTRIES` moved from 3 to 8 and gained a
+`PREVIEW_CACHE_MAX_BYTES` sibling (mirroring `render_cache`'s pair), now that
+entries are actually expected to accumulate and get reused. Separately, the
+preview cache key used to include the *requested* render mode
+(`_render_state_key(mode)`), even though a preview always renders at
+`FAST_RENDER_MODE` regardless of what was requested — so toggling fast/quality
+audition alone silently re-rendered a byte-identical preview. The preview
+cache key now always derives from `_render_state_key(FAST_RENDER_MODE)`; the
+separate "is a full render already cached for this mode" check up front
+still (correctly) uses the requested `mode`, since that one *is* checking a
+mode-specific cache.
+
+**Tried and reverted: making `#render-spinner` honor `prefers-reduced-motion`.**
+Two places in this file claimed the spinner "becomes static when reduced
+motion is requested," but no such CSS ever existed — a documentation/
+implementation mismatch caught while touching this area. It was implemented
+(a `@media (prefers-reduced-motion: reduce) { .render-spinner { animation:
+none; } }` block) and then explicitly reverted at the user's request: a
+static circle reads as ambiguous — is it stuck, or just not rendering yet? —
+where a spinning one unambiguously means "still working." The spinner always
+spins while visible, full stop; both stale claims above were corrected to
+say so instead.
+
+**Explicitly out of scope for this pass**, with the reasoning recorded in
+`docs/midi-cozy-liskov.md`'s Phase 5 "やらないこと": a reverb/chorus-disabled
+preview profile (the parse-cache fix above captures a comparable saving with
+no audible discontinuity at crossfade), shortening the preview window,
+`MediaElementSource`/`GainNode` (the two-shot reseek in `runSwap()` is a
+`play()`-latency correction, not a volume one, so it would not remove either
+reseek), killing an in-flight external `fluidsynth`/`ffmpeg` process on
+supersession (the lock split above already removes the wait that would have
+motivated it), splitting a full render into time chunks, and per-track WAV
+caching for SoundFont-path volume/mute edits (a real remaining win, gated
+behind re-measuring after everything above lands).
 
 ## Why `rubberband.py` exists — direct chip-stem sync, not batch variations
 

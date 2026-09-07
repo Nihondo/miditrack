@@ -720,6 +720,23 @@ def _seconds_to_tick(midi_file: Any, seconds: float) -> int:
     )
 
 
+def parse_midi_readonly(source_path: Path) -> Any:
+    """MIDIファイルを読み込み専用の用途向けに一度だけパースして返す。
+
+    返り値はwrite_time_window()の`source_midi`引数のように「読むだけで一切
+    変更しない」呼び出しにだけ渡してよい。write_time_window()自身は
+    message.copy()経由でしかメッセージを扱わないため、同じオブジェクトを
+    何度渡しても安全（副作用が無い）。apply_assignments()等の「MIDIを
+    書き換える」関数へは絶対に渡さないこと — in-place変更を前提とした
+    呼び出し元が、渡された側の意図しない共有状態を書き換えてしまう。
+    """
+    mido = import_mido()
+    try:
+        return mido.MidiFile(source_path)
+    except (OSError, EOFError, ValueError) as error:
+        raise MidiTrackError(t("MIDIを読み込めません: {source_path}: {error}", source_path=source_path, error=error)) from error
+
+
 def write_time_window(
     source_path: Path,
     output_path: Path,
@@ -727,20 +744,26 @@ def write_time_window(
     end_seconds: float,
     *,
     speed: float = DEFAULT_SPEED_RATIO,
+    source_midi: Any | None = None,
 ) -> MidiWindow:
     """指定時間帯を、独立して発音可能なMIDIとして書き出す。
 
     start/endは速度適用後の出力時間軸で受け、切り出し対象の原本時間軸へ戻して
     tickを求める。窓の開始時点で有効なprogram change・CC・pitch bendと発音中の
     ノートをtick 0へ復元するため、長いノートも短区間プレビューで鳴る。
+
+    source_midiを渡すと、source_pathの再パース（mido.MidiFile()の実行、実測で
+    基準曲106ms）を省略してこの関数の一部のクリティカルパスを短縮できる。
+    渡す場合は呼び出し側がparse_midi_readonly()等で読み込んだ、この関数専用の
+    read-only前提を満たすオブジェクトであることを保証すること — この関数は
+    常にmessage.copy()経由でしか読み書きしないためsource_midiを一切変更しない
+    （同じオブジェクトを繰り返し渡しても安全）が、逆に呼び出し側が別の関数で
+    このオブジェクトを書き換えていた場合はそちらの変更がここへ漏れる。
     """
     if start_seconds < 0 or end_seconds <= start_seconds or speed <= 0:
         raise WebValidationError(t("MIDI区間の開始・終了秒または速度が不正です"))
     mido = import_mido()
-    try:
-        source = mido.MidiFile(source_path)
-    except (OSError, EOFError, ValueError) as error:
-        raise MidiTrackError(t("MIDIを読み込めません: {source_path}: {error}", source_path=source_path, error=error)) from error
+    source = source_midi if source_midi is not None else parse_midi_readonly(source_path)
 
     output_duration_seconds = calculate_duration_seconds(source) / speed
     effective_end_seconds = min(end_seconds, output_duration_seconds)

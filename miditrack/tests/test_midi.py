@@ -697,6 +697,36 @@ class TestWriteTimeWindow(unittest.TestCase):
         self.assertEqual(window, midi.MidiWindow(0.25, 0.75))
         self.assertEqual(sum(message.time for message in output.tracks[0]), 960)
 
+    def test_source_midi_injection_matches_reparsed_output(self) -> None:
+        """parse_midi_readonly()で読んだオブジェクトを渡しても、パス指定と
+        バイト同一の出力になる（Phase 5, Step 3のパースキャッシュ導入時の
+        回帰ガード）。"""
+        reparsed_output = Path(self.tmp.name) / "window_from_path.mid"
+        midi.write_time_window(self.source_path, reparsed_output, 1.0, 2.0)
+
+        cached_source = midi.parse_midi_readonly(self.source_path)
+        injected_output = Path(self.tmp.name) / "window_from_cache.mid"
+        midi.write_time_window(
+            self.source_path, injected_output, 1.0, 2.0, source_midi=cached_source
+        )
+
+        self.assertEqual(reparsed_output.read_bytes(), injected_output.read_bytes())
+
+    def test_source_midi_injection_is_read_only_across_repeated_calls(self) -> None:
+        """同じsource_midiオブジェクトを2回渡しても、2回目の出力が変わらない
+        （read-only契約の回帰ガード。書き換えていれば2回目の出力がずれる）。"""
+        cached_source = midi.parse_midi_readonly(self.source_path)
+        first_output = Path(self.tmp.name) / "first.mid"
+        second_output = Path(self.tmp.name) / "second.mid"
+        midi.write_time_window(
+            self.source_path, first_output, 1.0, 2.0, source_midi=cached_source
+        )
+        midi.write_time_window(
+            self.source_path, second_output, 1.0, 2.0, source_midi=cached_source
+        )
+
+        self.assertEqual(first_output.read_bytes(), second_output.read_bytes())
+
 
 class TestValidateSpeedRatio(unittest.TestCase):
     def test_accepts_values_in_range(self) -> None:

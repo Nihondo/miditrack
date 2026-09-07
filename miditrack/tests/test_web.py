@@ -270,6 +270,9 @@ class TestWebApp(unittest.TestCase):
         self.assertIn('place-items: center', spinner_slot_rule)
         self.assertNotIn("render-button", html)
         self.assertIn("@keyframes render-spinner-rotate", css)
+        # スピナーは表示されている間は常に回っている——静止した円は「動いているのか
+        # 止まっているのか分からない」という違和感を招くため、prefers-reduced-motion
+        # では対応しない（ユーザー確認済み、Phase 5, Step 5の対応を取り消した）。
         self.assertNotIn("prefers-reduced-motion: reduce", css)
 
     def test_playback_counter_shows_milliseconds(self) -> None:
@@ -494,7 +497,9 @@ class TestWebApp(unittest.TestCase):
         # 設定変更はresetPlayer()（<audio>のsrcを外すハードリセット）ではなく、
         # 再生を止めないmarkRenderStale()を経由する。
         self.assertIn("function markRenderStale()", javascript)
-        self.assertIn("function scheduleAutoRender(delay = PREWARM_DELAY_MS)", javascript)
+        self.assertIn(
+            "function scheduleAutoRender(delay = RENDER_DEBOUNCE_DISCRETE_MS)", javascript
+        )
         self.assertNotIn("resetPlayer({ preservePosition: true })", javascript)
 
         # 短区間WAVのcurrentTimeは曲全体の秒ではないため、差替え時は絶対秒を
@@ -1326,6 +1331,119 @@ class TestWebApp(unittest.TestCase):
         self.assertTrue(render_response["cacheHit"])
         self.assertEqual(len(self.render_calls), 1)
 
+    def test_preview_is_not_blocked_by_an_in_flight_full_render(self) -> None:
+        """render_lockをプレビュー全体の間ずっと保持しない（Phase 5, Step 1）。
+
+        全尺レンダーが進行中でも、ensure_preview()はrender_lockを短時間しか
+        取らないため、プレビュー要求はその完了を待たずに応答できるはずである。
+        """
+        render_started = threading.Event()
+        release_full_render = threading.Event()
+
+        def blocking_renderer(_mid_path: Path, wav_path: Path, _soundfont) -> None:
+            if not render_started.is_set():
+                render_started.set()
+                self.assertTrue(release_full_render.wait(timeout=5))
+            wav_path.write_bytes(b"0" * 200)
+
+        app = create_app(token=TOKEN, session=WebSession(), renderer=blocking_renderer)
+        app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
+        full_client = app.test_client()
+        preview_client = app.test_client()
+        try:
+            full_client.post(
+                "/api/session",
+                headers=AUTH_HEADERS,
+                data={"midi": (io.BytesIO(build_fixture_bytes()), "fixture.mid")},
+                content_type="multipart/form-data",
+            )
+
+            full_response: dict[str, object] = {}
+
+            def run_full_render() -> None:
+                full_response["response"] = full_client.post("/api/render", headers=AUTH_HEADERS)
+
+            full_thread = threading.Thread(target=run_full_render)
+            full_thread.start()
+            self.assertTrue(render_started.wait(timeout=5))
+
+            preview_response = preview_client.post(
+                "/api/render/preview",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"timelineSeconds": 0.0}),
+            )
+            self.assertEqual(preview_response.status_code, 200)
+            self.assertTrue(preview_response.get_json()["available"])
+
+            release_full_render.set()
+            full_thread.join(timeout=5)
+            self.assertFalse(full_thread.is_alive())
+            self.assertEqual(full_response["response"].status_code, 200)
+        finally:
+            release_full_render.set()
+            app.config["MIDITRACK_SESSION"].clear()
+
+    def test_preview_and_full_render_ids_never_collide_under_concurrency(self) -> None:
+        """並行実行下でもpreview-NNNN.*/render-NNNN.*の一時ファイル名が衝突しない。"""
+        release_full_render = threading.Event()
+        render_started = threading.Event()
+
+        def blocking_renderer(_mid_path: Path, wav_path: Path, _soundfont) -> None:
+            if not render_started.is_set():
+                render_started.set()
+                self.assertTrue(release_full_render.wait(timeout=5))
+            wav_path.write_bytes(b"0" * 200)
+
+        app = create_app(token=TOKEN, session=WebSession(), renderer=blocking_renderer)
+        app.config["MIDITRACK_ENABLE_BACKGROUND_PREWARM"] = False
+        full_client = app.test_client()
+        preview_client = app.test_client()
+        try:
+            full_client.post(
+                "/api/session",
+                headers=AUTH_HEADERS,
+                data={"midi": (io.BytesIO(build_fixture_bytes()), "fixture.mid")},
+                content_type="multipart/form-data",
+            )
+            session = app.config["MIDITRACK_SESSION"]
+            render_id_before = session.render_id
+
+            full_response: dict[str, object] = {}
+
+            def run_full_render() -> None:
+                full_response["json"] = full_client.post(
+                    "/api/render", headers=AUTH_HEADERS
+                ).get_json()
+
+            full_thread = threading.Thread(target=run_full_render)
+            full_thread.start()
+            self.assertTrue(render_started.wait(timeout=5))
+
+            preview_response = preview_client.post(
+                "/api/render/preview",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"timelineSeconds": 0.0}),
+            ).get_json()
+
+            release_full_render.set()
+            full_thread.join(timeout=5)
+
+            # プレビューと全尺、双方のWAVがそれぞれ存在し、互いを上書きしていないこと。
+            # renderIdはどちらも各自のAPI応答（RenderOutcome.render_id由来）から
+            # 読む — 完了後にsession.render_idを読み直すと、並行するもう一方の
+            # 呼び出しがさらに進めている可能性がありテスト自体が誤った値を
+            # 拾ってしまう（この非同期性こそがStep 1で解決した問題そのもの）。
+            preview_render_id = preview_response["renderId"]
+            full_render_id = full_response["json"]["renderId"]
+            self.assertNotEqual(preview_render_id, full_render_id)
+            self.assertGreater(preview_render_id, render_id_before)
+            self.assertGreater(full_render_id, render_id_before)
+            self.assertTrue(session.audio_sources[preview_render_id].exists())
+            self.assertTrue(session.audio_path.exists())
+        finally:
+            release_full_render.set()
+            app.config["MIDITRACK_SESSION"].clear()
+
     def test_preview_uses_separate_cache_without_replacing_full_render_state(self) -> None:
         self._upload()
         session = self.app.config["MIDITRACK_SESSION"]
@@ -1363,6 +1481,49 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(response["reason"], "full-cached")
         self.assertEqual(len(session.preview_cache), 0)
         self.assertEqual(len(self.render_calls), 1)
+
+    def test_preview_window_quantization_reuses_cache_within_one_second_grid(self) -> None:
+        """再生中に連続してtimelineSecondsが微妙に変わっても、1秒グリッド内なら
+        preview_cacheがヒットする（Phase 5, Step 3）。"""
+        self._upload()
+
+        first = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"timelineSeconds": 0.1}),
+        ).get_json()
+        second = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"timelineSeconds": 0.3}),
+        ).get_json()
+
+        self.assertTrue(first["available"])
+        self.assertTrue(second["available"])
+        self.assertFalse(first["cacheHit"])
+        self.assertTrue(second["cacheHit"])
+        self.assertEqual(len(self.render_calls), 1)
+
+    def test_preview_cache_is_independent_of_render_mode(self) -> None:
+        """プレビューは常にfastで焼くため、fast/quality切替だけでは焼き直さない
+        （Phase 5, Step 3）。"""
+        self._upload()
+
+        fast_preview = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "fast", "timelineSeconds": 0.0}),
+        ).get_json()
+        quality_preview = self.client.post(
+            "/api/render/preview",
+            headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+            data=json.dumps({"renderMode": "quality", "timelineSeconds": 0.0}),
+        ).get_json()
+
+        self.assertTrue(fast_preview["available"])
+        self.assertTrue(quality_preview["available"])
+        self.assertEqual(len(self.render_calls), 1)
+        self.assertEqual(fast_preview["sampleRate"], quality_preview["sampleRate"])
 
     def test_preview_mixes_trimmed_chip_stem(self) -> None:
         self._upload()

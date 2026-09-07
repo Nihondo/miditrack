@@ -84,14 +84,26 @@ RENDER_CACHE_VERSION = 1
 # 加えて先頭の少数だけを温める。未温めチャンネルは正確な全尺レンダーへフォールバック
 # し、その結果は通常キャッシュに残る。
 CHIP_PREWARM_MAX_CHANNELS = 4
-PREVIEW_CACHE_MAX_ENTRIES = 3
+# 再生中は毎フレーム異なるtimelineSecondsが送られてくるため、量子化しないと
+# window_key（延いてはpreview_cacheのキー）が実質毎回変わってしまい、3〜8件しか
+# 持たないキャッシュが原理的に一度もヒットしない（Phase 5, Step 3）。窓開始を
+# 1秒グリッドへ切り捨てることで、同じ1秒区間内の再生中の連続編集がヒットできる
+# ようにする。
+PREVIEW_WINDOW_QUANTIZE_SECONDS = 1.0
+PREVIEW_CACHE_MAX_ENTRIES = 8
+# 22.05kHzの12秒WAVは1件あたり約1MBなので、件数上限だけで十分小さいが、
+# 全尺LRU（render_cache）と同様バイト上限も明示しておく。
+PREVIEW_CACHE_MAX_BYTES = 32 * 1024 * 1024
 PREVIEW_PREROLL_SECONDS = 2.0
 PREVIEW_FORWARD_SECONDS = 12.0
 # /api/audio?v=Nがrender_idごとに解決できるWAVの保持件数。クロスフェード中は旧render_idの
 # 要素が引き続きこの音源へRangeリクエストを送り続けるため、invalidate_render()後も
 # ここに載っている間は消さない（LRU（render_cache）からの追い出し対象からも保護する）。
-# 上限は「同時に鳴りうる音源はたかだかA/B 2枚+ソロ切替の余裕」程度で十分なので小さく保つ。
-AUDIO_SOURCE_HISTORY_LIMIT = 4
+# 元は「同時に鳴りうる音源はたかだかA/B 2枚+ソロ切替の余裕」で4だったが、再生中の編集を
+# 短区間プレビュー経由にした後は1回の編集でプレビュー・全尺の2 render_idを消費する
+# （Phase 5, Step 2）ため、連続編集でクロスフェード中の旧音源が押し出されないよう6へ
+# 引き上げてある。
+AUDIO_SOURCE_HISTORY_LIMIT = 6
 
 RendererFunc = Callable[[Path, Path, "Path | None"], None]
 ListSongsFunc = Callable[[SourceFormat, Path], "tuple[dict[str, Any], list[dict[str, Any]]]"]
@@ -129,12 +141,23 @@ class PreviewAudio:
 
 @dataclass(frozen=True)
 class RenderOutcome:
-    """1回の試聴／最終レンダー要求の結果と計測値。"""
+    """1回の試聴／最終レンダー要求の結果と計測値。
+
+    render_idはこの結果が実際に登録されたaudio_sourcesのキー（この呼び出しの
+    中で確定した値）を保持する。エンドポイント側は応答のaudioUrl/renderIdを
+    ここから読む — 呼び出し完了後にweb_session.render_idを読み直すと、
+    ensure_preview()がrender_lockを長時間保持しなくなった（Phase 5, Step 1）
+    ことで、その間に別スレッドの並行呼び出しがrender_idをさらに進めている
+    可能性があり、無関係なWAVのidを報告してしまう。activate_player=Falseの
+    ensure_render()呼び出し（prewarm）はrenderIdを応答に含めないため、
+    このフィールドは0のまま使われない。
+    """
 
     path: Path
     mode: str
     cache_key: str
     cache_hit: bool
+    render_id: int
     render_ms: int
     breakdown: "RenderBreakdown"
 
@@ -218,6 +241,16 @@ class WebSession:
     # apply_assignments()が同じMIDIオブジェクトから求めた演奏時間。プレビュー窓の
     # 終端やクライアントの曲全体タイムラインで使うため、applied_pathと同じ寿命で持つ。
     applied_duration_seconds: float | None = None
+    # midi.parse_midi_readonly(original_path)の結果を1件だけキャッシュする
+    # （Phase 5, Step 3）。ensure_preview()が毎回write_time_window()のために
+    # original_pathを再パースしていた分（実測106ms）を省く。read-only専用
+    # 契約なので、MIDIを書き換える処理へは絶対に渡さない
+    # （write_time_window()のdocstring参照）。source_midi_cache_revisionが
+    # 現在のmidi_revisionと一致する間だけ有効 — original_pathはload_midi()内で
+    # midi_revisionのインクリメントと必ずセットで差し替わるため、この2つを
+    # 同じタイミングで更新すれば整合が保てる。
+    source_midi_cache: Any | None = None
+    source_midi_cache_revision: int | None = None
     audio_path: Path | None = None
     current_render_key: str | None = None
     current_render_mode: str | None = None
@@ -232,6 +265,7 @@ class WebSession:
     preview_cache: OrderedDict[str, PreviewAudio] = field(
         default_factory=OrderedDict, repr=False
     )
+    preview_cache_bytes: int = 0
     # ブラウザの音声キャッシュを確実に更新する世代番号。MIDI再変換やセッションの
     # clear()をまたいでもサーバープロセス中は単調増加させ、同じ/api/audio?v=Nを
     # 別内容へ再利用しない。プロセス再起動時は認証tokenも変わるため0開始で安全。
@@ -256,6 +290,19 @@ class WebSession:
     # （reset_midi_state/invalidate_render/ファイル名変更）。
     track_export_zip_path: Path | None = None
     render_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # ensure_preview()専用のロック。render_lockと分離し、進行中の全尺レンダーが
+    # プレビュー要求を待たせないようにする（詳細はensure_preview()自身のdocstring
+    # を参照）。プレビュー同士は引き続きこのロックで直列化される。
+    preview_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # render_id・render_cache・render_cache_bytes・preview_cache・audio_sourcesという
+    # 「セッション全体で共有される小さな状態」だけを保護する軽量ロック。render_lockは
+    # ensure_render()等の生成処理全体を直列化する目的で長時間保持されるため、
+    # そちらに頼るとensure_preview()（preview_lockのみを保持）がその完了を待たされて
+    # しまう。この状態だけを別ロックに切り出すことで、全尺レンダー進行中でも
+    # プレビューの短いカウンタ操作・キャッシュ参照が即座に完了できる。呼び出し元が
+    # 既にrender_lockやpreview_lockを保持したままこのロックを取ることがあるため、
+    # 同一スレッドでの再入を許すRLockにしてある。
+    state_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     # 音源変換時（convert_source）に chipNoise オプションで生成された実機ノイズ/DPCM
     # ステムWAV。ensure_render() がこれを検出すると、fluidsynthの出力とffmpegで
     # ミックスしてから audio_path に置く。convert_source() がステムを書いた「後」に
@@ -325,6 +372,7 @@ class WebSession:
             if entry.path not in protected:
                 entry.path.unlink(missing_ok=True)
         self.preview_cache.clear()
+        self.preview_cache_bytes = 0
 
     def reset_midi_state(self) -> None:
         """MIDI（原本・トラック解析・割り当て・レンダリング結果）だけを初期状態に戻す。
@@ -353,6 +401,8 @@ class WebSession:
         self.applied_path = None
         self.apply_summary = None
         self.applied_duration_seconds = None
+        self.source_midi_cache = None
+        self.source_midi_cache_revision = None
         self.audio_path = None
         self.variations_zip_path = None
         self.track_export_zip_path = None
@@ -1628,88 +1678,128 @@ def create_app(
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _cache_lookup(cache_key: str) -> Path | None:
-        """LRUキャッシュから有効なWAVを返し、参照順を更新する。"""
-        entry = web_session.render_cache.get(cache_key)
-        if entry is None:
-            return None
-        if not entry.path.exists() or entry.path.stat().st_size <= 44:
-            web_session.render_cache.pop(cache_key, None)
-            web_session.render_cache_bytes -= entry.size_bytes
-            return None
-        web_session.render_cache.move_to_end(cache_key)
-        return entry.path
+        """LRUキャッシュから有効なWAVを返し、参照順を更新する。
+
+        render_cache/render_cache_bytesの読み書き自体はstate_lockで保護する
+        （ensure_render()がrender_lockを長時間保持する一方、ensure_preview()は
+        render_lockを取らずにここを呼びうるため、rの実データ構造そのものは
+        より細粒度のstate_lockで守る必要がある。詳細はWebSession.state_lockの
+        コメントを参照）。
+        """
+        with web_session.state_lock:
+            entry = web_session.render_cache.get(cache_key)
+            if entry is None:
+                return None
+            if not entry.path.exists() or entry.path.stat().st_size <= 44:
+                web_session.render_cache.pop(cache_key, None)
+                web_session.render_cache_bytes -= entry.size_bytes
+                return None
+            web_session.render_cache.move_to_end(cache_key)
+            return entry.path
 
     def _evict_render_cache(protected_paths: set[Path]) -> None:
         """現在利用中のWAVを残し、件数・容量上限まで古いキャッシュを削除する。"""
-        while (
-            len(web_session.render_cache) > RENDER_CACHE_MAX_ENTRIES
-            or web_session.render_cache_bytes > RENDER_CACHE_MAX_BYTES
-        ):
-            evicted = False
-            for cache_key, entry in list(web_session.render_cache.items()):
-                if entry.path in protected_paths:
-                    continue
-                web_session.render_cache.pop(cache_key)
-                web_session.render_cache_bytes -= entry.size_bytes
-                entry.path.unlink(missing_ok=True)
-                evicted = True
-                break
-            if not evicted:
-                break
+        with web_session.state_lock:
+            while (
+                len(web_session.render_cache) > RENDER_CACHE_MAX_ENTRIES
+                or web_session.render_cache_bytes > RENDER_CACHE_MAX_BYTES
+            ):
+                evicted = False
+                for cache_key, entry in list(web_session.render_cache.items()):
+                    if entry.path in protected_paths:
+                        continue
+                    web_session.render_cache.pop(cache_key)
+                    web_session.render_cache_bytes -= entry.size_bytes
+                    entry.path.unlink(missing_ok=True)
+                    evicted = True
+                    break
+                if not evicted:
+                    break
 
     def _cache_store(
         cache_key: str, path: Path, protected_paths: set[Path] | None = None
     ) -> Path:
         """完成済みWAVをLRUへ登録し、上限を超えた古い項目を削除する。"""
-        old_entry = web_session.render_cache.pop(cache_key, None)
-        if old_entry is not None:
-            web_session.render_cache_bytes -= old_entry.size_bytes
-            if old_entry.path != path:
-                old_entry.path.unlink(missing_ok=True)
-        entry = CachedAudio(path=path, size_bytes=path.stat().st_size)
-        web_session.render_cache[cache_key] = entry
-        web_session.render_cache_bytes += entry.size_bytes
-        protected = set(protected_paths or ())
-        protected.add(path)
-        if web_session.audio_path is not None:
-            protected.add(web_session.audio_path)
-        # クロスフェード中に旧render_idへ引き続き応答する必要のあるWAVも、
-        # LRU追い出しの対象から外す（audio_sources自体の説明を参照）。
-        protected.update(web_session.audio_sources.values())
-        _evict_render_cache(protected)
-        return path
+        with web_session.state_lock:
+            old_entry = web_session.render_cache.pop(cache_key, None)
+            if old_entry is not None:
+                web_session.render_cache_bytes -= old_entry.size_bytes
+                if old_entry.path != path:
+                    old_entry.path.unlink(missing_ok=True)
+            entry = CachedAudio(path=path, size_bytes=path.stat().st_size)
+            web_session.render_cache[cache_key] = entry
+            web_session.render_cache_bytes += entry.size_bytes
+            protected = set(protected_paths or ())
+            protected.add(path)
+            if web_session.audio_path is not None:
+                protected.add(web_session.audio_path)
+            # クロスフェード中に旧render_idへ引き続き応答する必要のあるWAVも、
+            # LRU追い出しの対象から外す（audio_sources自体の説明を参照）。
+            protected.update(web_session.audio_sources.values())
+            _evict_render_cache(protected)
+            return path
 
     def _preview_cache_lookup(cache_key: str) -> PreviewAudio | None:
         """短区間プレビュー専用キャッシュから有効なWAVを返す。"""
-        entry = web_session.preview_cache.get(cache_key)
-        if entry is None:
-            return None
-        if not entry.path.exists() or entry.path.stat().st_size <= 44:
-            web_session.preview_cache.pop(cache_key, None)
-            return None
-        web_session.preview_cache.move_to_end(cache_key)
-        return entry
+        with web_session.state_lock:
+            entry = web_session.preview_cache.get(cache_key)
+            if entry is None:
+                return None
+            if not entry.path.exists() or entry.path.stat().st_size <= 44:
+                web_session.preview_cache.pop(cache_key, None)
+                web_session.preview_cache_bytes -= entry.size_bytes
+                return None
+            web_session.preview_cache.move_to_end(cache_key)
+            return entry
 
     def _preview_cache_store(
         cache_key: str, path: Path, window: midi.MidiWindow
     ) -> PreviewAudio:
         """完成済み短区間WAVを専用LRUへ登録する。"""
-        old_entry = web_session.preview_cache.pop(cache_key, None)
-        if old_entry is not None and old_entry.path != path:
-            old_entry.path.unlink(missing_ok=True)
-        entry = PreviewAudio(path, path.stat().st_size, window)
-        web_session.preview_cache[cache_key] = entry
-        protected_paths = set(web_session.audio_sources.values())
-        while len(web_session.preview_cache) > PREVIEW_CACHE_MAX_ENTRIES:
-            for old_key, entry in list(web_session.preview_cache.items()):
-                if entry.path in protected_paths:
-                    continue
-                web_session.preview_cache.pop(old_key)
-                entry.path.unlink(missing_ok=True)
-                break
-            else:
-                break
-        return entry
+        with web_session.state_lock:
+            old_entry = web_session.preview_cache.pop(cache_key, None)
+            if old_entry is not None:
+                web_session.preview_cache_bytes -= old_entry.size_bytes
+                if old_entry.path != path:
+                    old_entry.path.unlink(missing_ok=True)
+            entry = PreviewAudio(path, path.stat().st_size, window)
+            web_session.preview_cache[cache_key] = entry
+            web_session.preview_cache_bytes += entry.size_bytes
+            protected_paths = set(web_session.audio_sources.values())
+            while (
+                len(web_session.preview_cache) > PREVIEW_CACHE_MAX_ENTRIES
+                or web_session.preview_cache_bytes > PREVIEW_CACHE_MAX_BYTES
+            ):
+                for old_key, entry in list(web_session.preview_cache.items()):
+                    if entry.path in protected_paths:
+                        continue
+                    web_session.preview_cache.pop(old_key)
+                    web_session.preview_cache_bytes -= entry.size_bytes
+                    entry.path.unlink(missing_ok=True)
+                    break
+                else:
+                    break
+            return entry
+
+    def _next_render_id() -> int:
+        """render_idを1つ、スレッド間で衝突なく払い出す。
+
+        呼び出し側は返り値をローカル変数に捕まえて使い続けること。
+        web_session.render_idを後で読み直すと、その間に別スレッド
+        （ensure_render()と同時に走るensure_preview()等）がさらに
+        インクリメントしている可能性があり、無関係なidを拾ってしまう。
+        """
+        with web_session.state_lock:
+            web_session.render_id += 1
+            return web_session.render_id
+
+    def _register_audio_source(render_id: int, path: Path) -> None:
+        """render_id -> WAVパスを登録し、保持上限を超えた古い項目を追い出す。"""
+        with web_session.state_lock:
+            web_session.audio_sources[render_id] = path
+            web_session.audio_sources.move_to_end(render_id)
+            while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
+                web_session.audio_sources.popitem(last=False)
 
     def _cache_output_path(kind: str, cache_key: str) -> Path:
         """セッションキャッシュ内の衝突しないWAVパスを返す。"""
@@ -1789,6 +1879,23 @@ def create_app(
             web_session.applied_path = applied_path
             return applied_path
         raise WebValidationError(t("設定が連続して変更されたため、MIDIの適用をやり直してください"))
+
+    def _source_midi_readonly() -> Any:
+        """original_pathのread-only解析済みMIDIを、可能ならキャッシュから返す。
+
+        write_time_window()の`source_midi`引数専用（read-only契約）。
+        source_midi_cache_revisionが現在のmidi_revisionと一致する間だけ
+        キャッシュを使う — original_pathはload_midi()内でmidi_revisionの
+        インクリメントと必ずセットで差し替わるため、一致していれば
+        source_midi_cacheは確実に今のoriginal_pathの内容と対応している。
+        """
+        assert web_session.original_path is not None
+        if web_session.source_midi_cache_revision == web_session.midi_revision:
+            return web_session.source_midi_cache
+        parsed = midi.parse_midi_readonly(web_session.original_path)
+        web_session.source_midi_cache = parsed
+        web_session.source_midi_cache_revision = web_session.midi_revision
+        return parsed
 
     def _plan_render_jobs(
         applied_path: Path, gm_soundfont: Path | None, render_id: int
@@ -2117,9 +2224,16 @@ def create_app(
     ) -> None:
         """適用済みMIDI(applied_path)をwav_pathへレンダリングする。
 
-        呼び出し元がweb_session.render_lockを保持していることが前提
-        （render_id基点の一時ファイル名が同時実行と衝突しうるため、非再入の
-        render_lockを1回だけ取ってから呼ぶ設計になっている）。
+        render_idはこの関数が使う一時ファイル名（render-NNNN.partN.wav等）の
+        基点であり、呼び出し元がweb_session.render_lockの下で採番済みである
+        ことが前提（同時実行との衝突を避けるため）。ただしロック自体を関数の
+        実行中ずっと保持している必要はない: `chip_render_stems`を明示的に渡した
+        呼び出し（ensure_preview()）はこの関数内部で_plan_chip_hardware()/
+        _store_chip_hardware()を一切呼ばない＝共有render_cacheに触れないため、
+        render_lockを取らずに呼んでよい。`chip_render_stems=None`（ensure_render()
+        からの呼び出し）はこの関数自身が_plan_chip_hardware()経由でLRUを
+        参照・更新するため、呼び出し元がrender_lockを保持したまま呼ぶ既存の
+        契約が引き続き必要。
 
         _plan_render_jobs() が決めたジョブが1つだけ、かつ実機ノイズ/DPCM/DAC
         ステム（chip_stem_path・dac_stem_path・chip_render_stems）も無く、
@@ -2274,10 +2388,15 @@ def create_app(
                 wav_path = _cache_lookup(cache_key)
                 cache_hit = wav_path is not None
                 generated_path: Path | None = None
+                # このイテレーションで新規生成した場合のrender_idをローカルに
+                # 捕まえておく。web_session.render_idを後で読み直すと、
+                # render_lockを取らないensure_preview()が並行して動いていた
+                # 場合にさらに進んでしまっている可能性があるため
+                # （RenderOutcome.render_idのdocstring参照）。
+                work_id: int | None = None
 
                 if wav_path is None:
-                    web_session.render_id += 1
-                    work_id = web_session.render_id
+                    work_id = _next_render_id()
                     wav_path = _cache_output_path(mode, state_key)
                     generated_path = wav_path
                     try:
@@ -2305,23 +2424,37 @@ def create_app(
             else:
                 raise WebValidationError(t("設定が連続して変更されたため、レンダリングをやり直してください"))
 
+            active_render_id = 0
             if activate_player:
                 is_new_player_source = (
                     web_session.current_render_key != cache_key
                     or web_session.audio_path != wav_path
                 )
-                if is_new_player_source and cache_hit:
-                    web_session.render_id += 1
+                if work_id is not None:
+                    # このイテレーションで新規生成したWAV。生成時に採番済みの
+                    # idをそのまま使う（web_session.render_idを再度読まない）。
+                    active_render_id = work_id
+                elif is_new_player_source and cache_hit:
+                    # 既にキャッシュ済みの、今までとは別のWAVへ切り替える場合。
+                    # ブラウザが旧render_idのバイト範囲を新WAVへ誤って再利用
+                    # しないよう、新しいidを払い出す。
+                    active_render_id = _next_render_id()
                 web_session.audio_path = wav_path
                 web_session.current_render_key = cache_key
                 web_session.current_render_mode = mode
-                # 今回activateされたrender_idがこのWAVを指すよう記録する。旧render_id
-                # 宛のリクエスト（クロスフェード中の旧<audio>要素）はget_audio()が
-                # この辞書で解決し、audio_pathが差し替わった後も旧音源を返し続ける。
-                web_session.audio_sources[web_session.render_id] = wav_path
-                web_session.audio_sources.move_to_end(web_session.render_id)
-                while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
-                    web_session.audio_sources.popitem(last=False)
+                if active_render_id:
+                    # 今回activateされたrender_idがこのWAVを指すよう記録する。旧
+                    # render_id宛のリクエスト（クロスフェード中の旧<audio>要素）は
+                    # get_audio()がこの辞書で解決し、audio_pathが差し替わった後も
+                    # 旧音源を返し続ける。
+                    _register_audio_source(active_render_id, wav_path)
+                else:
+                    # 直前と全く同じ状態への再activate（is_new_player_source=False）。
+                    # 既に正しいrender_idがaudio_sourcesへ登録済みのはずなので、
+                    # ここでweb_session.render_idを読み直して再登録する必要はない
+                    # （並行するensure_preview()が進めた無関係なidを誤って
+                    # このWAVへ結び付けてしまう事故を避ける）。
+                    active_render_id = web_session.render_id
 
             render_ms = round((time.perf_counter() - started_at) * 1000)
             return RenderOutcome(
@@ -2329,6 +2462,7 @@ def create_app(
                 mode=mode,
                 cache_key=cache_key,
                 cache_hit=cache_hit,
+                render_id=active_render_id,
                 render_ms=render_ms,
                 breakdown=breakdown,
             )
@@ -2434,25 +2568,51 @@ def create_app(
         full renderのaudio_path/current_render_keyは絶対に書き換えない。プレビューを
         選んだ後もダウンロード、全尺キャッシュ判定、後続の全尺クロスフェードが
         従来どおり全尺WAVだけを対象にできるようにするためである。
+
+        重い処理全体はセッション専用のpreview_lockでのみ直列化する。render_id採番・
+        LRU参照・audio_sources登録というセッション全体で共有される状態は、
+        _next_render_id()/_cache_lookup()等の内部でより細粒度のstate_lockに
+        よって保護されており、この関数自身はrender_lockを一切取らない
+        （prewarm_chip_hardware()の「重い処理はロック外、登録だけ短くロック」と
+        同じ考え方を、専用ロック自体を分けることでさらに徹底したもの）。
+        これにより進行中の全尺レンダー（render_lockを丸ごと保持するensure_render()）
+        がプレビュー要求を待たせることはない。ensure_preview()は`chip_render_stems`を
+        明示的に_render_applied_midi()へ渡すため、その呼び出しは_plan_chip_hardware()を
+        経由せず共有render_cacheの高レベルな整合性（どのキーが生成中か等）には
+        触れない — render_lockではなくstate_lockだけで安全な理由。
         """
         if web_session.root is None or web_session.original_path is None:
             raise WebValidationError(t("MIDIファイルがアップロードされていません"))
-        with web_session.render_lock:
+        with web_session.preview_lock:
             started_at = time.perf_counter()
-            state_key = _render_state_key(mode)
-            if _cache_lookup(f"render:{state_key}") is not None:
+            # 全尺キャッシュ済み判定は要求されたmodeそのもの（fast/quality）で行う
+            # — こちらは実在するrender_cacheのキーと一致している必要がある。
+            if _cache_lookup(f"render:{_render_state_key(mode)}") is not None:
                 return None, None
-            start_seconds = max(0.0, timeline_seconds - PREVIEW_PREROLL_SECONDS)
-            end_seconds = timeline_seconds + PREVIEW_FORWARD_SECONDS
+            # プレビューは常にfast(22050Hz)で焼く（2609行目付近のsample_rate指定
+            # 参照）。にもかかわらずキャッシュキーにmodeそのものを使うと、fast/
+            # qualityの切替だけでバイト同一のプレビューを焼き直してしまう。
+            # プレビュー専用キャッシュのキーはFAST_RENDER_MODE固定のstate_keyで
+            # 作る（Phase 5, Step 3）。
+            preview_state_key = _render_state_key(FAST_RENDER_MODE)
+            # 再生中は毎フレーム異なるtimelineSecondsが送られてくる。量子化しないと
+            # 3〜8件しか持たないpreview_cacheが原理的に一度もヒットしない。
+            # PREVIEW_PREROLL_SECONDS(2.0) > PREVIEW_WINDOW_QUANTIZE_SECONDS(1.0)
+            # なので、量子化後も実際の再生位置は必ず窓の中に収まる。
+            quantized_timeline_seconds = (
+                math.floor(timeline_seconds / PREVIEW_WINDOW_QUANTIZE_SECONDS)
+                * PREVIEW_WINDOW_QUANTIZE_SECONDS
+            )
+            start_seconds = max(0.0, quantized_timeline_seconds - PREVIEW_PREROLL_SECONDS)
+            end_seconds = quantized_timeline_seconds + PREVIEW_FORWARD_SECONDS
             window_key = f"{start_seconds:.3f}:{end_seconds:.3f}"
-            cache_key = f"preview:{state_key}:{window_key}"
+            cache_key = f"preview:{preview_state_key}:{window_key}"
             entry = _preview_cache_lookup(cache_key)
             cache_hit = entry is not None
             if entry is None:
                 for _attempt in range(3):
                     state_revision = web_session.state_revision
-                    web_session.render_id += 1
-                    work_id = web_session.render_id
+                    work_id = _next_render_id()
                     raw_window_path = web_session.root / f"preview-{work_id:04d}.raw.mid"
                     applied_window_path = web_session.root / f"preview-{work_id:04d}.mid"
                     wav_path = web_session.root / f"preview-{work_id:04d}.wav"
@@ -2464,6 +2624,7 @@ def create_app(
                             start_seconds,
                             end_seconds,
                             speed=web_session.speed_ratio,
+                            source_midi=_source_midi_readonly(),
                         )
                         summary = _apply_source_to(
                             raw_window_path,
@@ -2511,18 +2672,15 @@ def create_app(
             else:
                 breakdown = RenderBreakdown()
 
-            web_session.render_id += 1
-            preview_render_id = web_session.render_id
-            web_session.audio_sources[preview_render_id] = entry.path
-            web_session.audio_sources.move_to_end(preview_render_id)
-            while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
-                web_session.audio_sources.popitem(last=False)
+            preview_render_id = _next_render_id()
+            _register_audio_source(preview_render_id, entry.path)
             return (
                 RenderOutcome(
                     path=entry.path,
                     mode=mode,
                     cache_key=cache_key,
                     cache_hit=cache_hit,
+                    render_id=preview_render_id,
                     render_ms=round((time.perf_counter() - started_at) * 1000),
                     breakdown=breakdown,
                 ),
@@ -2540,8 +2698,8 @@ def create_app(
         outcome = ensure_render(mode, activate_player=True)
 
         return jsonify(
-            audioUrl=f"/api/audio?v={web_session.render_id}",
-            renderId=web_session.render_id,
+            audioUrl=f"/api/audio?v={outcome.render_id}",
+            renderId=outcome.render_id,
             filename=outcome.path.name,
             renderMode=outcome.mode,
             sampleRate=RENDER_SAMPLE_RATES[outcome.mode],
@@ -2602,8 +2760,8 @@ def create_app(
             return jsonify(available=False, reason="full-cached"), 200
         return jsonify(
             available=True,
-            audioUrl=f"/api/audio?v={web_session.render_id}",
-            renderId=web_session.render_id,
+            audioUrl=f"/api/audio?v={outcome.render_id}",
+            renderId=outcome.render_id,
             renderKind="segment",
             renderMode=outcome.mode,
             sampleRate=RENDER_SAMPLE_RATES[FAST_RENDER_MODE],
@@ -2710,16 +2868,17 @@ def create_app(
                 # MIDI書き出し（_apply_to()）はmido操作主体で軽量なため逐次実行する。
                 # render_idはrender-NNNN.partN.wav等の一時ファイル名に使われ、
                 # 並列レンダリング時の衝突を避けるためここで組み合わせごとに
-                # 事前採番しておく（web_session.render_idの更新はrender_lock保持中
-                # のこのループでのみ行い、後段の並列実行では読むだけにする）。
+                # _next_render_id()で事前採番し、タプルへローカルに捕まえておく
+                # （後段の並列実行はこのタプルの値を読むだけで、web_session.render_id
+                # を直接読み直さない — 並行するensure_preview()呼び出しがさらに
+                # 進めていても影響を受けない）。
                 combos: list[tuple[float, int, Path, Path, int]] = []
                 for speed, transpose in itertools.product(speeds, transposes):
                     label = _variation_label(speed, transpose)
                     mid_out = work_dir / f"{download_stem}_{label}.mid"
                     wav_out = work_dir / f"{download_stem}_{label}.wav"
                     _apply_to(mid_out, speed, transpose)
-                    web_session.render_id += 1
-                    combos.append((speed, transpose, mid_out, wav_out, web_session.render_id))
+                    combos.append((speed, transpose, mid_out, wav_out, _next_render_id()))
 
                 # 重いfluidsynth/ffmpeg呼び出し（_render_applied_midi()）だけを
                 # 設定された同時処理数（表示設定「レンダリング」＝renderWorkers）

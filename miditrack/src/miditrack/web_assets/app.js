@@ -90,7 +90,14 @@ const PLAYBACK_SEEK_SECONDS = 1;
 const SHIFT_PLAYBACK_SEEK_SECONDS = 5;
 const LOOP_DRAG_THRESHOLD_PX = 6;
 const MIN_LOOP_SECONDS = 0.1;
-const PREWARM_DELAY_MS = 500;
+// 音色select確定・音量スライダーのchange（ドラッグ確定）・ミュート／ソロ・
+// SoundFont変更・fast/quality切替など「操作の瞬間に意図が確定している」離散
+// 操作のデバウンス。0msでもsetTimeoutを1つ挟むことに変わりはなく、同一
+// マクロタスク内で複数回スケジュールされた場合はclearTimeout+再登録で1回に
+// 合流する（例: 全トラック一括ミュート）。
+const RENDER_DEBOUNCE_DISCRETE_MS = 0;
+// 速度/ピッチのように値がドラッグ・連続入力で変わりうる操作のデバウンス。
+const RENDER_DEBOUNCE_CONTINUOUS_MS = 250;
 const BLACK_PIANO_KEY_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
 const THEME_MODES = new Set(["system", "light", "dark"]);
 const LANGUAGE_MODES = new Set(["system", "ja", "en"]);
@@ -789,16 +796,23 @@ function requestRenderGeneration(generation, { preferPreview = false } = {}) {
   return task;
 }
 
-// トラック設定・SoundFont・速度/ピッチ・試聴モード等の変更から500ms操作が無かったら、
-// 最新状態を自動レンダーする。停止中の編集では短区間プレビューを作らず、従来どおり
-// 全尺だけを仕上げる。再生開始時のensureLatestRender()だけがpreferPreviewを指定する。
-function scheduleAutoRender(delay = PREWARM_DELAY_MS) {
+// トラック設定・SoundFont・速度/ピッチ・試聴モード等の変更から操作が無かったら、
+// 最新状態を自動レンダーする。再生中の編集は先に短区間プレビュー（約300ms）を
+// 鳴らし、裏で仕上げた全尺へ後からクロスフェードで乗り換える —
+// ensureLatestRender()（Space・ソロ開始時）と全く同じpreferPreview経路。
+// プレビューは常にfast(22050Hz)で焼くため、明示的にquality試聴を選んでいる間は
+// 一瞬fastの音を聴かせないよう対象から外す。停止中の編集はプレビューを鳴らす
+// 相手（再生中の音）が無く体感価値も無いので、従来どおり全尺だけを仕上げる。
+function scheduleAutoRender(delay = RENDER_DEBOUNCE_DISCRETE_MS) {
   cancelAutoRender();
   if (!state.session || state.session.tracks.length === 0) return;
   const generation = state.renderGeneration;
   state.autoRenderTimer = setTimeout(() => {
     state.autoRenderTimer = null;
-    requestRenderGeneration(generation).catch(() => {});
+    // 発火時点の再生状態で判定する（スケジュール時点ではなく）。デバウンス中に
+    // 再生が始まる／止まることがあるため。
+    const preferPreview = isActivePlayerPlaying() && selectedRenderMode() === "fast";
+    requestRenderGeneration(generation, { preferPreview }).catch(() => {});
   }, delay);
 }
 
@@ -1435,21 +1449,21 @@ function onProgramChange(trackIndex, value) {
   state.pendingAssignments[trackIndex] = value === KEEP_ORIGINAL ? null : Number(value);
   if (value !== KEEP_ORIGINAL) recordProgramUsage(Number(value));
   clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
+  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
 }
 
 function onVolumeChange(trackIndex, volumePercent) {
   clearSoloStateIfActive();
   state.pendingVolumes[trackIndex] = volumePercent;
   clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
+  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
 }
 
 function onSourceChange(trackIndex, source) {
   clearSoloStateIfActive();
   state.pendingSources[trackIndex] = source;
   clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
+  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
 }
 
 function captureEnsemblePresetSnapshot() {
@@ -1488,7 +1502,7 @@ function onTrackRoleChange(trackIndex, roleId) {
     }
   }
   clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, 200);
+  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
 }
 
 function pianorollTrackStatistics(track) {
@@ -1819,12 +1833,15 @@ async function enterSolo(trackIndex) {
     });
     state.session = await response.json();
     state.soloTrackIndex = trackIndex;
-    await renderTrackList();
     updateSectionsReadiness();
     cancelAutoRender();
     markRenderStale();
+    // トラック表の再構築（128音色×トラック数のfragment複製）をensureLatestRender()
+    // より先に行うと、その同期処理の分だけソロ開始が遅れる。音が出るまでを
+    // 最優先にし、DOM更新は後回しにする。
     const player = await ensureLatestRender();
     if (player) await playPreparedPlayer(player);
+    await renderTrackList();
   } catch (error) {
     state.soloTrackIndex = null;
     showStatus(error.message, "error");
@@ -1888,10 +1905,17 @@ async function flushPendingTrackSettings() {
         body: JSON.stringify({ assignments, volumes, sources }),
       });
       state.session = await response.json();
-      await renderTrackList();
-      redrawPianorollStatic();
+      // レンダー要求（markRenderStale→scheduleAutoRender）を先に発行する。
+      // renderTrackList()のDOM再構築（128音色×トラック数のfragment複製）と
+      // redrawPianorollStatic()を先に済ませてから発行すると、その同期処理の
+      // 分だけレンダー開始が後ろへずれる。setTimeoutのコールバック自体は
+      // どのみちこの関数の実行が一段落するまで走れないが、先に登録しておく
+      // ことでイベントループがこの後の await の合間に一足早く拾えるように
+      // なる。
       markRenderStale();
       scheduleAutoRender();
+      await renderTrackList();
+      redrawPianorollStatic();
       return true;
     } catch (error) {
       showStatus(error.message, "error");
@@ -2975,7 +2999,7 @@ function onTransformChange() {
   state.transformPatchTimer = setTimeout(() => {
     state.transformPatchTimer = null;
     flushTransform();
-  }, 250);
+  }, RENDER_DEBOUNCE_CONTINUOUS_MS);
 }
 
 // 数値入力のstepUp()/stepDown()を使い、HTMLのmin/max/stepを単一の定義元にする。
