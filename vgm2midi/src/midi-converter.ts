@@ -1,5 +1,5 @@
 import MidiWriter from 'midi-writer-js';
-import { VGMData, VGMDataBlock, VGMCommand, ConversionOptions } from './types';
+import { VGMData, VGMCommand, ConversionOptions } from './types';
 import { CLOCK_MASK } from './vgm-chip-metadata';
 import {
   MIDI_PPQ,
@@ -20,6 +20,20 @@ import {
   gbDmgNoiseNoteForPeriod,
   samplesToTicks,
 } from './midi-math';
+import {
+  PCMTrackEvent,
+  PCMDataBlockMetadata,
+  PCMAnalysisMetadata,
+  PCMTimbreMetadata,
+  pcmTimbreForAnalysis,
+  ym2608ADPCMBAnalysis,
+  segaPCMAnalysisForTrack,
+  c140PCMAnalysisForVoice,
+  segaPCMBankBaseAddress,
+  segaPCMDurationSamples,
+  c140DurationSamples,
+  c140ROMAddress,
+} from './pcm-analysis';
 
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
@@ -56,7 +70,6 @@ const YM2203_FM_PITCH_BEND_RANGE = 96;
 const YM2608_FM_PITCH_BEND_RANGE = 96;
 const OPL_FM_PITCH_BEND_RANGE = 96;
 const CHIP_PITCH_BEND_RANGE = 96;
-const MAX_PCM_ANALYSIS_SAMPLES = 65536;
 // CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
 // MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
 // オーバーフローは1回へ集約し、出力ノートは1 tickだけ保持する。
@@ -363,38 +376,9 @@ interface TrackState {
   pcmAnalysis?: PCMAnalysisMetadata;
 }
 
-interface PCMTrackEvent {
-  type: 'start' | 'stop';
-  sampleTime: number;
-  isLoop?: boolean;
-  /** PCMアドレス空間における排他的な再生終了位置。 */
-  endAddressExclusive?: number;
-  /** ループ時の再開位置。`isLoop`がtrueの場合だけ出力する。 */
-  loopAddress?: number;
-  /** チップまたはVGM streamから解決できた再生予定長。loop時は省略する。 */
-  durationSamples?: number;
-  /** VGM data bankから要求されるエンコード済みbyte数。 */
-  dataLengthBytes?: number;
-}
-
-/** PCMトリガーが参照するVGM 0x67 data bank内の範囲。 */
-interface PCMDataBlockMetadata {
-  bankType: number;
-  bankInstance: number;
-  blockId: number;
-  /** stream bankでは連結先頭offset、ROMでは物理サンプルアドレス。 */
-  bankOffset: number;
-  /** block内の先頭offset。 */
-  blockOffset: number;
-  /** stream開始時に要求されたbyte数。長さを解決できない場合は省略する。 */
-  lengthBytes?: number;
-  /** ROM data blockが示すチップ側ROM全体のsize。 */
-  romSizeBytes?: number;
-  /** このROM data blockがロードするチップ側の先頭アドレス。 */
-  romStartAddress?: number;
-  /** ROM data block内の実データ部のsize。8 byteのROM headerは含まない。 */
-  romDataLengthBytes?: number;
-}
+// PCMTrackEvent/PCMDataBlockMetadata/PCMAnalysisMetadata/PCMTimbreMetadataは、
+// ROM範囲解析（analyzeSigned8BitPCM()等）と合わせてpcm-analysis.tsへ移設した
+// （上のimportを参照）。
 
 interface PCMTrackMetadata {
   source: 'ym2612-dac' | 'ym2612-dac-direct' | 'ym2608-adpcm-b' | 'segapcm' | 'c140' | 'msm6258';
@@ -404,24 +388,6 @@ interface PCMTrackMetadata {
   dataBlock?: PCMDataBlockMetadata;
   analysis?: PCMAnalysisMetadata;
   timbre?: PCMTimbreMetadata;
-}
-
-/** sidecarへ出力する、形式が確定した生PCMの基本波形特徴量。 */
-interface PCMAnalysisMetadata {
-  format: 'signed-8bit-pcm' | 'yamaha-adpcm-b' | 'signed-12bit-be-pcm' | 'c140-compressed-pcm' | 'c219-mulaw';
-  sourceByteLength: number;
-  analyzedSampleCount: number;
-  isDownsampled?: true;
-  peak: number;
-  mean: number;
-  rms: number;
-  zeroCrossingCount: number;
-}
-
-/** 波形特徴量だけから決める、楽器種別を主張しない説明的な音色ラベル。 */
-interface PCMTimbreMetadata {
-  name: 'quiet' | 'tonal' | 'noise-like';
-  confidence: number;
 }
 
 /** PCMトリガーに付随するチップ固有の再生範囲。 */
@@ -1252,14 +1218,14 @@ export class MidiConverter {
         source: 'ym2608-adpcm-b', sampleId: adpcmMatch[1], gmNote, events, ...dataBlock,
         ...(state.pcmAnalysis === undefined
           ? {}
-          : { analysis: state.pcmAnalysis, timbre: this.pcmTimbreForAnalysis(state.pcmAnalysis) }),
+          : { analysis: state.pcmAnalysis, timbre: pcmTimbreForAnalysis(state.pcmAnalysis) }),
       };
     }
     if (sourceKey.startsWith('segapcm_sample_')) {
-      const analysis = this.segaPCMAnalysisForTrack(pcmDataBlock, events);
+      const analysis = segaPCMAnalysisForTrack(this.vgmData, pcmDataBlock, events);
       return {
         source: 'segapcm', sampleId: sourceKey.slice('segapcm_sample_'.length), gmNote, events, ...dataBlock,
-        ...(analysis === undefined ? {} : { analysis, timbre: this.pcmTimbreForAnalysis(analysis) }),
+        ...(analysis === undefined ? {} : { analysis, timbre: pcmTimbreForAnalysis(analysis) }),
       };
     }
     if (sourceKey.startsWith('c140_sample_')) {
@@ -1267,7 +1233,7 @@ export class MidiConverter {
         source: 'c140', sampleId: sourceKey.slice('c140_sample_'.length), gmNote, events, ...dataBlock,
         ...(state.pcmAnalysis === undefined
           ? {}
-          : { analysis: state.pcmAnalysis, timbre: this.pcmTimbreForAnalysis(state.pcmAnalysis) }),
+          : { analysis: state.pcmAnalysis, timbre: pcmTimbreForAnalysis(state.pcmAnalysis) }),
       };
     }
     if (sourceKey.startsWith('msm6258_sample_')) {
@@ -3208,7 +3174,7 @@ export class MidiConverter {
       dataBlock,
       durationSamples,
       undefined,
-      isROMMode ? this.ym2608ADPCMBAnalysis(dataBlock, dataLengthBytes) : undefined
+      isROMMode ? ym2608ADPCMBAnalysis(this.vgmData, dataBlock, dataLengthBytes) : undefined
     );
     this.ym2608ADPCMActiveVoices[instance] = { descriptorId, note };
   }
@@ -3787,7 +3753,7 @@ export class MidiConverter {
     // $84/$85 are the 16-bit byte address.  The chip advances it as a 16.8
     // fixed-point value; the control register selects its physical ROM bank.
     const address = this.segaPCMRegisters[base + 0x84] | (this.segaPCMRegisters[base + 0x85] << 8);
-    const bankBaseAddress = this.segaPCMBankBaseAddress(control);
+    const bankBaseAddress = segaPCMBankBaseAddress(this.vgmData, control);
     const physicalAddress = bankBaseAddress + address;
     const sampleId = physicalAddress.toString(16).padStart(6, '0');
     const trackKey = `segapcm_sample_${sampleId}`;
@@ -3806,7 +3772,7 @@ export class MidiConverter {
     const isLoop = (control & 0x02) === 0;
     const durationSamples = isLoop
       ? undefined
-      : this.segaPCMDurationSamples(address << 8, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07]);
+      : segaPCMDurationSamples(this.vgmData, address << 8, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07], this.sampleRate);
     const loopAddress = bankBaseAddress + this.segaPCMRegisters[base + 0x04]
       + (this.segaPCMRegisters[base + 0x05] << 8);
     const descriptorId = this.noteOnPCMPercussion(
@@ -3822,30 +3788,8 @@ export class MidiConverter {
     this.segaPCMActiveVoices[channel] = { descriptorId, note };
   }
 
-  /** SegaPCM interface registerのROMバンク設定を物理アドレスの先頭へ変換する。 */
-  private segaPCMBankBaseAddress(control: number): number {
-    const interfaceRegister = this.vgmData.header.segaPCMInterface >>> 0;
-    const bankShift = interfaceRegister & 0xFF;
-    const interfaceBankMask = (interfaceRegister >>> 16) & 0xFF;
-    // libvgm defaults a zero mask to the conventional 315-5218 $70 mask.
-    const requestedMask = interfaceBankMask === 0 ? 0x70 : interfaceBankMask;
-    if (bankShift > 20) return 0;
-    const addressableBankMask = Math.floor(0x1FFFFF / 2 ** bankShift);
-    const bankMask = requestedMask & addressableBankMask;
-    return (control & bankMask) * 2 ** bankShift;
-  }
-
-  /** SegaPCMの非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
-  private segaPCMDurationSamples(address: number, endPage: number, frequency: number): number | undefined {
-    if (frequency === 0) return undefined;
-    const clock = this.vgmData.header.segaPCMClock & CLOCK_MASK;
-    if (clock === 0) return undefined;
-    // The 315-5218's 16 voices advance their 16.8 address at clock / 128.
-    const endAddress = ((endPage + 1) & 0xFF) << 16;
-    const distance = (endAddress - address + 0x1000000) & 0xFFFFFF;
-    if (distance === 0) return undefined;
-    return Math.round((distance * this.sampleRate * 128) / (frequency * clock));
-  }
+  // segaPCMBankBaseAddress()/segaPCMDurationSamples()/c140DurationSamples()/c140ROMAddress()
+  // は、他のPCM範囲解析と合わせてpcm-analysis.tsへ移設した（上のimportを参照）。
 
   private handleC140Write(
     cmd: VGMCommand,
@@ -3888,12 +3832,12 @@ export class MidiConverter {
     const isLoop = (this.c140Registers[base + 5] & 0x10) !== 0;
     const isC219Noise = this.vgmData.header.c140Type === 2 && (this.c140Registers[base + 5] & 0x04) !== 0;
     const loop = (this.c140Registers[base + 10] << 8) | this.c140Registers[base + 11];
-    const startAddress = this.c140ROMAddress(channel, bank, start);
+    const startAddress = c140ROMAddress(this.vgmData, this.c140Registers, channel, bank, start);
     const dataBlock = this.pcmROMDataBlockForAddress(0x8D, instance, startAddress);
     const frequency = (this.c140Registers[base + 2] << 8) | this.c140Registers[base + 3];
     const durationSamples = isLoop || isC219Noise
       ? undefined
-      : this.c140DurationSamples(start, end, frequency);
+      : c140DurationSamples(this.vgmData, start, end, frequency, this.sampleRate);
     const descriptorId = this.noteOnPCMPercussion(
       trackKey,
       note,
@@ -3903,46 +3847,18 @@ export class MidiConverter {
       dataBlock,
       durationSamples,
       {
-        endAddressExclusive: this.c140ROMAddress(channel, bank, end),
-        ...(isLoop ? { loopAddress: this.c140ROMAddress(channel, bank, loop) } : {}),
+        endAddressExclusive: c140ROMAddress(this.vgmData, this.c140Registers, channel, bank, end),
+        ...(isLoop ? { loopAddress: c140ROMAddress(this.vgmData, this.c140Registers, channel, bank, loop) } : {}),
       },
-      this.c140PCMAnalysisForVoice(
+      c140PCMAnalysisForVoice(
+        this.vgmData,
         dataBlock,
         startAddress,
-        this.c140ROMAddress(channel, bank, end),
+        c140ROMAddress(this.vgmData, this.c140Registers, channel, bank, end),
         this.c140Registers[base + 5]
       )
     );
     this.c140ActiveVoices[channel] = { descriptorId, note };
-  }
-
-  /** C140/C219の非ループ範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
-  private c140DurationSamples(start: number, end: number, frequency: number): number | undefined {
-    if (end <= start || frequency === 0) return undefined;
-    const inputClock = this.vgmData.header.c140Clock & CLOCK_MASK;
-    if (inputClock === 0) return undefined;
-    // VGMPlay's C140 core treats a MHz-class header clock as the input clock and
-    // derives its base rate by /384; already-low clocks are an explicit base rate.
-    const baseRate = inputClock >= 1000000 ? Math.floor(inputClock / 384) : inputClock;
-    if (baseRate === 0) return undefined;
-    const addressLength = (end - start) * (this.vgmData.header.c140Type === 2 ? 2 : 1);
-    return Math.round((addressLength * this.sampleRate * 65536) / (frequency * baseRate * 2));
-  }
-
-  /** C140系レジスタのバンク・開始位置を、VGM ROM blockで使う物理ROMアドレスへ変換する。 */
-  private c140ROMAddress(channel: number, bank: number, address: number): number {
-    const logicalAddress = (bank << 16) | address;
-    if (this.vgmData.header.c140Type === 1) {
-      // System 21 はC140の論理アドレスをROM配線に合わせて並べ替える。
-      return (logicalAddress & 0x7FFFF) | ((logicalAddress & 0x300000) >> 1);
-    }
-    if (this.vgmData.header.c140Type === 2) {
-      // C219 (NA-1/NA-2): 音声アドレスはword単位、4音声ごとの外部bankは128 KiB単位。
-      const externalBankRegisters = [0x1F7, 0x1F1, 0x1F3, 0x1F5];
-      const externalBank = this.c140Registers[externalBankRegisters[Math.floor(channel / 4)]] & 0x03;
-      return (externalBank << 17) + (bank << 16) + (address << 1);
-    }
-    return logicalAddress;
   }
 
   private handleOPLWrite(
@@ -5012,206 +4928,8 @@ export class MidiConverter {
     return undefined;
   }
 
-  /** 単一ROM blockへ完全に収まるSegaPCMの生8-bit PCMを解析する。 */
-  private segaPCMAnalysisForTrack(
-    dataBlock: PCMDataBlockMetadata | undefined,
-    events: PCMTrackEvent[]
-  ): PCMAnalysisMetadata | undefined {
-    if (dataBlock?.bankType !== 0x80 || dataBlock.romStartAddress === undefined) return undefined;
-    const startEvent = events.find(event => event.type === 'start' && event.endAddressExclusive !== undefined);
-    if (startEvent?.endAddressExclusive === undefined) return undefined;
-    return this.signed8BitPCMAnalysisForROMRange(dataBlock, startEvent.endAddressExclusive);
-  }
-
-  /** C140/C219の確認済みPCMモードを、物理ROM範囲から解析する。 */
-  private c140PCMAnalysisForVoice(
-    dataBlock: PCMDataBlockMetadata | undefined,
-    startAddress: number,
-    endAddress: number,
-    mode: number
-  ): PCMAnalysisMetadata | undefined {
-    if (startAddress !== dataBlock?.bankOffset) return undefined;
-    if (this.vgmData.header.c140Type === 2) {
-      // C219 bit 1 remains unverified and bit 2 is LFSR noise. Bit 0 selects
-      // μ-law, and bit 6 inverses the decoded sample sign.
-      if ((mode & 0x06) !== 0) return undefined;
-      const sign = (mode & 0x40) === 0 ? 1 : -1;
-      return (mode & 0x01) === 0
-        ? this.signed8BitPCMAnalysisForROMRange(dataBlock, endAddress, sign)
-        : this.c219MuLawAnalysisForROMRange(dataBlock, endAddress, sign);
-    }
-    return (mode & 0x08) === 0
-      ? this.c14012BitPCMAnalysisForROMRange(dataBlock, endAddress)
-      : this.c140CompressedPCMAnalysisForROMRange(dataBlock, endAddress);
-  }
-
-  /** 単一ROM blockに完全に収まる符号付き8-bit PCMの基本波形特徴量を返す。 */
-  private signed8BitPCMAnalysisForROMRange(
-    dataBlock: PCMDataBlockMetadata,
-    endAddress: number,
-    sign = 1
-  ): PCMAnalysisMetadata | undefined {
-    const samples = this.romBytesForRange(dataBlock, endAddress);
-    return samples === undefined ? undefined : this.analyzeSigned8BitPCM(samples, sign);
-  }
-
-  /** 8-bit符号PCMを均等に間引き、振幅とゼロクロスの基本特徴量を返す。 */
-  private analyzeSigned8BitPCM(samples: Buffer, sign = 1): PCMAnalysisMetadata | undefined {
-    return this.analyzePCMValues(
-      'signed-8bit-pcm',
-      samples.length,
-      samples.length,
-      128,
-      index => sign * (samples[index] - 0x80)
-    );
-  }
-
-  /** C219 μ-law tableをMAMEと同じ手順で作り、復号後の波形を解析する。 */
-  private c219MuLawAnalysisForROMRange(
-    dataBlock: PCMDataBlockMetadata,
-    endAddress: number,
-    sign: number
-  ): PCMAnalysisMetadata | undefined {
-    const samples = this.romBytesForRange(dataBlock, endAddress);
-    if (samples === undefined) return undefined;
-    return this.analyzePCMValues('c219-mulaw', samples.length, samples.length, 2048, index => {
-      const value = samples[index];
-      let magnitude = 0;
-      for (let level = 0; level < 128; level++) {
-        if (level < 16) magnitude += 1;
-        else if (level < 24) magnitude += 2;
-        else if (level < 48) magnitude += 4;
-        else if (level < 100) magnitude += 8;
-        else magnitude += 16;
-        if (level === (value & 0x7F)) break;
-      }
-      const decoded = (value & 0x80) === 0 ? magnitude : (~magnitude & 0xFFE0);
-      return sign * (decoded >> 5);
-    });
-  }
-
-  /** C140のbig-endian 12-bit word PCMを解析する。 */
-  private c14012BitPCMAnalysisForROMRange(
-    dataBlock: PCMDataBlockMetadata,
-    endAddress: number
-  ): PCMAnalysisMetadata | undefined {
-    const samples = this.c140ROMBytesForRange(dataBlock, endAddress);
-    if (samples === undefined) return undefined;
-    const sampleCount = Math.floor(samples.length / 2);
-    return this.analyzePCMValues(
-      'signed-12bit-be-pcm', samples.length, sampleCount, 2048,
-      index => samples.readInt16BE(index * 2) >> 4
-    );
-  }
-
-  /** C140圧縮PCMのMAME互換テーブル復号を解析に用いる。 */
-  private c140CompressedPCMAnalysisForROMRange(
-    dataBlock: PCMDataBlockMetadata,
-    endAddress: number
-  ): PCMAnalysisMetadata | undefined {
-    const samples = this.c140ROMBytesForRange(dataBlock, endAddress);
-    if (samples === undefined) return undefined;
-    const sampleCount = Math.floor(samples.length / 2);
-    return this.analyzePCMValues('c140-compressed-pcm', samples.length, sampleCount, 2048, index => {
-      const byte = samples[index * 2];
-      const signed = byte < 0x80 ? byte : byte - 0x100;
-      const shift = signed & 7;
-      const magnitude = Math.abs(signed >> 3) & 31;
-      let decoded = ((0x80 << shift) & 0xFF00) + (magnitude << (shift === 0 ? 4 : shift + 3));
-      if (signed < 0) decoded = -decoded;
-      return decoded >> 4;
-    });
-  }
-
-  /** YM2608 ADPCM-BをYamahaの予測式で復号し、全nibbleを解析する。 */
-  private ym2608ADPCMBAnalysis(
-    dataBlock: PCMDataBlockMetadata | undefined,
-    sourceByteLength: number | undefined
-  ): PCMAnalysisMetadata | undefined {
-    if (dataBlock === undefined || sourceByteLength === undefined) return undefined;
-    const endAddress = dataBlock.bankOffset + sourceByteLength;
-    const encoded = this.romBytesForRange(dataBlock, endAddress);
-    if (encoded === undefined || encoded.length === 0) return undefined;
-    const values: number[] = [];
-    let accumulator = 0;
-    let step = 127;
-    for (const byte of encoded) {
-      for (const nibble of [byte >> 4, byte & 0x0F]) {
-        const magnitude = (2 * (nibble & 7) + 1) * step / 8;
-        accumulator = Math.max(-32768, Math.min(32767, accumulator + ((nibble & 8) === 0 ? magnitude : -magnitude)));
-        step = Math.max(127, Math.min(24576, Math.floor(step * [57, 57, 57, 57, 77, 102, 128, 153][nibble & 7] / 64)));
-        values.push(accumulator);
-      }
-    }
-    // The chip suppresses the final three buffered nibbles at EOS.
-    return this.analyzePCMValues('yamaha-adpcm-b', encoded.length, Math.max(0, values.length - 3), 32768, index => values[index]);
-  }
-
-  /** ROM block内のbyteアドレス範囲を安全に取得する。 */
-  private romBytesForRange(dataBlock: PCMDataBlockMetadata, endAddress: number): Buffer | undefined {
-    if (endAddress <= dataBlock.bankOffset || dataBlock.romStartAddress === undefined) return undefined;
-    const block = this.romDataBlockForMetadata(dataBlock);
-    if (block === undefined) return undefined;
-    const sourceByteLength = endAddress - dataBlock.bankOffset;
-    if (dataBlock.blockOffset + sourceByteLength > block.payload.length - 8) return undefined;
-    return block.payload.subarray(8 + dataBlock.blockOffset, 8 + dataBlock.blockOffset + sourceByteLength);
-  }
-
-  /** C140のwordアドレス範囲を、ROM block上のbig-endian byte列へ変換する。 */
-  private c140ROMBytesForRange(dataBlock: PCMDataBlockMetadata, endAddress: number): Buffer | undefined {
-    if (endAddress <= dataBlock.bankOffset) return undefined;
-    const block = this.romDataBlockForMetadata(dataBlock);
-    if (block === undefined) return undefined;
-    const sourceByteLength = (endAddress - dataBlock.bankOffset) * 2;
-    const sourceStart = 8 + dataBlock.blockOffset * 2;
-    if (sourceStart + sourceByteLength > block.payload.length) return undefined;
-    return block.payload.subarray(sourceStart, sourceStart + sourceByteLength);
-  }
-
-  /** sidecarのdata block参照から実ROM blockを探す。 */
-  private romDataBlockForMetadata(dataBlock: PCMDataBlockMetadata): VGMDataBlock | undefined {
-    return (this.vgmData.dataBlocks ?? []).find(candidate =>
-      candidate.type === dataBlock.bankType
-      && (candidate.instance ?? 0) === dataBlock.bankInstance
-      && candidate.blockId === dataBlock.blockId
-    );
-  }
-
-  /** 数値sample列を均等に間引き、正規化された波形特徴量へ変換する。 */
-  private analyzePCMValues(
-    format: PCMAnalysisMetadata['format'],
-    sourceByteLength: number,
-    sampleCount: number,
-    maximumAmplitude: number,
-    sampleAt: (index: number) => number
-  ): PCMAnalysisMetadata | undefined {
-    if (sampleCount === 0) return undefined;
-    const analyzedSampleCount = Math.min(sampleCount, MAX_PCM_ANALYSIS_SAMPLES);
-    let peak = 0; let sum = 0; let sumSquares = 0; let zeroCrossingCount = 0; let previousSign = 0;
-    for (let index = 0; index < analyzedSampleCount; index++) {
-      const sourceIndex = Math.floor((index * sampleCount) / analyzedSampleCount);
-      const sample = sampleAt(sourceIndex);
-      peak = Math.max(peak, Math.abs(sample)); sum += sample; sumSquares += sample * sample;
-      const sign = Math.sign(sample);
-      if (sign !== 0 && previousSign !== 0 && sign !== previousSign) zeroCrossingCount++;
-      if (sign !== 0) previousSign = sign;
-    }
-    const normalize = (value: number) => Math.round((value / maximumAmplitude) * 1_000_000) / 1_000_000;
-    return {
-      format, sourceByteLength, analyzedSampleCount,
-      ...(sampleCount > analyzedSampleCount ? { isDownsampled: true as const } : {}),
-      peak: normalize(peak), mean: normalize(sum / analyzedSampleCount),
-      rms: normalize(Math.sqrt(sumSquares / analyzedSampleCount)), zeroCrossingCount,
-    };
-  }
-
-  /** 波形統計から、楽器種別を断定しない説明的な音色ラベルを作る。 */
-  private pcmTimbreForAnalysis(analysis: PCMAnalysisMetadata): PCMTimbreMetadata {
-    const crossingRate = analysis.zeroCrossingCount / Math.max(1, analysis.analyzedSampleCount - 1);
-    const name = analysis.peak < 0.04 ? 'quiet' : crossingRate > 0.25 ? 'noise-like' : 'tonal';
-    const confidence = Math.round(Math.min(1, 0.5 + Math.min(analysis.analyzedSampleCount, 4096) / 8192) * 100) / 100;
-    return { name, confidence };
-  }
+  // segaPCMAnalysisForTrack()/c140PCMAnalysisForVoice()/analyzeSigned8BitPCM()等の
+  // ROM範囲PCM/ADPCM波形解析は、pcm-analysis.tsへ移設した（上のimportを参照）。
 
   /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
   private streamBankSize(bankId: number, instance: number): number {

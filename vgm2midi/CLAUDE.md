@@ -1464,17 +1464,50 @@ reads `this.hasYM2413CustomCarrierMultiple`/`this.ym2413CustomPatch`, and
 extracting it would have meant either importing `ChannelState` into
 `midi-math.ts` (a type-only circular import back into `midi-converter.ts`) or
 duplicating the interface — judged not worth it for one function with only two
-call sites. The much larger remaining pieces of the original refactor
-plan — event-output helpers (`addPan()`/`addExpression()`/`noteOn()`/
-`noteOff()` and friends), PCM range analysis
-(`analyzeSigned8BitPCM()`/`romBytesForRange()`/`segaPCMDurationSamples()`/
-`c140DurationSamples()` and friends), and the per-chip
-`handle*Write()` PSG/FM/PCM handlers — all read and mutate `MidiConverter`'s
-own instance state (`this.tracks`, `this.channels`, per-chip state maps) too
-heavily to extract as plain functions without a larger context-object or
-composition redesign. That redesign is deliberately left as a separate,
-future incremental step, each piece landing with its own test run before the
-next, rather than attempted in the same pass as this purely mechanical move.
+call sites.
+
+## Refactor: `pcm-analysis.ts` — ROM-range PCM/ADPCM waveform analysis extracted from `MidiConverter`
+
+A second, equally mechanical extraction alongside `midi-math.ts` above: every
+method whose only shared dependency was `this.vgmData` (the parsed VGM file —
+read-only, fixed at construction, never mutated by `convert()`) rather than
+any per-instance register/track state moved to `src/pcm-analysis.ts`. This
+covers the whole ROM-range waveform-analysis cluster —
+`segaPCMAnalysisForTrack()`/`c140PCMAnalysisForVoice()`/
+`signed8BitPCMAnalysisForROMRange()`/`c219MuLawAnalysisForROMRange()`/
+`c14012BitPCMAnalysisForROMRange()`/`c140CompressedPCMAnalysisForROMRange()`/
+`ym2608ADPCMBAnalysis()`/`romBytesForRange()`/`c140ROMBytesForRange()`/
+`romDataBlockForMetadata()`/`analyzePCMValues()`/`pcmTimbreForAnalysis()` — plus
+the PCM duration/address estimators `segaPCMBankBaseAddress()`/
+`segaPCMDurationSamples()`/`c140DurationSamples()`/`c140ROMAddress()`. The
+`PCMTrackEvent`/`PCMDataBlockMetadata`/`PCMAnalysisMetadata`/`PCMTimbreMetadata`
+interfaces moved alongside them and are now exported from `pcm-analysis.ts`;
+`midi-converter.ts` imports them back for `PCMTrackMetadata` and the rest of
+its own PCM track-state handling.
+
+Each moved function now takes `vgmData: VGMData` as an explicit first
+parameter instead of reading `this.vgmData`. `c140ROMAddress()` additionally
+takes `c140Registers: Uint8Array` (previously `this.c140Registers`) — unlike
+every other function in this cluster, its C219 branch reads one live register
+byte (the external-bank selector), not just static header configuration, so
+it needed the register snapshot passed in rather than being read implicitly.
+`segaPCMDurationSamples()`/`c140DurationSamples()` gained an explicit
+`sampleRate: number` parameter for the same reason `midi-math.ts`'s
+`samplesToTicks()` did. Every call site changed only from `this.foo(...)` to
+`foo(this.vgmData, ...)` (plus `this.c140Registers`/`this.sampleRate` where
+applicable); no formula, constant, or comment changed. Verified the same way:
+`npm test` (all 211 tests, unchanged).
+
+The remaining pieces of the original refactor plan — event-output helpers
+(`addPan()`/`addExpression()`/`noteOn()`/`noteOff()` and friends) and the
+per-chip `handle*Write()` PSG/FM/PCM handlers — read and mutate
+`MidiConverter`'s own per-conversion instance state (`this.tracks`,
+`this.channels`, per-chip register/state maps) far more heavily than either
+extraction above, and cannot become plain functions without a larger
+context-object or class-composition redesign. That redesign is deliberately
+left as a separate, future incremental step, each piece landing with its own
+test run before the next, rather than attempted in the same pass as these two
+mechanical moves.
 
 ## Out of scope (for now)
 
