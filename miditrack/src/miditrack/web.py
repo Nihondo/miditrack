@@ -231,6 +231,11 @@ class WebSession:
     # 持つので呼び出し側はsource_formatで実装を出し分けるだけでよい。
     # SPCのgame_soundfont_pathとは完全に別の軸（あちらはSoundFontバンク切替）。
     chip_metadata: libvgm.LibvgmMetadata | nsf_chip.NsfChipMetadata | None = None
+    # vgm2midiがtrack-metadataサイドカーに書き出した変換時の注意事項
+    # （例: OPN Ch3 Specialの全オペレータがユニゾンで動いている等、ヒューリスティック
+    # 変換が誤りやすい入力を検出したときのメッセージ）。ユーザー向けの警告表示にのみ
+    # 使い、変換結果そのものには影響しない。
+    conversion_warnings: list[str] = field(default_factory=list)
     # セッション全体の速度倍率・移調（半音）。assignments/volumesと同じ
     # 「MIDI由来の編集パラメータ」なのでreset_midi_state()で初期化する
     # （soundfont_overrideのようなMIDIをまたいで残るUI設定ではない）。
@@ -396,6 +401,7 @@ class WebSession:
         self.volumes = {}
         self.track_sources = {}
         self.chip_metadata = None
+        self.conversion_warnings = []
         self.speed_ratio = midi.DEFAULT_SPEED_RATIO
         self.transpose_semitones = midi.DEFAULT_TRANSPOSE_SEMITONES
         self.applied_path = None
@@ -731,6 +737,7 @@ def session_payload(session: WebSession) -> dict[str, Any]:
         "hasChipStem": session.chip_stem_path is not None,
         "hasDacStem": session.dac_stem_path is not None,
         "hasGameSoundfont": session.game_soundfont_path is not None,
+        "conversionWarnings": list(session.conversion_warnings),
         "source": source_payload(session),
     }
 
@@ -3360,6 +3367,11 @@ def create_app(
         # game_soundfont_path/chip_metadata/track_sources を初期値に戻すため、
         # 必ずその後に代入する（順序を逆にすると今設定した値が消える）。
         web_session.chip_metadata = track_metadata
+        web_session.conversion_warnings = (
+            list(track_metadata.warnings)
+            if isinstance(track_metadata, libvgm.LibvgmMetadata)
+            else []
+        )
         web_session.source_song_index = options.get("songIndex")
         web_session.converted_options = options
         if track_metadata is not None:

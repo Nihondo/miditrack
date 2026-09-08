@@ -598,13 +598,13 @@ function isMidiFilename(name) {
   return MIDI_EXTENSION_RE.test(name);
 }
 
-function showStatus(message, type = "") {
+function showStatus(message, type = "", durationMs = 6000) {
   const element = $("#global-status");
   element.textContent = message;
   element.className = `status-toast ${type}`.trim();
   element.hidden = false;
   clearTimeout(state.statusTimer);
-  state.statusTimer = setTimeout(() => { element.hidden = true; }, 6000);
+  state.statusTimer = setTimeout(() => { element.hidden = true; }, durationMs);
 }
 
 function setBusy(isBusy, message = "") {
@@ -3415,7 +3415,16 @@ async function handleConvert() {
     resetPlayer();
     const payload = await response.json();
     await refreshFromSession(payload);
-    if (options.gameSoundfont && !payload.hasGameSoundfont) {
+    const conversionWarnings = Array.isArray(payload.conversionWarnings) ? payload.conversionWarnings : [];
+    if (conversionWarnings.length > 0) {
+      // vgm2midi由来の注意事項は動的な英語文なので事前に翻訳カタログへ登録できない。
+      // 導入文だけ日本語にし、詳細は原文のまま埋め込む。通常のトーストより長めに表示する。
+      showStatus(
+        t("変換結果に関する注意: {details}", { details: conversionWarnings.join(" / ") }),
+        "warning",
+        15000
+      );
+    } else if (options.gameSoundfont && !payload.hasGameSoundfont) {
       showStatus(t("MIDIに変換しました。ただしこの曲には音色データが無いため、ゲーム音源は使えません。"));
     } else {
       showStatus(t("MIDIに変換しました。"), "success");

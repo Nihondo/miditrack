@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -45,6 +45,9 @@ class LibvgmMetadata:
 
     sample_count: int
     targets: dict[int, LibvgmTarget]
+    # vgm2midiが変換中に検出した注意事項（例: OPN Ch3 Specialのユニゾン検出）。
+    # ユーザー向けの警告表示にのみ使う、変換結果には影響しない付随情報。
+    warnings: list[str] = field(default_factory=list)
 
     def group_indices(self, group_id: str) -> set[int]:
         """同じ物理チャンネルを共有するMIDIトラック番号を返す。"""
@@ -95,7 +98,13 @@ def load_metadata(path: Path, track_count: int) -> LibvgmMetadata | None:
             group_id=group_id,
             suggested=raw.get("suggestedForHardwareMix") is True,
         )
-    return LibvgmMetadata(sample_count=sample_count, targets=targets)
+    raw_warnings = payload.get("warnings")
+    warnings = (
+        [warning for warning in raw_warnings if isinstance(warning, str)]
+        if isinstance(raw_warnings, list)
+        else []
+    )
+    return LibvgmMetadata(sample_count=sample_count, targets=targets, warnings=warnings)
 
 
 def validate_sources(

@@ -39,6 +39,10 @@
   --warning: #b45309;
   --danger: #d92d20;
   --toast-bg: var(--neutral-100);
+  /* 警告トーストの背景は--warningとは別トークンにする。--toast-bg同様、常時
+     濃い背景に白文字で読ませたいのに対し、--warningはダークモードで明るい
+     黄色（枠線・アイコン色として使う想定）になるため白文字との対比が弱い。 */
+  --toast-warning-bg: #b45309;
   --shadow-card: 0 1px 2px rgba(23, 43, 77, 0.04), 0 3px 8px rgba(23, 43, 77, 0.08);
   --shadow-brand: 0 1px 3px rgba(86, 116, 185, 0.3);
   --font-sans: "Lucida Grande", Verdana, AquaKana, ArialMT,
@@ -85,6 +89,7 @@
     --pianoroll-keyboard-divider: #718096;
     --warning: #eab308;
     --toast-bg: #10151d;
+    --toast-warning-bg: #92400e;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
   }
 }
@@ -110,6 +115,7 @@
   --pianoroll-keyboard-divider: #718096;
   --warning: #eab308;
   --toast-bg: #10151d;
+  --toast-warning-bg: #92400e;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 3px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -1447,6 +1453,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 .status-toast.error { background: var(--danger); }
 .status-toast.success { background: var(--success); }
+.status-toast.warning { background: var(--toast-warning-bg); }
 .busy { cursor: progress; }
 
 @media (max-width: 640px) {

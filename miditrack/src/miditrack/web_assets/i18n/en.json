@@ -273,6 +273,7 @@
   "基準MIDI": "Base MIDI",
   "変換オプションはオブジェクトで指定してください": "Convert options must be an object",
   "変換中…": "Converting…",
+  "変換結果に関する注意: {details}": "Note about the conversion result: {details}",
   "変更しない（現在: {current}）": "Keep unchanged (currently: {current})",
   "変更できないトラックです": "This track can't be changed",
   "変更は即座に反映され、次回起動時も引き継がれます。": "Changes take effect immediately and are preserved across restarts.",

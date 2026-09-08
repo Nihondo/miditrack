@@ -11,8 +11,12 @@ export declare class MidiConverter {
     private channels;
     private tracks;
     private descriptors;
-    /** 実際に重なった異descriptorのMIDI channelだけを記録する。 */
+    /** 実際に重なった異descriptorのMIDI channelだけを記録する（開発者向け、--verboseで表示）。 */
     warnings: string[];
+    /** ヒューリスティック変換が誤りやすい入力を検出したときの、エンドユーザー向け注意事項。
+     * warnings（技術的な内部診断）とは別に扱い、--track-metadataサイドカーへ書き出して
+     * miditrackのWeb UIがそのまま表示できるようにする。 */
+    userWarnings: string[];
     private activeMidiDescriptors;
     private activePCMNotes;
     private generatedNoteCount;
@@ -31,6 +35,7 @@ export declare class MidiConverter {
     private ym2612DirectDACLastWriteTime?;
     private opnCh3SpecialModes;
     private opnCh3PercussionActiveKeys;
+    private opnCh3UnisonStats;
     private opnCsmTimers;
     private opmCsmTimers;
     private oplRhythmModes;
@@ -183,6 +188,19 @@ export declare class MidiConverter {
     /** OPMチップインスタンスのCSM状態を初期化して返す。 */
     private opmCsmTimer;
     private handleOPNCh3SpecialKeyWrite;
+    /** Ch3 Specialの新規キーオンで、発音中オペレータ同士がユニゾン(ほぼ同一音程)かを集計する。
+     *
+     * handleOPNCh3SpecialOperators()/handleOPNCh3SpecialPercussion()が parentState.keyOnMask を
+     * 書き換える前に呼ぶ必要がある — 「新規にキーオンされたオペレータ」の判定に前回のマスクを使うため。
+     */
+    private trackOPNCh3UnisonAttack;
+    /** ユニゾン比率が高いOPN Ch3 Specialチップインスタンスをthis.warningsへ追記する。
+     *
+     * 全オペレータがほぼ同一音程で動いているチャンネルは、実際には複数オペレータで補強された
+     * 1つのメロディ楽器であり、デフォルト変換の「独立4トラック」表示にもGMドラム変換にも
+     * 適さない — 見た目上の見た目はどちらも「複数の異なる発音」だが、本来は1音。
+     */
+    private appendOPNCh3UnisonWarnings;
     private handleOPNCh3SpecialOperators;
     private handleOPNCh3SpecialPercussion;
     private opnCh3SpecialPercussionNote;
@@ -389,7 +407,12 @@ export declare class MidiConverter {
     private libvgmTargetForDescriptor;
     /** MIDIファイルを書き出し、音符が生成されなかった場合は空ファイルを作らず失敗させる。 */
     exportToFile(outputPath: string): void;
-    /** 出力MIDIのトラック順とlibvgmのmute対象を結ぶJSON sidecarを書き出す。 */
+    /** 出力MIDIのトラック順とlibvgmのmute対象を結ぶJSON sidecarを書き出す。
+     *
+     * warningsフィールドはuserWarnings（ヒューリスティック変換が誤りやすい入力を検出した
+     * ときのエンドユーザー向け注意事項）を書き出す。this.warnings（MIDIチャンネル重複などの
+     * 技術的な内部診断、--verboseでのみ表示）とは意図的に別で、miditrackのWeb UIが
+     * そのままユーザーへ表示できる内容に限定する。 */
     exportTrackMetadata(outputPath: string, totalSamples: number): void;
     /** MIDI writer の固定divisionを 960 PPQ へ置換する。 */
     private buildMidiFile;

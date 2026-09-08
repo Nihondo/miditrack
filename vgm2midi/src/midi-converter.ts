@@ -70,6 +70,21 @@ const YM2608_RHYTHM_NAMES = [
 // reference. Offset = reg - 0xA8 (or reg - 0xAC); value = 0-based logical operator index
 // matching keyOnMask's own bit0=Op1..bit3=Op4 convention.
 const OPN_CH3_SPECIAL_OPERATOR_BY_OFFSET = [2, 0, 1] as const; // offset 0,1,2 -> Op3,Op1,Op2
+
+// Two operators keyed within this many semitones of each other on the same Ch3 Special
+// attack are treated as playing in unison (one melodic voice reinforced across multiple
+// operators), not as independently-pitched voices. 1 semitone tolerates the small
+// fractional rounding differences real FM patches show between operators tuned to the
+// same note (see appendOPNCh3UnisonWarnings()).
+const OPN_CH3_UNISON_SEMITONE_THRESHOLD = 1;
+// A chip instance needs at least this many qualifying (2+ audible operator) attacks
+// before its unison ratio is judged meaningful — a handful of coincidental attacks
+// early in a file should not trigger a warning.
+const OPN_CH3_UNISON_WARNING_MIN_ATTACKS = 8;
+// Fraction of qualifying attacks that must land within the unison threshold before this
+// chip instance is flagged as "likely one melodic voice in unison," not a composite
+// drum patch or independently-pitched voices.
+const OPN_CH3_UNISON_WARNING_RATIO = 0.7;
 const OPN_CH3_PERCUSSION_NAMES = new Map<number, string>([
   [36, 'Bass Drum'],
   [38, 'Snare Drum'],
@@ -501,8 +516,12 @@ export class MidiConverter {
   private channels: Map<string, ChannelState> = new Map();
   private tracks: Map<string, TrackState> = new Map();
   private descriptors: Map<string, TrackDescriptor> = new Map();
-  /** 実際に重なった異descriptorのMIDI channelだけを記録する。 */
+  /** 実際に重なった異descriptorのMIDI channelだけを記録する（開発者向け、--verboseで表示）。 */
   public warnings: string[] = [];
+  /** ヒューリスティック変換が誤りやすい入力を検出したときの、エンドユーザー向け注意事項。
+   * warnings（技術的な内部診断）とは別に扱い、--track-metadataサイドカーへ書き出して
+   * miditrackのWeb UIがそのまま表示できるようにする。 */
+  public userWarnings: string[] = [];
   private activeMidiDescriptors: Map<string, { midiChannel: number; startTime: number }> = new Map();
   private activePCMNotes: Map<string, number> = new Map();
   private generatedNoteCount = 0;
@@ -522,6 +541,12 @@ export class MidiConverter {
   // Ch3 mode and active collapsed-percussion track are isolated per OPN chip instance.
   private opnCh3SpecialModes: Map<string, boolean> = new Map();
   private opnCh3PercussionActiveKeys: Map<string, string> = new Map();
+  // Counts how often a Ch3 Special attack keys on 2+ audible operators within
+  // OPN_CH3_UNISON_SEMITONE_THRESHOLD of each other, per OPN chip instance — a source
+  // driving every operator at (near-)identical pitch is playing one melodic voice in
+  // unison, not four independently-pitched voices or a composite drum patch. See
+  // appendOPNCh3UnisonWarnings() for how this becomes a user-facing warning.
+  private opnCh3UnisonStats: Map<string, { totalAttacks: number; unisonAttacks: number }> = new Map();
   private opnCsmTimers: Map<string, CSMTimerState> = new Map();
   private opmCsmTimers: Map<number, CSMTimerState> = new Map();
   private oplRhythmModes: Map<string, boolean> = new Map();
@@ -1673,6 +1698,7 @@ export class MidiConverter {
     this.tracks.clear(); // Reset tracks
     this.descriptors.clear();
     this.warnings = [];
+    this.userWarnings = [];
     this.activeMidiDescriptors.clear();
     this.activePCMNotes.clear();
     this.channels = this.cloneChannels(this.initialChannels);
@@ -1691,6 +1717,7 @@ export class MidiConverter {
     this.ym2612DirectDACLastWriteTime = undefined;
     this.opnCh3SpecialModes.clear();
     this.opnCh3PercussionActiveKeys.clear();
+    this.opnCh3UnisonStats.clear();
     this.opnCsmTimers.clear();
     this.opmCsmTimers.clear();
     this.oplRhythmModes.clear();
@@ -1786,6 +1813,8 @@ export class MidiConverter {
     for (const descriptorId of [...activeNotes.keys()]) {
       this.noteOff(descriptorId, 0, currentTime, activeNotes);
     }
+
+    this.appendOPNCh3UnisonWarnings();
 
     return Array.from(this.tracks.values()).map(t => t.track);
   }
@@ -2451,11 +2480,65 @@ export class MidiConverter {
     const manualMask = timer.manualKeyOnMask ?? 0;
     const csmMask = isCSMEvent ? rawMask : timer.nextRelease === undefined ? 0 : 0x0F;
     const effectiveData = (data & 0x0F) | ((manualMask | csmMask) << 4);
+    this.trackOPNCh3UnisonAttack(context, effectiveData);
     if (this.options.opnCh3SpecialPercussion) {
       this.handleOPNCh3SpecialPercussion(context, effectiveData, currentTime, activeNotes);
       return;
     }
     this.handleOPNCh3SpecialOperators(context, effectiveData, currentTime, activeNotes);
+  }
+
+  /** Ch3 Specialの新規キーオンで、発音中オペレータ同士がユニゾン(ほぼ同一音程)かを集計する。
+   *
+   * handleOPNCh3SpecialOperators()/handleOPNCh3SpecialPercussion()が parentState.keyOnMask を
+   * 書き換える前に呼ぶ必要がある — 「新規にキーオンされたオペレータ」の判定に前回のマスクを使うため。
+   */
+  private trackOPNCh3UnisonAttack(context: OPNCh3Context, effectiveData: number): void {
+    const parentState = this.channels.get(context.parentKey)!;
+    const previousMask = parentState.keyOnMask ?? 0;
+    const slotMask = (effectiveData >> 4) & 0x0F;
+    const newlyKeyedMask = slotMask & ~previousMask;
+    if (newlyKeyedMask === 0) return;
+
+    const totalLevels = parentState.opnOperatorTotalLevels ?? [0, 0, 0, 0];
+    const notes: number[] = [];
+    for (let operator = 0; operator < 4; operator++) {
+      if ((newlyKeyedMask & (1 << operator)) === 0) continue;
+      if ((totalLevels[operator] ?? 0) >= 0x7F) continue; // silenced operator, not audible
+      const state = this.channels.get(context.operatorKeys[operator])!;
+      const note = this.frequencyToMidiNote(this.opnCh3OperatorFrequency(context, state));
+      if (note > 0) notes.push(note);
+    }
+    if (notes.length < 2) return; // need 2+ audible operators to compare
+
+    const stats = this.opnCh3UnisonStats.get(context.stateKey)
+      ?? { totalAttacks: 0, unisonAttacks: 0 };
+    stats.totalAttacks++;
+    if (Math.max(...notes) - Math.min(...notes) <= OPN_CH3_UNISON_SEMITONE_THRESHOLD) {
+      stats.unisonAttacks++;
+    }
+    this.opnCh3UnisonStats.set(context.stateKey, stats);
+  }
+
+  /** ユニゾン比率が高いOPN Ch3 Specialチップインスタンスをthis.warningsへ追記する。
+   *
+   * 全オペレータがほぼ同一音程で動いているチャンネルは、実際には複数オペレータで補強された
+   * 1つのメロディ楽器であり、デフォルト変換の「独立4トラック」表示にもGMドラム変換にも
+   * 適さない — 見た目上の見た目はどちらも「複数の異なる発音」だが、本来は1音。
+   */
+  private appendOPNCh3UnisonWarnings(): void {
+    for (const [stateKey, stats] of this.opnCh3UnisonStats) {
+      if (stats.totalAttacks < OPN_CH3_UNISON_WARNING_MIN_ATTACKS) continue;
+      if (stats.unisonAttacks / stats.totalAttacks < OPN_CH3_UNISON_WARNING_RATIO) continue;
+      const percent = Math.round((stats.unisonAttacks / stats.totalAttacks) * 100);
+      this.userWarnings.push(
+        `${this.opnCh3DisplayNameForKey(stateKey)} Ch3 Special: ${percent}% of attacks keyed ` +
+        `multiple operators at nearly the same pitch (likely one melodic voice reinforced ` +
+        `across operators, not four independent voices or a drum patch). The default ` +
+        `operator-view conversion will duplicate this melody across several tracks, and ` +
+        `--ch3-special-percussion is likely to misclassify it as drum hits.`
+      );
+    }
   }
 
   private handleOPNCh3SpecialOperators(
@@ -6029,10 +6112,16 @@ export class MidiConverter {
     }
     require('fs').writeFileSync(outputPath, this.buildMidiFile(tracks));
     for (const warning of this.warnings) console.error(`Warning: ${warning}`);
+    for (const warning of this.userWarnings) console.error(`Warning: ${warning}`);
     if (this.options.splitChips) this.exportSplitChipFiles(outputPath);
   }
 
-  /** 出力MIDIのトラック順とlibvgmのmute対象を結ぶJSON sidecarを書き出す。 */
+  /** 出力MIDIのトラック順とlibvgmのmute対象を結ぶJSON sidecarを書き出す。
+   *
+   * warningsフィールドはuserWarnings（ヒューリスティック変換が誤りやすい入力を検出した
+   * ときのエンドユーザー向け注意事項）を書き出す。this.warnings（MIDIチャンネル重複などの
+   * 技術的な内部診断、--verboseでのみ表示）とは意図的に別で、miditrackのWeb UIが
+   * そのままユーザーへ表示できる内容に限定する。 */
   exportTrackMetadata(outputPath: string, totalSamples: number): void {
     const tracks = Array.from(this.tracks.values()).map((state, trackIndex) => ({
       trackIndex,
@@ -6047,6 +6136,7 @@ export class MidiConverter {
       sampleRate: this.sampleRate,
       sampleCount: totalSamples,
       tracks,
+      warnings: this.userWarnings,
     }, null, 2) + '\n');
   }
 
