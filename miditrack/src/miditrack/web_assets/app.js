@@ -14,6 +14,9 @@ import {
 } from "./pianoroll_math.mjs";
 import { createPianorollLoopController } from "./pianoroll_loop.mjs";
 import { createPianorollPointerController } from "./pianoroll_pointer.mjs";
+import { createPianorollFollowController } from "./pianoroll_follow.mjs";
+import { createFavoriteProgramsController } from "./favorite_programs.mjs";
+import { createNativeBridgeController } from "./native_bridge.mjs";
 
 // 他の初期化処理より前にdata-themeを確定させ、ライト→ダークの一瞬のちらつきを
 // 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
@@ -61,7 +64,7 @@ const { apiFetch, audioUrl } = createApiClient({ token, t });
 // 全画面レイアウトを固定する。WKUserScriptはbody生成時にもクラスを付与し、
 // init()でもDOM操作を完了するため、通常レイアウトが一瞬描画されない。
 const isNativeApp = window.__miditrackNative === true;
-let nativeLocalOpenPromise = Promise.resolve();
+const nativeBridge = createNativeBridgeController({ isNativeApp });
 
 const KEEP_ORIGINAL = "__keep__";
 const DEFAULT_GM_PROGRAM = "80";
@@ -137,11 +140,10 @@ const state = {
   session: null,          // 直近の /api/session (POST/PATCH/GET) レスポンス
   optionsFragment: null,  // /api/instruments から一度だけ構築したドロップダウンの雛形
   programNames: {},       // GMプログラム番号(number) -> 表示テキスト（「よく使う」欄の再構築に使う）
-  // pinnedPrograms/usageCountsはinit()のloadPreferences()で読み込むまで空のまま。
-  // サーバー側ファイル（/api/preferences）で永続化する ― 起動のたびにポートが
-  // 変わりlocalStorageのオリジンも変わってしまうため、ブラウザ側には保存しない。
-  pinnedPrograms: new Set(), // 手動ピン留めされたGMプログラム番号のSet
-  usageCounts: {},           // GMプログラム番号 -> 選択回数（「よく使う」の自動集計用）
+  // ピン留め・使用回数はfavoriteProgramsControllerが持つ（init()のloadPreferences()で
+  // 読み込むまで空のまま）。サーバー側ファイル（/api/preferences）で永続化する ―
+  // 起動のたびにポートが変わりlocalStorageのオリジンも変わってしまうため、
+  // ブラウザ側には保存しない。
   displayMode: "normal",    // 通常表示または全画面DAW表示。サーバー側の設定に永続化する。
   hasRoundedPianorollNotes: true, // ピアノロールのノートを角丸で描くか。設定として永続化する。
   hasOutlinedPianorollNotes: true, // ピアノロールのノートに濃い縁取りを描くか。設定として永続化する。
@@ -180,8 +182,6 @@ const state = {
   pianorollScrollFrameId: null,
   pianorollZoom: 1,
   pianorollZoomWheelDelta: 0,
-  isPianorollAutoFollowing: false,
-  pianorollAutoScrollTarget: null,
   highlightedTrackIndex: null,
   ensemblePresets: [],
   ensemblePresetId: null,
@@ -238,6 +238,10 @@ const pianorollLoopController = createPianorollLoopController({
 });
 const pianorollPointerController = createPianorollPointerController({
   dragThresholdPixels: LOOP_DRAG_THRESHOLD_PX,
+});
+const pianorollFollowController = createPianorollFollowController();
+const favoriteProgramsController = createFavoriteProgramsController({
+  maxFavorites: MAX_FAVORITE_PROGRAMS,
 });
 
 const trackListController = createTrackListController({
@@ -374,8 +378,10 @@ async function loadPreferences() {
   try {
     const response = await apiFetch("/api/preferences");
     const payload = await response.json();
-    state.pinnedPrograms = new Set(payload.pinnedPrograms || []);
-    state.usageCounts = payload.usageCounts || {};
+    favoriteProgramsController.load({
+      pinnedPrograms: payload.pinnedPrograms || [],
+      usageCounts: payload.usageCounts || {},
+    });
     state.displayMode = payload.displayMode === "fullscreen" ? "fullscreen" : "normal";
     state.hasRoundedPianorollNotes = payload.roundedPianorollNotes !== false;
     state.hasOutlinedPianorollNotes = payload.outlinedPianorollNotes !== false;
@@ -518,30 +524,26 @@ function savePianorollKeyboardVisibility() {
 // 呼び出し元が既にstateを更新して同期的に反映しているため、ここは書き込み失敗を
 // 静かに無視してよい（次回の変更で再送されれば整合する）。
 function savePinnedPrograms() {
-  return savePreferenceFields({ pinnedPrograms: [...state.pinnedPrograms] });
+  return savePreferenceFields({ pinnedPrograms: favoriteProgramsController.getPinnedPrograms() });
 }
 
 function saveUsageCounts() {
-  return savePreferenceFields({ usageCounts: state.usageCounts });
+  return savePreferenceFields({ usageCounts: favoriteProgramsController.getUsageCounts() });
 }
 
 // GMプログラムが選択されるたびに使用回数を加算し、「よく使う」欄へ反映する。
 function recordProgramUsage(program) {
-  state.usageCounts[program] = (state.usageCounts[program] || 0) + 1;
+  favoriteProgramsController.recordUsage(program);
   saveUsageCounts();
   refreshFavoritePrograms();
 }
 
 function isProgramPinned(program) {
-  return program !== null && state.pinnedPrograms.has(program);
+  return favoriteProgramsController.isPinned(program);
 }
 
 function toggleProgramPinned(program) {
-  if (state.pinnedPrograms.has(program)) {
-    state.pinnedPrograms.delete(program);
-  } else {
-    state.pinnedPrograms.add(program);
-  }
+  favoriteProgramsController.togglePinned(program);
   savePinnedPrograms();
   refreshFavoritePrograms();
 }
@@ -549,21 +551,17 @@ function toggleProgramPinned(program) {
 // ピン留め済み（優先）とよく使う順（頻度）を合わせて、最大MAX_FAVORITE_PROGRAMS件の
 // <optgroup>を構築する。候補が無ければnullを返す（空のoptgroupは作らない）。
 function buildFavoriteProgramsOptgroup() {
-  const usageRanked = Object.keys(state.usageCounts)
-    .map(Number)
-    .filter((program) => !state.pinnedPrograms.has(program))
-    .sort((a, b) => state.usageCounts[b] - state.usageCounts[a]);
-  const ordered = [...state.pinnedPrograms, ...usageRanked].slice(0, MAX_FAVORITE_PROGRAMS);
-  if (ordered.length === 0) return null;
+  const ranked = favoriteProgramsController.rankFavorites();
+  if (ranked.length === 0) return null;
 
   const optgroup = document.createElement("optgroup");
   optgroup.label = t("よく使う");
   optgroup.dataset.favorites = "true";
-  for (const program of ordered) {
+  for (const { program, isPinned } of ranked) {
     const option = document.createElement("option");
     option.value = String(program);
     const label = state.programNames[program] || String(program + 1);
-    option.textContent = state.pinnedPrograms.has(program) ? `★ ${label}` : label;
+    option.textContent = isPinned ? `★ ${label}` : label;
     optgroup.appendChild(option);
   }
   return optgroup;
@@ -2374,29 +2372,25 @@ function updatePianorollZoomControls() {
 }
 
 function setPianorollAutoFollow(isFollowing) {
-  state.isPianorollAutoFollowing = isFollowing;
-  if (!isFollowing) state.pianorollAutoScrollTarget = null;
+  pianorollFollowController.setFollowing(isFollowing);
 }
 
 function scrollPianorollToStart() {
   const scrollArea = $("#pianoroll-scroll");
-  state.pianorollAutoScrollTarget = 0;
-  scrollArea.scrollLeft = 0;
+  scrollArea.scrollLeft = pianorollFollowController.planScrollToStart();
 }
 
 function followPianorollPlayback() {
-  if (!state.isPianorollAutoFollowing || !state.pianoroll?.durationSeconds) return;
   if (!state.pianorollTimelineWidth) return;
   const scrollArea = $("#pianoroll-scroll");
-  const canvasWidth = state.pianorollTimelineWidth;
-  const viewportHalf = scrollArea.clientWidth / 2;
-  const progress = Math.min(1, sourceGlobalSeconds() / state.pianoroll.durationSeconds);
-  const playheadX = progress * canvasWidth;
-  if (playheadX <= viewportHalf) return;
-  const maximumScroll = Math.max(0, canvasWidth - scrollArea.clientWidth);
-  const target = Math.min(maximumScroll, Math.max(0, playheadX - viewportHalf));
-  if (Math.abs(scrollArea.scrollLeft - target) < 0.5) return;
-  state.pianorollAutoScrollTarget = target;
+  const target = pianorollFollowController.planFollowScroll({
+    durationSeconds: state.pianoroll?.durationSeconds,
+    timelineWidth: state.pianorollTimelineWidth,
+    viewportWidth: scrollArea.clientWidth,
+    scrollLeft: scrollArea.scrollLeft,
+    globalSeconds: sourceGlobalSeconds(),
+  });
+  if (target === null) return;
   scrollArea.scrollLeft = target;
 }
 
@@ -2410,12 +2404,7 @@ function schedulePianorollViewportRedraw() {
 
 function handlePianorollScroll() {
   schedulePianorollViewportRedraw();
-  const target = state.pianorollAutoScrollTarget;
-  if (target !== null && Math.abs($("#pianoroll-scroll").scrollLeft - target) < 1) {
-    state.pianorollAutoScrollTarget = null;
-    return;
-  }
-  setPianorollAutoFollow(false);
+  pianorollFollowController.reconcileScroll($("#pianoroll-scroll").scrollLeft);
 }
 
 function setPianorollZoom(zoom, shouldPreserveCenter = true) {
@@ -4264,28 +4253,17 @@ function setupDropZone() {
 
 // DOM更新後の描画機会を確実に1回挟む。最初のコールバックは描画前に実行される
 // ため、二重requestAnimationFrameにして次のフレームまで待つ。
-function waitForNextPaint() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(resolve));
-  });
-}
-
 // ネイティブアプリ（miditrack.app）のスプラッシュオーバーレイは、WKWebViewの
 // ページ読み込み完了（didFinish）ではなく、この関数の通知を待ってから消える。
 // PromiseやDOM更新の完了だけでは画面への描画は保証されないため、WebKitが更新済み
-// UIを少なくとも1フレーム描画する機会を得てからpostMessageする。
+// UIを少なくとも1フレーム描画する機会を得てからpostMessageする（実際の待ち合わせは
+// nativeBridge.notifyReady()が持つ）。
 async function notifyNativeAppReady() {
-  const messageHandler = window.webkit?.messageHandlers?.miditrackReady;
-  if (!isNativeApp || !messageHandler) return;
-  await waitForNextPaint();
-  messageHandler.postMessage({});
+  await nativeBridge.notifyReady(window.webkit?.messageHandlers?.miditrackReady);
 }
 
 if (isNativeApp) {
-  window.__miditrackOpenLocalFiles = (paths) => {
-    nativeLocalOpenPromise = nativeLocalOpenPromise.then(() => openNativeLocalFiles(paths));
-    return nativeLocalOpenPromise;
-  };
+  window.__miditrackOpenLocalFiles = (paths) => nativeBridge.queueLocalOpen(paths, openNativeLocalFiles);
 }
 
 async function openNativeLocalFiles(paths) {

@@ -90,8 +90,12 @@ src/miditrack/
   web_source_service.py    MIDI/source ingestion, source selection, conversion, and generated-asset binding
   web_assets/               index.html / app.css / app.js bootstrap; i18n.mjs, api.mjs,
                             track_list.mjs, track_edits.mjs, pianoroll_math.mjs, pianoroll_loop.mjs,
-                            and pianoroll_pointer.mjs isolate translation, authenticated fetch, track coordination,
-                            pure piano-roll math, loop-range state, and pointer-drag state without cycles
+                            pianoroll_pointer.mjs, pianoroll_follow.mjs, favorite_programs.mjs, and
+                            native_bridge.mjs isolate translation, authenticated fetch, track coordination,
+                            pure piano-roll math, loop-range state, pointer-drag state, playback
+                            auto-follow/auto-scroll state, favorite-instrument ranking, and the
+                            native-app bridge's local-open serialization/ready-notification timing,
+                            all without cycles
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
 

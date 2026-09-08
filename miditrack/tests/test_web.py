@@ -226,7 +226,8 @@ class TestWebApp(unittest.TestCase):
         self.assertIn('<script type="module" src="/assets/app.js"></script>', html)
         for module_name in (
             "i18n.mjs", "api.mjs", "track_list.mjs", "track_edits.mjs", "pianoroll_math.mjs",
-            "pianoroll_loop.mjs", "pianoroll_pointer.mjs",
+            "pianoroll_loop.mjs", "pianoroll_pointer.mjs", "pianoroll_follow.mjs",
+            "favorite_programs.mjs", "native_bridge.mjs",
         ):
             self.assertIn(f'<link rel="modulepreload" href="/assets/{module_name}">', html)
             response = self.client.get(f"/assets/{module_name}")
@@ -417,16 +418,19 @@ class TestWebApp(unittest.TestCase):
     def test_native_app_ready_message_waits_for_a_painted_frame(self) -> None:
         """DOM更新後の描画を待ってからネイティブ側へ準備完了を通知する。"""
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+        bridge = self.client.get("/assets/native_bridge.mjs").get_data(as_text=True)
 
-        wait_block = javascript.split("function waitForNextPaint()", 1)[1].split(
-            "async function notifyNativeAppReady()", 1
+        wait_block = bridge.split("function waitForNextPaint(requestFrame)", 1)[1].split(
+            "export function createNativeBridgeController", 1
         )[0]
-        notify_block = javascript.split("async function notifyNativeAppReady()", 1)[1].split(
-            "async function init()", 1
-        )[0]
-        self.assertGreaterEqual(wait_block.count("requestAnimationFrame"), 2)
-        self.assertIn("await waitForNextPaint();", notify_block)
+        notify_block = bridge.split("async notifyReady(messageHandler)", 1)[1]
+        self.assertGreaterEqual(wait_block.count("requestFrame("), 2)
+        self.assertIn("await waitForNextPaint(requestFrame);", notify_block)
         self.assertIn("messageHandler.postMessage({});", notify_block)
+        self.assertIn(
+            "await nativeBridge.notifyReady(window.webkit?.messageHandlers?.miditrackReady);",
+            javascript,
+        )
         self.assertEqual(javascript.count("await notifyNativeAppReady();"), 2)
 
     def test_native_source_opening_immediately_shows_the_conversion_dialog(self) -> None:
