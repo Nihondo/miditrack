@@ -83,8 +83,9 @@ src/miditrack/
                             SoundFont, persisted to ~/Library/Application Support/miditrack/
                             preferences.json
   web.py                   create_app() / run_server() (tools/pixelart_web.py shape)
-  web_assets/               index.html / app.css / app.js bootstrap; i18n.mjs and api.mjs provide
-                            translation and authenticated fetch boundaries without circular imports
+  web_assets/               index.html / app.css / app.js bootstrap; i18n.mjs, api.mjs,
+                            track_list.mjs, and track_edits.mjs isolate translation, authenticated
+                            fetch, track sorting, and debounced track-edit coordination without cycles
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
 

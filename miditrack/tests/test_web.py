@@ -224,7 +224,7 @@ class TestWebApp(unittest.TestCase):
         html = self.client.get("/").get_data(as_text=True)
 
         self.assertIn('<script type="module" src="/assets/app.js"></script>', html)
-        for module_name in ("i18n.mjs", "api.mjs"):
+        for module_name in ("i18n.mjs", "api.mjs", "track_list.mjs", "track_edits.mjs"):
             self.assertIn(f'<link rel="modulepreload" href="/assets/{module_name}">', html)
             response = self.client.get(f"/assets/{module_name}")
             self.assertEqual(response.status_code, 200)

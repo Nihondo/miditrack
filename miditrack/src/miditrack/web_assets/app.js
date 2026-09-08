@@ -1,5 +1,7 @@
 import { createTranslator } from "./i18n.mjs";
 import { createApiClient } from "./api.mjs";
+import { createTrackListController } from "./track_list.mjs";
+import { createTrackEditController } from "./track_edits.mjs";
 
 // 他の初期化処理より前にdata-themeを確定させ、ライト→ダークの一瞬のちらつきを
 // 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
@@ -147,11 +149,6 @@ const state = {
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
   // Cmd/Ctrlキーを押しながらの操作で「全トラックに同じ設定を適用」する際に使う。
   trackRows: [],
-  pendingAssignments: {}, // トラック番号(number) -> GMプログラム番号 | null（未送信分）
-  pendingVolumes: {},     // トラック番号(number) -> 音量パーセント（未送信分）
-  pendingSources: {},     // トラック番号(number) -> soundfont | game（未送信分）
-  patchTimer: null,
-  patchPromise: null,     // 送信中の設定PATCH。試聴開始時の競合を防ぐ。
   transformPatchTimer: null, // 全体の速度・ピッチ（PATCH /api/session/transform）用のデバウンス。
   transformPatchPromise: null,
   downloadFilenamePatchTimer: null, // ダウンロードファイル名（PATCH /api/session/filename）用のデバウンス。
@@ -162,7 +159,6 @@ const state = {
   soloTrackIndex: null,     // ソロ試聴中のトラック番号（無ければnull）
   soloVolumeSnapshot: null, // ソロ開始直前の全トラック音量 { トラック番号: パーセント }。解除時に戻す。
   soloOperation: null,      // ソロ開始・解除中のPromise。同時クリックによる状態競合を防ぐ。
-  trackSort: { key: "index", direction: "asc" },
   hideEmptyTracks: true, // ノート数0のトラックを一覧から隠すか（#hide-empty-tracksチェックボックスの状態）。設定として永続化する。
   trackRenderId: 0,
   pianoroll: null,
@@ -232,6 +228,18 @@ const state = {
   // 参照）。複数の変更が重なった場合に備え、trueは反映するまでOR蓄積する。
   pendingPianorollNeedsRedraw: false,
 };
+
+const trackListController = createTrackListController({
+  locale: uiLang,
+  getTrackRole: (trackIndex) => state.trackRoles[trackIndex] || "",
+  isRoleSortActive: () => Boolean(state.ensemblePresetId),
+  onSortChange: () => renderTrackList(),
+});
+
+const trackEditController = createTrackEditController({
+  commit: commitTrackEdits,
+  debounceMs: RENDER_DEBOUNCE_DISCRETE_MS,
+});
 
 // --- A/Bクロスフェード再生（player-a / player-b） ---
 // 試聴用<audio>は2枚あり、state.activePlayerIdが指す一方だけが「現在の再生源」。
@@ -1304,7 +1312,7 @@ async function buildTrackRow(track, rowState = state) {
     // （onVolumeChange、ひいてはPATCH成功後のrenderTrackList()）はchange
     // （ドラッグ確定＝mouseup、またはキーボード操作の確定）にのみ委ねる。
     // input発火のたびにonVolumeChangeを呼ぶと、ドラッグ中に200msデバウンスが
-    // 満了してflushPendingTrackSettings()が走り、renderTrackList()がtbody
+    // 満了してtrackEditController.flush()が走り、renderTrackList()がtbody
     // 全体を作り直してしまう ― ドラッグ対象のslider要素自体がDOMから消え、
     // ブラウザのポインタキャプチャが失われてドラッグが強制終了してしまうため。
     slider.addEventListener("input", () => {
@@ -1378,9 +1386,9 @@ async function buildTrackRow(track, rowState = state) {
 // 他トラックがそのまま音量0でサーバー側に残ってしまい、次に同じ🎧を押した
 // ときに「今の（既にミュート済みの）音量」を新しい戻し先として上書き保存
 // してしまい、元の音量が永久に失われる。そこで、他トラックの音量を
-// pendingVolumesへスナップショットの値で積んでおき、今回の操作（PATCH）に
+// trackEditControllerへスナップショットの値で積んでおき、今回の操作（PATCH）に
 // 相乗りする形で元に戻す。今操作しているトラック自身の値は呼び出し元が
-// この直後に上書きするので、既にpendingVolumesにある値は上書きしない。
+// この直後に上書きするので、既に保留中の値は上書きしない。
 function clearSoloStateIfActive() {
   const snapshot = state.soloVolumeSnapshot;
   state.soloTrackIndex = null;
@@ -1391,30 +1399,31 @@ function clearSoloStateIfActive() {
   if (!snapshot) return;
   for (const [trackIndexKey, volumePercent] of Object.entries(snapshot)) {
     const trackIndex = Number(trackIndexKey);
-    if (!(trackIndex in state.pendingVolumes)) state.pendingVolumes[trackIndex] = volumePercent;
+    if (!trackEditController.hasPendingVolume(trackIndex)) {
+      trackEditController.queueVolume(trackIndex, volumePercent);
+    }
   }
 }
 
 function onProgramChange(trackIndex, value) {
   clearSoloStateIfActive();
-  state.pendingAssignments[trackIndex] = value === KEEP_ORIGINAL ? null : Number(value);
+  trackEditController.queueAssignment(
+    trackIndex, value === KEEP_ORIGINAL ? null : Number(value)
+  );
   if (value !== KEEP_ORIGINAL) recordProgramUsage(Number(value));
-  clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
+  trackEditController.scheduleFlush();
 }
 
 function onVolumeChange(trackIndex, volumePercent) {
   clearSoloStateIfActive();
-  state.pendingVolumes[trackIndex] = volumePercent;
-  clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
+  trackEditController.queueVolume(trackIndex, volumePercent);
+  trackEditController.scheduleFlush();
 }
 
 function onSourceChange(trackIndex, source) {
   clearSoloStateIfActive();
-  state.pendingSources[trackIndex] = source;
-  clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
+  trackEditController.queueSource(trackIndex, source);
+  trackEditController.scheduleFlush();
 }
 
 function captureEnsemblePresetSnapshot() {
@@ -1434,9 +1443,9 @@ function queueTrackRoleAssignment(trackIndex, roleId) {
   const program = preset.programs[roleId];
   if (program === undefined) return;
   clearSoloStateIfActive();
-  state.pendingAssignments[trackIndex] = program;
+  trackEditController.queueAssignment(trackIndex, program);
   if (track.availableSources.includes("soundfont")) {
-    state.pendingSources[trackIndex] = "soundfont";
+    trackEditController.queueSource(trackIndex, "soundfont");
   }
 }
 
@@ -1448,12 +1457,13 @@ function onTrackRoleChange(trackIndex, roleId) {
     delete state.trackRoles[trackIndex];
     const snapshot = state.ensemblePresetSnapshot;
     if (snapshot) {
-      state.pendingAssignments[trackIndex] = snapshot.assignments[trackIndex] ?? null;
-      state.pendingSources[trackIndex] = snapshot.sources[trackIndex];
+      trackEditController.queueEdits({
+        assignments: { [trackIndex]: snapshot.assignments[trackIndex] ?? null },
+        sources: { [trackIndex]: snapshot.sources[trackIndex] },
+      });
     }
   }
-  clearTimeout(state.patchTimer);
-  state.patchTimer = setTimeout(flushPendingTrackSettings, RENDER_DEBOUNCE_DISCRETE_MS);
+  trackEditController.scheduleFlush();
 }
 
 function pianorollTrackStatistics(track) {
@@ -1539,8 +1549,8 @@ function updateEnsemblePresetControls() {
 
 async function handleEnsemblePresetChange(event) {
   const nextPresetId = event.target.value || null;
-  clearTimeout(state.patchTimer);
-  if (!(await flushPendingTrackSettings())) {
+  trackEditController.cancelScheduledFlush();
+  if (!(await trackEditController.flush())) {
     updateEnsemblePresetControls();
     return false;
   }
@@ -1549,13 +1559,15 @@ async function handleEnsemblePresetChange(event) {
     const snapshot = state.ensemblePresetSnapshot;
     state.ensemblePresetId = null;
     if (snapshot) {
-      Object.assign(state.pendingAssignments, snapshot.assignments);
-      Object.assign(state.pendingSources, snapshot.sources);
+      trackEditController.queueEdits({
+        assignments: snapshot.assignments,
+        sources: snapshot.sources,
+      });
     }
     state.ensemblePresetSnapshot = null;
     updateEnsemblePresetControls();
     if (snapshot) {
-      const didRestore = await flushPendingTrackSettings();
+      const didRestore = await trackEditController.flush();
       if (!didRestore) {
         state.ensemblePresetId = previousPresetId;
         state.ensemblePresetSnapshot = snapshot;
@@ -1584,8 +1596,8 @@ async function handleEnsemblePresetChange(event) {
     queueTrackRoleAssignment(Number(trackIndex), roleId);
   }
   updateEnsemblePresetControls();
-  if (Object.keys(state.pendingAssignments).length > 0 || Object.keys(state.pendingSources).length > 0) {
-    return flushPendingTrackSettings();
+  if (trackEditController.hasPending()) {
+    return trackEditController.flush();
   }
   await renderTrackList();
   return true;
@@ -1662,8 +1674,8 @@ async function applyActiveEnsemblePreset() {
   for (const [trackIndex, roleId] of Object.entries(state.trackRoles)) {
     queueTrackRoleAssignment(Number(trackIndex), roleId);
   }
-  if (Object.keys(state.pendingAssignments).length > 0 || Object.keys(state.pendingSources).length > 0) {
-    await flushPendingTrackSettings();
+  if (trackEditController.hasPending()) {
+    await trackEditController.flush();
   } else {
     await renderTrackList();
   }
@@ -1754,8 +1766,8 @@ function collectCurrentVolumes() {
 }
 
 async function enterSolo(trackIndex) {
-  clearTimeout(state.patchTimer);
-  if (!(await flushPendingTrackSettings())) return;
+  trackEditController.cancelScheduledFlush();
+  if (!(await trackEditController.flush())) return;
 
   // 既にソロ中の別トラックへ切り替える場合は、最初にソロへ入る前の
   // スナップショットを保持し続ける（切り替えるたびに上書きしない）。
@@ -1833,95 +1845,30 @@ async function exitSolo() {
   }
 }
 
-async function flushPendingTrackSettings() {
-  if (state.patchPromise) {
-    const activePatchSucceeded = await state.patchPromise;
-    if (!activePatchSucceeded) return false;
-    return flushPendingTrackSettings();
+async function commitTrackEdits({ assignments, volumes, sources }) {
+  try {
+    const response = await apiFetch("/api/session/tracks", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assignments, volumes, sources }),
+    });
+    state.session = await response.json();
+    // レンダー要求（markRenderStale→scheduleAutoRender）を先に発行する。
+    // renderTrackList()のDOM再構築（128音色×トラック数のfragment複製）と
+    // redrawPianorollStatic()を先に済ませてから発行すると、その同期処理の
+    // 分だけレンダー開始が後ろへずれる。setTimeoutのコールバック自体は
+    // どのみちこの関数の実行が一段落するまで走れないが、先に登録しておく
+    // ことでイベントループがこの後の await の合間に一足早く拾えるように
+    // なる。
+    markRenderStale();
+    scheduleAutoRender();
+    await renderTrackList();
+    redrawPianorollStatic();
+    return true;
+  } catch (error) {
+    showStatus(error.message, "error");
+    return false;
   }
-
-  const assignments = state.pendingAssignments;
-  const volumes = state.pendingVolumes;
-  const sources = state.pendingSources;
-  state.pendingAssignments = {};
-  state.pendingVolumes = {};
-  state.pendingSources = {};
-  if (Object.keys(assignments).length === 0 && Object.keys(volumes).length === 0 && Object.keys(sources).length === 0) return true;
-
-  const patchPromise = (async () => {
-    try {
-      const response = await apiFetch("/api/session/tracks", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ assignments, volumes, sources }),
-      });
-      state.session = await response.json();
-      // レンダー要求（markRenderStale→scheduleAutoRender）を先に発行する。
-      // renderTrackList()のDOM再構築（128音色×トラック数のfragment複製）と
-      // redrawPianorollStatic()を先に済ませてから発行すると、その同期処理の
-      // 分だけレンダー開始が後ろへずれる。setTimeoutのコールバック自体は
-      // どのみちこの関数の実行が一段落するまで走れないが、先に登録しておく
-      // ことでイベントループがこの後の await の合間に一足早く拾えるように
-      // なる。
-      markRenderStale();
-      scheduleAutoRender();
-      await renderTrackList();
-      redrawPianorollStatic();
-      return true;
-    } catch (error) {
-      showStatus(error.message, "error");
-      return false;
-    }
-  })();
-  state.patchPromise = patchPromise;
-  const didSucceed = await patchPromise;
-  if (state.patchPromise === patchPromise) state.patchPromise = null;
-  if (!didSucceed) return false;
-  return flushPendingTrackSettings();
-}
-
-function trackSortValue(track, key) {
-  if (key === "index") return track.index;
-  if (key === "channel") return track.channels[0] ?? null;
-  if (key === "source") return track.source || "";
-  if (key === "instrument" && state.ensemblePresetId) return state.trackRoles[track.index] || "";
-  if (key === "instrument") return track.assignedProgram ?? track.currentProgram ?? -1;
-  if (key === "volume") return track.volumePercent;
-  return track.index;
-}
-
-function compareTrackValues(left, right, key) {
-  const leftValue = trackSortValue(left, key);
-  const rightValue = trackSortValue(right, key);
-  if (key === "channel" && (leftValue === null || rightValue === null)) {
-    if (leftValue === rightValue) return 0;
-    return leftValue === null ? 1 : -1;
-  }
-  if (typeof leftValue === "string") return leftValue.localeCompare(rightValue, uiLang);
-  return leftValue - rightValue;
-}
-
-function sortedTracks(tracks) {
-  const direction = state.trackSort.direction === "asc" ? 1 : -1;
-  return tracks.slice().sort((left, right) => {
-    const comparison = compareTrackValues(left, right, state.trackSort.key);
-    if (state.trackSort.key === "channel" && (
-      trackSortValue(left, "channel") === null || trackSortValue(right, "channel") === null
-    )) return comparison;
-    return comparison * direction;
-  });
-}
-
-function updateSortHeaders() {
-  document.querySelectorAll(".track-table th[data-sort-key]").forEach((header) => {
-    const isActive = header.dataset.sortKey === state.trackSort.key;
-    if (isActive) header.setAttribute("aria-sort", state.trackSort.direction === "asc" ? "ascending" : "descending");
-    else header.removeAttribute("aria-sort");
-    const indicator = header.querySelector(".sort-indicator");
-    if (indicator) indicator.textContent = isActive
-      ? (state.trackSort.direction === "asc" ? "▲" : "▼")
-      : "";
-  });
 }
 
 async function renderTrackList() {
@@ -1929,7 +1876,7 @@ async function renderTrackList() {
   const visibleTracks = state.session
     ? state.session.tracks.filter((track) => !state.hideEmptyTracks || track.noteCount > 0)
     : [];
-  const tracks = sortedTracks(visibleTracks);
+  const tracks = trackListController.sortTracks(visibleTracks);
   const fragment = document.createDocumentFragment();
   const rowState = { instrumentRows: [], trackRows: [] };
   for (const track of tracks) fragment.appendChild(await buildTrackRow(track, rowState));
@@ -1938,21 +1885,7 @@ async function renderTrackList() {
   state.trackRows = rowState.trackRows;
   $("#track-list").replaceChildren(fragment);
   $("#tracks-empty").hidden = tracks.length > 0;
-  updateSortHeaders();
-}
-
-function setupTrackSorting() {
-  document.querySelectorAll(".sort-button").forEach((button) => {
-    button.addEventListener("click", () => {
-      const key = button.dataset.sortKey;
-      if (state.trackSort.key === key) {
-        state.trackSort.direction = state.trackSort.direction === "asc" ? "desc" : "asc";
-      } else {
-        state.trackSort = { key, direction: "asc" };
-      }
-      renderTrackList();
-    });
-  });
+  trackListController.updateHeaders();
 }
 
 function cssColor(name, fallback) {
@@ -2967,7 +2900,7 @@ function stepTransformInput(inputId, direction) {
 }
 
 // #transform-speed/#transform-transposeの現在値をPATCH /api/session/transformへ送る。
-// トラック設定（flushPendingTrackSettings）と違い値は2つだけなので、保留マージは
+// トラック設定（trackEditController）と違い値は2つだけなので、保留マージは
 // せず入力欄の現在値をそのまま毎回送る。
 async function flushTransform() {
   if (state.transformPatchPromise) return state.transformPatchPromise;
@@ -3595,8 +3528,8 @@ async function togglePlayback() {
     player.pause();
     return;
   }
-  clearTimeout(state.patchTimer);
-  if (!(await flushPendingTrackSettings())) return;
+  trackEditController.cancelScheduledFlush();
+  if (!(await trackEditController.flush())) return;
   if (!(await flushPendingTransform())) return;
   try {
     const preparedPlayer = await ensureLatestRender();
@@ -3975,7 +3908,7 @@ async function handleSaveProject() {
   if (!state.session || state.session.tracks.length === 0) return;
   setBusy(true, t("プロジェクトを保存中…"));
   try {
-    const didSaveTracks = await flushPendingTrackSettings();
+    const didSaveTracks = await trackEditController.flush();
     const didSaveTransform = await flushPendingTransform();
     const didSaveFilename = await flushPendingDownloadFilename();
     if (!didSaveTracks || !didSaveTransform || !didSaveFilename) return;
@@ -4475,7 +4408,7 @@ async function init() {
   setupOpenDialog();
   setupFullscreenLayout();
   setupEnsemblePresets();
-  setupTrackSorting();
+  trackListController.connect();
   setupSettingsDialog();
   $("#hide-empty-tracks").addEventListener("change", (event) => {
     state.hideEmptyTracks = event.target.checked;
