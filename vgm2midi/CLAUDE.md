@@ -1732,25 +1732,95 @@ single-chip move, checked in isolation before starting the next chip.
 `midi-converter.ts` is 3,385 lines as of this writing, down from the
 original 6,181 (45% reduction) across all thirteen extractions so far.
 
-Still remaining, and last: YM2612/YM2203/YM2608 together. Unlike AY8910's
-SSG engine — a genuinely separable shared component with a clean parameter
-interface already in place — the OPN family's Ch3 Special/CSM/algorithm-aware
-pitch-scale machinery is woven through the three chips' own FM handlers
-rather than factored into one already-parametrized function: `opnPitchScale()`/
-`fmPitchScale()`/`opnCarrierVelocity()`/`opnCarrierExpression()`/
-`recordFMTimbreEvent()`/`updateKeyBoundFMPitch()` (already `public` from the
-`event-output.ts` pass, and reused directly by every extraction above) are
-the easy, already-parametrized part; the OPN Ch3 Special/CSM timer
-dispatch (`opnCh3Context()`, `handleOPNCh3ModeWrite()`,
-`handleOPNCh3SpecialKeyWrite()`, `updateOPNCsmTimer()`/`updateOPNCsmTimerRegister()`,
-`advanceCSMTimers()`'s OPN half, `emitOPNCsmPulse()`) and the FM
-register-write handlers themselves (`handleYM2612Write()`, `handleYM2203Write()`,
-`handleYM2608Write()`, plus DAC/rhythm/ADPCM-B sub-handlers) are not. Whether
-this becomes one `chips/opn.ts` for all three chips (mirroring `ssg.ts`'s
-"one engine, several thin per-chip entry points" shape) or three separate
-files sharing an `opn-shared.ts` core is a real design decision to make
-before touching code, not a mechanical move — it is deliberately left as
-its own dedicated future pass.
+- **`chips/opn-shared.ts`** + **`chips/ym2612.ts`** + **`chips/ym2203.ts`** +
+  **`chips/ym2608.ts`**: the last and largest pass, extracting the OPN
+  family (YM2612/YM2203/YM2608) — 37 functions moved in one sweep, ~1,000
+  lines. Unlike AY8910's SSG engine (already one clean, already-parametrized
+  function before extraction), the OPN Ch3 Special/CSM/FM-timbre machinery
+  was woven through the three chips' own handlers and had to be *pulled
+  apart* rather than just moved as-is — but on inspection, most of it turned
+  out to already take `chip`/`keyPrefix`/`context: OPNCh3Context` as plain
+  parameters (the same shape `handleSSGWrite()` and `opnCh3Context()` itself
+  already had), so the design question resolved the same way AY8910's did:
+  **`chips/opn-shared.ts`** holds the genuinely 3-chip-shared engine —
+  `handleOPNPanWrite()`/`handleOPNTimbreWrite()`/`recordOPNTimbreEvents()`
+  (ordinary FM channel writes) and the whole Ch3 Special/unison-detection
+  cluster (`handleOPNCh3ModeWrite()`/`updateOPNCsmTimer()`/
+  `updateOPNCsmTimerRegister()`/`handleOPNCh3SpecialKeyWrite()`/
+  `trackOPNCh3UnisonAttack()`/`handleOPNCh3SpecialOperators()`/
+  `handleOPNCh3SpecialPercussion()`/`opnCh3SpecialPercussionNote()`/
+  `opnCh3OperatorFrequency()`/`opnCh3PercussionNoteForCarrierNotes()`/
+  `handleOPNCh3SpecialFrequencyWrite()`/`updateActiveOPNCh3SpecialPitches()`).
+  **`chips/ym2612.ts`**/**`chips/ym2203.ts`**/**`chips/ym2608.ts`** each hold
+  only that one chip's own register-map dispatch (`handleYM2612Write()`/
+  `handleYM2203Write()`/`handleYM2608Write()`) and genuinely chip-exclusive
+  sub-handlers — YM2612's DAC pair (`handleYM2612D*`/`stopYM2612D*`),
+  YM2203's/YM2608's own key/frequency/prescaler handlers, and YM2608's
+  rhythm and ADPCM-B sections, which no other chip touches.
+
+  What stayed in `midi-converter.ts` (all widened to `public`, none moved)
+  is exactly the machinery that is *ticked or read from outside any single
+  chip's write handler* — the same criterion `event-output.ts`'s
+  `resolveDescriptor()`/`getTrack()` and `chips/ym2151.ts`'s CSM trio
+  established: `opnCh3Context()`/`opnCh3StateKey()`/
+  `initializeOPNCh3SpecialChannels()` (constructor-time setup),
+  `opnCh3ParentStateForSourceKey()`/`opnCh3ModeForDescriptor()`/
+  `fmTimbreForDescriptor()`/`recordFMTimbreEvent()` (the sidecar/dispatch
+  chain `getTrack()` and every FM chip's timbre recording funnel through),
+  `opnCh3DisplayNameForKey()`/`opnCh3SpecialTrackName()`/
+  `opnCh3PercussionTrackName()` (`getTrack()`'s naming), `isOPNCh3SpecialMode()`,
+  `opnCsmTimer()`/`opnCsmPeriodSamples()`/`opnClockRate()`, `emitOPNCsmPulse()`
+  (called from `advanceCSMTimers()`, the OPN-and-OPM-shared Timer A ticker
+  driven straight from `convert()`'s own main loop), and
+  `appendOPNCh3UnisonWarnings()` (also called from `convert()`, reading the
+  `opnCh3UnisonStats` map that the now-moved `trackOPNCh3UnisonAttack()`
+  writes into via `host.`). Three more reverse imports (`midi-converter.ts`
+  importing *from* a `chips/` file, the same direction `chips/ym2151.ts`
+  first established for `emitOPMCsmPulse()`) were needed here:
+  `emitOPNCsmPulse()` calls the now-moved `handleOPNCh3SpecialKeyWrite()`,
+  and `stopAllPCMVoices()` (the EOF cleanup driven from `convert()`) calls
+  the now-moved `stopYM2612DACVoice()`/`stopYM2612DirectDACVoice()`/
+  `stopYM2608ADPCMBVoice()`.
+
+  Because this pass moved 37 functions interleaved with ~15 functions that
+  stay, a straightforward contiguous line-range deletion (the approach used
+  for every smaller extraction above) was not viable — a scripted removal
+  keyed on function name, using a two-phase brace matcher (skip braces
+  while still inside the parameter list's parens, since TS parameter-type
+  object literals like `Map<string, { note: number; ... }>` contain
+  self-balancing braces that a naive single-phase counter mismatches; only
+  start counting body braces once the parameter list's own closing `)` is
+  reached) located and removed each named method by its true body span.
+  The first version of that script used single-phase counting and produced
+  a syntactically corrupt file — caught immediately by `tsc` (dozens of
+  parse errors) before any test ran, at which point `git checkout --
+  vgm2midi/src/midi-converter.ts` cleanly discarded the bad edit (the prior
+  AY8910/SSG extraction was already a separate, real commit), the
+  `public`/`export` visibility changes were reapplied, and the two-phase
+  script replaced the broken one. This is the reason every extraction
+  pass above (and this one) commits `dist/` alongside `src/` and is
+  verified with a full `tsc` + `npm test` pass before moving to the next
+  chip — a script-driven mechanical move at this line count is exactly
+  the kind of change where "it compiled and all 211 tests still pass" is
+  doing real, load-bearing verification work, not a formality.
+
+`midi-converter.ts` is 2,374 lines as of this writing, down from the
+original 6,181 — a 62% reduction — across all seventeen extractions. This
+completes the original four-category refactor plan in full: MIDI math
+(`midi-math.ts`), PCM range analysis (`pcm-analysis.ts`), event output
+(`event-output.ts`), and now every PSG/FM/PCM chip handler, twelve chip
+families in total under `src/chips/` (`sn76489`, `huc6280`, `gbdmg`,
+`ym2413`, `opl`, `segapcm`, `c140`, `ym2151`, `ssg`+`ay8910`,
+`opn-shared`+`ym2612`+`ym2203`+`ym2608`). What remains in
+`midi-converter.ts` is, by design, dispatch (`convert()`'s command loop,
+`withChipInstance()`), lifecycle (the constructor and `convert()`'s
+per-run reset block), export (`exportToFile()`/`exportTrackMetadata()`/
+`buildMidiFile()`), and the handful of genuinely cross-chip shared
+services every extraction above needed to call back into (descriptor
+resolution, track/timbre sidecar bookkeeping, CSM Timer A ticking, generic
+PCM-voice bookkeeping) — matching the original design goal stated at the
+top of this refactor: "MidiConverter should be left with only dispatch,
+lifecycle, and export."
 
 ## Out of scope (for now)
 

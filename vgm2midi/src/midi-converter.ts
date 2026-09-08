@@ -4,10 +4,7 @@ import { CLOCK_MASK } from './vgm-chip-metadata';
 import {
   MIDI_PPQ,
   greatestCommonDivisor,
-  frequencyToMidiNote,
   frequencyToExactMidi,
-  ym2612FrequencyToHz,
-  ym2203FrequencyToHz,
   samplesToTicks,
 } from './midi-math';
 import {
@@ -16,20 +13,16 @@ import {
   PCMAnalysisMetadata,
   PCMTimbreMetadata,
   pcmTimbreForAnalysis,
-  ym2608ADPCMBAnalysis,
   segaPCMAnalysisForTrack,
 } from './pcm-analysis';
 import {
-  addExpression,
   addPan,
   addPitchBend,
-  noteOnPercussion,
   noteOnPCMPercussion,
   noteOffPCMPercussion,
   pcmNoteForSample,
   noteOn,
   noteOff,
-  updateNotePitch,
   getNoteFrequency,
 } from './event-output';
 import { handleGameGearStereo, handlePSGWrite } from './chips/sn76489';
@@ -41,7 +34,10 @@ import { handleSegaPCMWrite } from './chips/segapcm';
 import { handleC140Write } from './chips/c140';
 import { handleYM2151Write, syncYM2151ToneState, syncYM2151NoiseState } from './chips/ym2151';
 import { handleAY8910Write } from './chips/ay8910';
-import { handleSSGWrite } from './chips/ssg';
+import { handleOPNCh3SpecialKeyWrite } from './chips/opn-shared';
+import { handleYM2612Write, handleYM2612DACSeek, handleYM2612DACWrite, stopYM2612DACVoice, stopYM2612DirectDACVoice } from './chips/ym2612';
+import { handleYM2203Write } from './chips/ym2203';
+import { handleYM2608Write, stopYM2608ADPCMBVoice } from './chips/ym2608';
 
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
@@ -58,23 +54,15 @@ const YM2413_GM_PROGRAM_BY_PATCH = [
   GM_PROGRAM_DRAWBAR_ORGAN, 60, GM_PROGRAM_LEAD_1_SQUARE, 6, 11, 38, 32, 27,
 ] as const;
 const GM_PERCUSSION_CHANNEL = 10;
-// Register $2A drives the DAC one byte at a time with no seek/address information (unlike
-// the $E0-seek + $80-8F stream path), so there is no sample identity to key retriggering
-// off. Consecutive $2A writes are instead grouped into one note by elapsed-time gap: a
-// non-optimized VGM rip drives $2A every few samples while a sample plays, so 882 samples
-// (20ms at the VGM 44.1kHz timeline) reliably separates one drum hit from the next without
-// splitting a single sample's steady stream of writes.
-const YM2612_DAC_DIRECT_GAP_SAMPLES = 882;
 export const YM2151_FM_PITCH_BEND_RANGE = 96;
-const YM2203_FM_PITCH_BEND_RANGE = 96;
-const YM2608_FM_PITCH_BEND_RANGE = 96;
+export const YM2203_FM_PITCH_BEND_RANGE = 96;
+export const YM2608_FM_PITCH_BEND_RANGE = 96;
 export const OPL_FM_PITCH_BEND_RANGE = 96;
 export const CHIP_PITCH_BEND_RANGE = 96;
 // CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
 // MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
 // オーバーフローは1回へ集約し、出力ノートは1 tickだけ保持する。
 const CSM_MIDI_PULSE_TICKS = 1;
-const YM2608_RHYTHM_NOTES = [36, 38, 49, 42, 45, 37] as const;
 const YM2608_RHYTHM_NAMES = [
   'Bass Drum',
   'Snare Drum',
@@ -99,15 +87,10 @@ const YM2608_RHYTHM_NAMES = [
 // the same reference confirmed against Nuked-OPN2's OPN2_PhaseGenerate() slot switch
 // (fnum_3ch[1]=Op1, fnum_3ch[0]=Op3, fnum_3ch[2]=Op2) and plutiedev.com's YM2612 register
 // reference. Offset = reg - 0xA8 (or reg - 0xAC); value = 0-based logical operator index
-// matching keyOnMask's own bit0=Op1..bit3=Op4 convention.
-const OPN_CH3_SPECIAL_OPERATOR_BY_OFFSET = [2, 0, 1] as const; // offset 0,1,2 -> Op3,Op1,Op2
+// matching keyOnMask's own bit0=Op1..bit3=Op4 convention. (The offset->operator table
+// itself, OPN_CH3_SPECIAL_OPERATOR_BY_OFFSET, moved to chips/opn-shared.ts alongside
+// handleOPNCh3SpecialFrequencyWrite(), its only user.)
 
-// Two operators keyed within this many semitones of each other on the same Ch3 Special
-// attack are treated as playing in unison (one melodic voice reinforced across multiple
-// operators), not as independently-pitched voices. 1 semitone tolerates the small
-// fractional rounding differences real FM patches show between operators tuned to the
-// same note (see appendOPNCh3UnisonWarnings()).
-const OPN_CH3_UNISON_SEMITONE_THRESHOLD = 1;
 // A chip instance needs at least this many qualifying (2+ audible operator) attacks
 // before its unison ratio is judged meaningful — a handful of coincidental attacks
 // early in a file should not trigger a warning.
@@ -195,7 +178,7 @@ interface OPNOperatorPath {
 
 // Logical operator order is O1, O2, O3, O4. Each entry describes the operators
 // whose frequencies can reach one audible carrier for the corresponding algorithm.
-const OPN_OPERATOR_PATHS: readonly (readonly OPNOperatorPath[])[] = [
+export const OPN_OPERATOR_PATHS: readonly (readonly OPNOperatorPath[])[] = [
   [{ carrier: 3, operators: [0, 1, 2, 3] }],
   [{ carrier: 3, operators: [0, 1, 2, 3] }],
   [{ carrier: 3, operators: [0, 1, 2, 3] }],
@@ -422,9 +405,9 @@ interface StreamRange {
 }
 interface ChipInstanceState { channels: Map<string, ChannelState>; scalars: Record<string, unknown>; }
 
-type OPNCh3Chip = 'YM2203' | 'YM2608' | 'YM2612';
+export type OPNCh3Chip = 'YM2203' | 'YM2608' | 'YM2612';
 
-interface OPNCh3Context {
+export interface OPNCh3Context {
   chip: OPNCh3Chip;
   instance: number;
   stateKey: string;
@@ -433,7 +416,7 @@ interface OPNCh3Context {
   percussionPrefix: string;
 }
 
-interface CSMTimerState {
+export interface CSMTimerState {
   timerHigh: number;
   timerLow: number;
   isRunning: boolean;
@@ -470,30 +453,30 @@ export class MidiConverter {
   segaPCMActiveVoices: Array<PCMVoiceNote | undefined> = new Array(16);
   c140ActiveVoices: Array<PCMVoiceNote | undefined> = new Array(24);
   pcmSampleNotes: Map<string, number> = new Map();
-  private isYM2612DACEnabled = false;
-  private ym2612DACPendingAddress?: number;
-  private ym2612DACActiveVoice?: PCMVoiceNote;
-  private ym2612DirectDACActiveVoice?: PCMVoiceNote;
-  private ym2612DirectDACLastWriteTime?: number;
+  isYM2612DACEnabled = false;
+  ym2612DACPendingAddress?: number;
+  ym2612DACActiveVoice?: PCMVoiceNote;
+  ym2612DirectDACActiveVoice?: PCMVoiceNote;
+  ym2612DirectDACLastWriteTime?: number;
   // Ch3 mode and active collapsed-percussion track are isolated per OPN chip instance.
-  private opnCh3SpecialModes: Map<string, boolean> = new Map();
-  private opnCh3PercussionActiveKeys: Map<string, string> = new Map();
+  opnCh3SpecialModes: Map<string, boolean> = new Map();
+  opnCh3PercussionActiveKeys: Map<string, string> = new Map();
   // Counts how often a Ch3 Special attack keys on 2+ audible operators within
   // OPN_CH3_UNISON_SEMITONE_THRESHOLD of each other, per OPN chip instance — a source
   // driving every operator at (near-)identical pitch is playing one melodic voice in
   // unison, not four independently-pitched voices or a composite drum patch. See
   // appendOPNCh3UnisonWarnings() for how this becomes a user-facing warning.
-  private opnCh3UnisonStats: Map<string, { totalAttacks: number; unisonAttacks: number }> = new Map();
+  opnCh3UnisonStats: Map<string, { totalAttacks: number; unisonAttacks: number }> = new Map();
   private opnCsmTimers: Map<string, CSMTimerState> = new Map();
   private opmCsmTimers: Map<number, CSMTimerState> = new Map();
   oplRhythmModes: Map<string, boolean> = new Map();
   oplRhythmControlBytes: Map<string, number> = new Map();
   ym2203Prescalers = [6, 6];
   ym2608Prescalers = [6, 6];
-  private ym2608RhythmTotalLevels = [0, 0];
-  private ym2608RhythmInstrumentLevels = [new Array(6).fill(0), new Array(6).fill(0)];
-  private ym2608ADPCMRegisters = [new Uint8Array(0x11), new Uint8Array(0x11)];
-  private ym2608ADPCMActiveVoices: Array<PCMVoiceNote | undefined> = new Array(2);
+  ym2608RhythmTotalLevels = [0, 0];
+  ym2608RhythmInstrumentLevels = [new Array(6).fill(0), new Array(6).fill(0)];
+  ym2608ADPCMRegisters = [new Uint8Array(0x11), new Uint8Array(0x11)];
+  ym2608ADPCMActiveVoices: Array<PCMVoiceNote | undefined> = new Array(2);
   // True while YM2413 register $0E bit 5 selects rhythm mode. See the YM2413_RHYTHM_*
   // constants above for the register/percussion mapping.
   ym2413RhythmMode = false;
@@ -885,7 +868,7 @@ export class MidiConverter {
     return chip === 'YM2612' ? lowerChip : `${lowerChip}_${instance}`;
   }
 
-  private opnCh3Context(chip: OPNCh3Chip, instance = 0): OPNCh3Context {
+  opnCh3Context(chip: OPNCh3Chip, instance = 0): OPNCh3Context {
     const stateKey = this.opnCh3StateKey(chip, instance);
     const parentKey = chip === 'YM2612' ? 'ym2612_2' : `${stateKey}_fm_2`;
     const operatorKeys: [string, string, string, string] = [
@@ -1155,29 +1138,6 @@ export class MidiConverter {
   }
 
   /** OPN Ch3 Special時は親と発音中のオペレータ別トラックをまとめて更新する。 */
-  private recordOPNTimbreEvents(
-    keyPrefix: string,
-    channel: number,
-    currentTime: number
-  ): void {
-    const parentKey = keyPrefix === 'ym2612'
-      ? `${keyPrefix}_${channel}`
-      : `${keyPrefix}_fm_${channel}`;
-    this.recordFMTimbreEvent(parentKey, currentTime, 'opn-timbre');
-    if (channel !== 2) return;
-
-    const match = /^(ym2203|ym2608)_(\d+)$/.exec(keyPrefix);
-    const context = keyPrefix === 'ym2612'
-      ? this.opnCh3Context('YM2612')
-      : match
-        ? this.opnCh3Context(match[1] as OPNCh3Chip, Number(match[2]))
-        : undefined;
-    if (!context || !this.isOPNCh3SpecialMode(context)) return;
-    for (const key of context.operatorKeys) {
-      if (key !== parentKey) this.recordFMTimbreEvent(key, currentTime, 'opn-timbre');
-    }
-  }
-
   /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
   private pcmMetadataForTrack(state: TrackState): PCMTrackMetadata | undefined {
     if (state.pcmEvents === undefined) return undefined;
@@ -1561,10 +1521,10 @@ export class MidiConverter {
         advanceGBDMGFrameSequencers(this, currentTime, activeNotes);
       }
       else if (cmd.type === 'pcm_seek' && cmd.chip === 'YM2612') {
-        this.handleYM2612DACSeek(cmd);
+        handleYM2612DACSeek(this, cmd);
       }
       else if (cmd.type === 'pcm_write' && cmd.chip === 'YM2612') {
-        this.handleYM2612DACWrite(currentTime);
+        handleYM2612DACWrite(this, currentTime);
         const samples = cmd.samples ?? 0;
         this.advanceCSMTimers(currentTime, currentTime + samples, activeNotes);
         currentTime += samples;
@@ -1590,9 +1550,9 @@ export class MidiConverter {
       else if (cmd.type === 'chip_write') {
         this.withChipInstance(cmd.chip ?? 'unknown', cmd.instance ?? 0, () => {
           // Handle other chips.  Every handler sees only the selected instance's state.
-          if (cmd.chip === 'YM2612') this.handleYM2612Write(cmd, currentTime, activeNotes, i);
-          else if (cmd.chip === 'YM2203') this.handleYM2203Write(cmd, currentTime, activeNotes, i);
-          else if (cmd.chip === 'YM2608') this.handleYM2608Write(cmd, currentTime, activeNotes, i);
+          if (cmd.chip === 'YM2612') handleYM2612Write(this, cmd, currentTime, activeNotes, i);
+          else if (cmd.chip === 'YM2203') handleYM2203Write(this, cmd, currentTime, activeNotes, i);
+          else if (cmd.chip === 'YM2608') handleYM2608Write(this, cmd, currentTime, activeNotes, i);
           else if (OPL_CHIPS.includes(cmd.chip as OPLChip)) handleOPLWrite(this, cmd, currentTime, activeNotes, i);
           else if (cmd.chip === 'YM2151') handleYM2151Write(this, cmd, currentTime, activeNotes);
           else if (cmd.chip === 'AY8910') handleAY8910Write(this, cmd, currentTime, activeNotes, i);
@@ -1642,221 +1602,12 @@ export class MidiConverter {
   }
 
 
-  private handleYM2612Write(
-    cmd: VGMCommand,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    cmdIndex: number
-  ): void {
-    if (cmd.register === undefined || cmd.data === undefined || cmd.port === undefined) return;
-
-    const port = cmd.port;
-    const reg = cmd.register;
-    const data = cmd.data;
-    const ch3Context = this.opnCh3Context('YM2612');
-
-    if (this.handleOPNPanWrite('ym2612', port, reg, data, currentTime)) return;
-
-    if (this.handleYM2612TimbreWrite(port, reg, data, currentTime)) {
-      return;
-    }
-
-    if (port === 0 && reg === 0x27) {
-      this.handleOPNCh3ModeWrite(ch3Context, data, currentTime, activeNotes);
-      this.updateOPNCsmTimer('YM2612', cmd.instance ?? 0, data, currentTime, activeNotes);
-      return;
-    }
-
-    if (port === 0 && (reg === 0x24 || reg === 0x25)) {
-      this.updateOPNCsmTimerRegister('YM2612', cmd.instance ?? 0, reg, data);
-      return;
-    }
-
-    if (port === 0 && reg === 0x2B) {
-      this.isYM2612DACEnabled = (data & 0x80) !== 0;
-      if (!this.isYM2612DACEnabled) {
-        this.ym2612DACPendingAddress = undefined;
-        this.stopYM2612DACVoice(currentTime);
-        this.stopYM2612DirectDACVoice(currentTime);
-      }
-      return;
-    }
-
-    // $2A: direct one-byte-at-a-time DAC output (as opposed to the $E0-seek + $80-8F
-    // stream path handled by handleYM2612DACWrite()). Some non-optimized VGM rips drive
-    // the DAC this way for drum samples instead of using the stream commands; without
-    // this branch those writes silently fell through unhandled and produced no notes at
-    // all. See handleYM2612DirectDACWrite() for the grouping heuristic.
-    if (port === 0 && reg === 0x2A) {
-      this.handleYM2612DirectDACWrite(currentTime);
-      return;
-    }
-
-    // Key On/Off (0x28) - Port 0 only? The spec says 0x28 is usually on Port 0 but controls all channels
-    if (port === 0 && reg === 0x28) {
-        // Spec: D0-D2 = Channel (0-2 for Ch1-3, 4-6 for Ch4-6). D4-D7 = Slots.
-        // Wait, standard mapping:
-        // Ch 0-2: 000, 001, 010
-        // Ch 3-5: 100, 101, 110 (Bits 2 is set for Ch 4-6)
-        
-        let channelIndex = -1;
-        if ((data & 0x03) < 3) { // Valid channel bits 0-1
-             if ((data & 0x04) === 0) {
-                 channelIndex = data & 0x03; // Ch 1-3 (0-2)
-             } else {
-                 channelIndex = (data & 0x03) + 3; // Ch 4-6 (3-5)
-             }
-        }
-
-        if (channelIndex === 2 && this.isOPNCh3SpecialMode(ch3Context)) {
-            this.handleOPNCh3SpecialKeyWrite(ch3Context, data, currentTime, activeNotes);
-            return;
-        }
-
-        if (channelIndex !== -1) {
-            const key = `ym2612_${channelIndex}`;
-            const state = this.channels.get(key)!;
-            state.keyOnMask = (data >> 4) & 0x0F;
-            const keyOn = state.keyOnMask !== 0; // Any slot ON
-
-            if (keyOn && !state.active) {
-                state.opnActivePitchScale = this.opnPitchScale(state);
-                state.opnActiveVelocity = this.opnCarrierVelocity(state);
-                state.active = true;
-                noteOn(this, key, channelIndex + 4, currentTime, activeNotes); // offset channel for MIDI
-            } else if (!keyOn && state.active) {
-                state.active = false;
-                noteOff(this, key, channelIndex + 4, currentTime, activeNotes);
-                state.opnActivePitchScale = 1;
-            }
-        }
-        return;
-    }
-
-    // Frequency Registers
-    // A0-A2: F-Num LSB
-    // A4-A6: Block & F-Num MSB
-    let channelOffset = -1;
-    if (reg >= 0xA0 && reg <= 0xA2) {
-        channelOffset = reg - 0xA0; // 0, 1, 2
-    } else if (reg >= 0xA4 && reg <= 0xA6) {
-        channelOffset = reg - 0xA4; // 0, 1, 2
-    }
-
-    if (channelOffset !== -1) {
-        const channelIndex = channelOffset + (port * 3); // Port 0 -> 0-2, Port 1 -> 3-5
-        const key = `ym2612_${channelIndex}`;
-        const state = this.channels.get(key)!;
-
-        if (reg >= 0xA0 && reg <= 0xA2) {
-            // F-Num LSB
-            state.freqLSB = data;
-        } else {
-            // Block & F-Num MSB
-            state.freqMSB = data & 0x07; // Lower 3 bits
-            state.block = (data >> 3) & 0x07; // Bits 3-5
-        }
-
-        // Update full frequency/fnum
-        const oldFreq = state.frequency;
-        state.frequency = ((state.freqMSB || 0) << 8) | (state.freqLSB || 0);
-
-        // If note is active, check for pitch change
-        const otherReg = reg <= 0xA2 ? reg + 4 : reg - 4;
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(
-          cmdIndex,
-          'YM2612',
-          port,
-          otherReg,
-          cmd.instance ?? 0
-        );
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        if (state.active && !isSplitUpdate && (state.frequency !== oldFreq || hadPendingUpdate)) {
-            updateNotePitch(this, key, channelIndex + 4, currentTime, activeNotes);
-        }
-        return;
-    }
-
-    if (port === 0) {
-      this.handleOPNCh3SpecialFrequencyWrite(
-        ch3Context,
-        reg,
-        data,
-        currentTime,
-        activeNotes,
-        cmdIndex
-      );
-    }
-  }
-
-  private isOPNCh3SpecialMode(context: OPNCh3Context): boolean {
+  isOPNCh3SpecialMode(context: OPNCh3Context): boolean {
     return this.opnCh3SpecialModes.get(context.stateKey) ?? false;
   }
 
-  private handleOPNCh3ModeWrite(
-    context: OPNCh3Context,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const isSpecial = (data & 0xC0) !== 0;
-    if (isSpecial === this.isOPNCh3SpecialMode(context)) return;
-
-    const percussionKey = this.opnCh3PercussionActiveKeys.get(context.stateKey);
-    if (percussionKey !== undefined) noteOff(this, percussionKey, 0, currentTime, activeNotes);
-    this.opnCh3PercussionActiveKeys.delete(context.stateKey);
-
-    for (const key of context.operatorKeys) {
-      const state = this.channels.get(key)!;
-      if (!state.active) continue;
-      state.active = false;
-      noteOff(this, key, 0, currentTime, activeNotes);
-    }
-    this.channels.get(context.parentKey)!.keyOnMask = 0;
-    this.opnCsmTimer(context.chip, context.instance).manualKeyOnMask = 0;
-    this.opnCh3SpecialModes.set(context.stateKey, isSpecial);
-  }
-
   /** OPN Timer Aの値をCSM schedulerへ反映する。 */
-  private updateOPNCsmTimerRegister(
-    chip: OPNCh3Chip,
-    instance: number,
-    register: number,
-    data: number
-  ): void {
-    const timer = this.opnCsmTimer(chip, instance);
-    if (register === 0x24) timer.timerHigh = data;
-    else timer.timerLow = data & 0x03;
-  }
-
   /** OPN $27のCSM有効状態とTimer Aの開始状態を更新する。 */
-  private updateOPNCsmTimer(
-    chip: OPNCh3Chip,
-    instance: number,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const timer = this.opnCsmTimer(chip, instance);
-    const wasActive = timer.isRunning && timer.isCSMEnabled;
-    timer.isRunning = (data & 0x01) !== 0;
-    timer.isCSMEnabled = (data & 0xC0) === 0x80;
-    const isActive = timer.isRunning && timer.isCSMEnabled;
-
-    if (!isActive) {
-      if (timer.nextRelease !== undefined) this.emitOPNCsmPulse(chip, instance, false, currentTime, activeNotes);
-      timer.nextOverflow = undefined;
-      timer.nextRelease = undefined;
-      return;
-    }
-    if (!wasActive) {
-      timer.nextOverflow = currentTime + this.opnCsmPeriodSamples(chip, timer);
-      timer.nextRelease = undefined;
-      timer.lastEmittedTick = undefined;
-    }
-  }
-
   // updateOPMCsmTimerRegister()/updateOPMCsmTimer()は、YM2151のCSM Timer A設定処理
   // としてchips/ym2151.tsへ移設した（上のimportを参照）。
 
@@ -1926,7 +1677,7 @@ export class MidiConverter {
   }
 
   /** OPN CSMを既存のCh3 Special出力形式へ変換する。 */
-  private emitOPNCsmPulse(
+  emitOPNCsmPulse(
     chip: OPNCh3Chip,
     instance: number,
     isKeyOn: boolean,
@@ -1934,7 +1685,8 @@ export class MidiConverter {
     activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
   ): void {
     const context = this.opnCh3Context(chip, instance);
-    this.handleOPNCh3SpecialKeyWrite(
+    handleOPNCh3SpecialKeyWrite(
+      this,
       context,
       isKeyOn ? 0xF2 : 0x02,
       currentTime,
@@ -1967,7 +1719,7 @@ export class MidiConverter {
   }
 
   /** OPN Timer Aの1周期をVGM sampleへ換算する。 */
-  private opnCsmPeriodSamples(chip: OPNCh3Chip, timer: CSMTimerState): number {
+  opnCsmPeriodSamples(chip: OPNCh3Chip, timer: CSMTimerState): number {
     const clock = this.opnClockRate(chip);
     const count = (timer.timerHigh << 2) | timer.timerLow;
     return Math.max(1, (72 * (1024 - count) * this.sampleRate) / clock);
@@ -1981,7 +1733,7 @@ export class MidiConverter {
   }
 
   /** OPN各機種のヘッダーclockを取得する。 */
-  private opnClockRate(chip: OPNCh3Chip): number {
+  opnClockRate(chip: OPNCh3Chip): number {
     const clock = chip === 'YM2612'
       ? this.vgmData.header.ym2612Clock
       : chip === 'YM2203'
@@ -1991,7 +1743,7 @@ export class MidiConverter {
   }
 
   /** OPNチップインスタンスのCSM状態を初期化して返す。 */
-  private opnCsmTimer(chip: OPNCh3Chip, instance: number): CSMTimerState {
+  opnCsmTimer(chip: OPNCh3Chip, instance: number): CSMTimerState {
     const key = `${chip}:${instance}`;
     const current = this.opnCsmTimers.get(key);
     if (current) return current;
@@ -2009,59 +1761,11 @@ export class MidiConverter {
     return timer;
   }
 
-  private handleOPNCh3SpecialKeyWrite(
-    context: OPNCh3Context,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    isCSMEvent = false
-  ): void {
-    const timer = this.opnCsmTimer(context.chip, context.instance);
-    const rawMask = (data >> 4) & 0x0F;
-    if (!isCSMEvent) timer.manualKeyOnMask = rawMask;
-    const manualMask = timer.manualKeyOnMask ?? 0;
-    const csmMask = isCSMEvent ? rawMask : timer.nextRelease === undefined ? 0 : 0x0F;
-    const effectiveData = (data & 0x0F) | ((manualMask | csmMask) << 4);
-    this.trackOPNCh3UnisonAttack(context, effectiveData);
-    if (this.options.opnCh3SpecialPercussion) {
-      this.handleOPNCh3SpecialPercussion(context, effectiveData, currentTime, activeNotes);
-      return;
-    }
-    this.handleOPNCh3SpecialOperators(context, effectiveData, currentTime, activeNotes);
-  }
-
   /** Ch3 Specialの新規キーオンで、発音中オペレータ同士がユニゾン(ほぼ同一音程)かを集計する。
    *
    * handleOPNCh3SpecialOperators()/handleOPNCh3SpecialPercussion()が parentState.keyOnMask を
    * 書き換える前に呼ぶ必要がある — 「新規にキーオンされたオペレータ」の判定に前回のマスクを使うため。
    */
-  private trackOPNCh3UnisonAttack(context: OPNCh3Context, effectiveData: number): void {
-    const parentState = this.channels.get(context.parentKey)!;
-    const previousMask = parentState.keyOnMask ?? 0;
-    const slotMask = (effectiveData >> 4) & 0x0F;
-    const newlyKeyedMask = slotMask & ~previousMask;
-    if (newlyKeyedMask === 0) return;
-
-    const totalLevels = parentState.opnOperatorTotalLevels ?? [0, 0, 0, 0];
-    const notes: number[] = [];
-    for (let operator = 0; operator < 4; operator++) {
-      if ((newlyKeyedMask & (1 << operator)) === 0) continue;
-      if ((totalLevels[operator] ?? 0) >= 0x7F) continue; // silenced operator, not audible
-      const state = this.channels.get(context.operatorKeys[operator])!;
-      const note = frequencyToMidiNote(this.opnCh3OperatorFrequency(context, state));
-      if (note > 0) notes.push(note);
-    }
-    if (notes.length < 2) return; // need 2+ audible operators to compare
-
-    const stats = this.opnCh3UnisonStats.get(context.stateKey)
-      ?? { totalAttacks: 0, unisonAttacks: 0 };
-    stats.totalAttacks++;
-    if (Math.max(...notes) - Math.min(...notes) <= OPN_CH3_UNISON_SEMITONE_THRESHOLD) {
-      stats.unisonAttacks++;
-    }
-    this.opnCh3UnisonStats.set(context.stateKey, stats);
-  }
-
   /** ユニゾン比率が高いOPN Ch3 Specialチップインスタンスをthis.warningsへ追記する。
    *
    * 全オペレータがほぼ同一音程で動いているチャンネルは、実際には複数オペレータで補強された
@@ -2083,213 +1787,7 @@ export class MidiConverter {
     }
   }
 
-  private handleOPNCh3SpecialOperators(
-    context: OPNCh3Context,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const parentState = this.channels.get(context.parentKey)!;
-    const slotMask = (data >> 4) & 0x0F;
-    parentState.keyOnMask = slotMask;
-    const totalLevels = parentState.opnOperatorTotalLevels ?? [0, 0, 0, 0];
-
-    for (let operator = 0; operator < 4; operator++) {
-      const key = context.operatorKeys[operator];
-      const state = this.channels.get(key)!;
-      const isKeyOn = (slotMask & (1 << operator)) !== 0;
-      if (isKeyOn && !state.active) {
-        state.opnActivePitchScale = 1;
-        const totalLevel = totalLevels[operator];
-        state.opnActiveVelocity = totalLevel >= 0x7F
-          ? undefined
-          : this.operatorTotalLevelVelocity(totalLevel);
-        state.active = true;
-        noteOn(this, key, 0, currentTime, activeNotes);
-      } else if (!isKeyOn && state.active) {
-        state.active = false;
-        noteOff(this, key, 0, currentTime, activeNotes);
-        state.opnActivePitchScale = 1;
-      }
-    }
-  }
-
-  private handleOPNCh3SpecialPercussion(
-    context: OPNCh3Context,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const parentState = this.channels.get(context.parentKey)!;
-    const previousMask = parentState.keyOnMask ?? 0;
-    const slotMask = (data >> 4) & 0x0F;
-    const newlyKeyedMask = slotMask & ~previousMask;
-    parentState.keyOnMask = slotMask;
-    const activeKey = this.opnCh3PercussionActiveKeys.get(context.stateKey);
-
-    if (newlyKeyedMask !== 0) {
-      if (activeKey !== undefined) noteOff(this, activeKey, 0, currentTime, activeNotes);
-      const note = this.opnCh3SpecialPercussionNote(context, slotMask);
-      const key = `${context.percussionPrefix}${note}`;
-      noteOnPercussion(this, key, this.opnCarrierVelocity(parentState), currentTime, activeNotes, note);
-      this.opnCh3PercussionActiveKeys.set(context.stateKey, key);
-    } else if (slotMask === 0 && activeKey !== undefined) {
-      noteOff(this, activeKey, 0, currentTime, activeNotes);
-      this.opnCh3PercussionActiveKeys.delete(context.stateKey);
-    }
-  }
-
-  private opnCh3SpecialPercussionNote(context: OPNCh3Context, slotMask: number): number {
-    const parentState = this.channels.get(context.parentKey)!;
-    const algorithm = parentState.opnAlgorithm ?? 0;
-    const totalLevels = parentState.opnOperatorTotalLevels ?? [0, 0, 0, 0];
-    const carrierNotes: number[] = [];
-
-    for (const path of OPN_OPERATOR_PATHS[algorithm]) {
-      const operator = path.carrier;
-      if ((slotMask & (1 << operator)) === 0 || totalLevels[operator] >= 0x7F) continue;
-      const state = this.channels.get(context.operatorKeys[operator])!;
-      const note = frequencyToMidiNote(this.opnCh3OperatorFrequency(context, state));
-      if (note > 0) carrierNotes.push(note);
-    }
-    return this.opnCh3PercussionNoteForCarrierNotes(carrierNotes);
-  }
-
-  private opnCh3OperatorFrequency(context: OPNCh3Context, state: ChannelState): number {
-    if (context.chip === 'YM2612') {
-      return ym2612FrequencyToHz(
-        state.frequency,
-        state.block ?? 0,
-        this.vgmData.header.ym2612Clock
-      );
-    }
-    const clock = context.chip === 'YM2203'
-      ? this.vgmData.header.ym2203Clock
-      : this.vgmData.header.ym2608Clock;
-    const prescaler = context.chip === 'YM2203'
-      ? this.ym2203Prescalers[context.instance]
-      : this.ym2608Prescalers[context.instance];
-    return ym2203FrequencyToHz(state.frequency, state.block ?? 0, clock, prescaler);
-  }
-
-  private opnCh3PercussionNoteForCarrierNotes(carrierNotes: number[]): number {
-    if (carrierNotes.length === 0) return 38;
-    carrierNotes.sort((left, right) => left - right);
-    const note = carrierNotes[Math.floor(carrierNotes.length / 2)];
-    if (note <= 48) return 36;
-    if (note <= 64) return 38;
-    if (note >= 108) return 42;
-    if (note >= 88) return 49;
-    if (note <= 68) return 41;
-    if (note <= 72) return 43;
-    if (note <= 75) return 45;
-    if (note <= 78) return 47;
-    if (note <= 81) return 48;
-    return 50;
-  }
-
-  private handleOPNCh3SpecialFrequencyWrite(
-    context: OPNCh3Context,
-    reg: number,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    cmdIndex: number
-  ): boolean {
-    const isLowByte = reg >= 0xA8 && reg <= 0xAA;
-    const isHighByte = reg >= 0xAC && reg <= 0xAE;
-    if (!isLowByte && !isHighByte) return false;
-
-    const offset = isLowByte ? reg - 0xA8 : reg - 0xAC;
-    const operator = OPN_CH3_SPECIAL_OPERATOR_BY_OFFSET[offset];
-    const key = context.operatorKeys[operator];
-    const state = this.channels.get(key)!;
-    if (isLowByte) state.freqLSB = data;
-    else {
-      state.freqMSB = data & 0x07;
-      state.block = (data >> 3) & 0x07;
-    }
-
-    const oldFrequency = state.frequency;
-    state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-    const otherReg = isLowByte ? reg + 4 : reg - 4;
-    const isSplitUpdate = this.isOPNMultiByteFreqUpdate(
-      cmdIndex,
-      context.chip,
-      0,
-      otherReg,
-      context.instance
-    );
-    const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-    state.hasPendingFrequencyUpdate = isSplitUpdate;
-    if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-      updateNotePitch(this, key, 0, currentTime, activeNotes);
-    }
-    return true;
-  }
-
-  private handleYM2612TimbreWrite(
-    port: number,
-    reg: number,
-    data: number,
-    currentTime: number
-  ): boolean {
-    return this.handleOPNTimbreWrite('ym2612', port, reg, data, currentTime);
-  }
-
-  private handleOPNTimbreWrite(
-    keyPrefix: string,
-    port: number,
-    reg: number,
-    data: number,
-    currentTime?: number
-  ): boolean {
-    const isMultiplier = reg >= 0x30 && reg <= 0x3F;
-    const isTotalLevel = reg >= 0x40 && reg <= 0x4F;
-    const isAlgorithm = reg >= 0xB0 && reg <= 0xB2;
-    if (!isMultiplier && !isTotalLevel && !isAlgorithm) return false;
-
-    const channelOffset = reg & 0x03;
-    if (channelOffset >= 3) return true;
-
-    const channelIndex = channelOffset + (port * 3);
-    const key = keyPrefix === 'ym2612'
-      ? `${keyPrefix}_${channelIndex}`
-      : `${keyPrefix}_fm_${channelIndex}`;
-    const state = this.channels.get(key)!;
-
-    if (isAlgorithm) {
-      state.opnAlgorithm = data & 0x07;
-    } else {
-      const registerSlot = (reg >> 2) & 0x03;
-      const logicalOperator = [0, 2, 1, 3][registerSlot];
-      if (isMultiplier) {
-        state.opnOperatorMultipliers![logicalOperator] = data & 0x0F;
-        state.opnOperatorMultiplierWritten![logicalOperator] = true;
-      }
-      else {
-        state.opnOperatorTotalLevels![logicalOperator] = data & 0x7F;
-        if (state.active && currentTime !== undefined) {
-          addExpression(this, key, this.opnCarrierExpression(state), currentTime);
-        }
-      }
-    }
-
-    if (currentTime !== undefined) this.recordOPNTimbreEvents(keyPrefix, channelIndex, currentTime);
-
-    return true;
-  }
-
   /** OPN/OPNA の $B4-$B6 LR 出力マスクを CC10 に変換する。 */
-  private handleOPNPanWrite(keyPrefix: string, port: number, reg: number, data: number, currentTime: number): boolean {
-    if (reg < 0xB4 || reg > 0xB6) return false;
-    const offset = reg & 0x03; if (offset >= 3) return true;
-    const channel = offset + port * 3;
-    const key = keyPrefix === 'ym2612' ? `${keyPrefix}_${channel}` : `${keyPrefix}_fm_${channel}`;
-    addPan(this, key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
-    return true;
-  }
-
   opnPitchScale(state: ChannelState): number {
     return this.fmPitchScale(state, OPN_OPERATOR_PATHS, 0x7F, OPN_DOUBLED_MULTIPLES);
   }
@@ -2395,221 +1893,12 @@ export class MidiConverter {
     return Math.max(1, Math.min(127, Math.round((currentVelocity / keyOnVelocity) * 127)));
   }
 
-  private handleYM2612DACSeek(cmd: VGMCommand): void {
-    if (cmd.address === undefined) return;
-    this.ym2612DACPendingAddress = cmd.address;
-  }
-
-  private handleYM2612DACWrite(currentTime: number): void {
-    const address = this.ym2612DACPendingAddress;
-    if (address === undefined) return;
-    this.ym2612DACPendingAddress = undefined;
-    if (!this.isYM2612DACEnabled) return;
-    if (this.options.suppressYM2612Dac) return;
-
-    this.stopYM2612DACVoice(currentTime);
-    const sampleId = address.toString(16).padStart(6, '0');
-    const trackKey = `ym2612dac_sample_${sampleId}`;
-    const note = pcmNoteForSample(this, trackKey);
-    const dataBlock = this.pcmDataBlockForRange(0x00, 0, address);
-    const descriptorId = noteOnPCMPercussion(this, trackKey, note, 100, currentTime, false, dataBlock);
-    this.ym2612DACActiveVoice = { descriptorId, note };
-  }
-
-  private stopYM2612DACVoice(currentTime: number): void {
-    const voice = this.ym2612DACActiveVoice;
-    if (!voice) return;
-    noteOffPCMPercussion(this, voice.descriptorId, voice.note, currentTime);
-    this.ym2612DACActiveVoice = undefined;
-  }
-
   // Groups consecutive $2A writes into one note by elapsed-time gap (see
   // YM2612_DAC_DIRECT_GAP_SAMPLES). All writes share one track/sample identity, since $2A
   // carries no address to distinguish samples by.
-  private handleYM2612DirectDACWrite(currentTime: number): void {
-    if (!this.isYM2612DACEnabled) return;
-    if (this.options.suppressYM2612Dac) return;
-    const lastWriteTime = this.ym2612DirectDACLastWriteTime;
-    this.ym2612DirectDACLastWriteTime = currentTime;
-
-    if (
-      this.ym2612DirectDACActiveVoice
-      && lastWriteTime !== undefined
-      && currentTime - lastWriteTime > YM2612_DAC_DIRECT_GAP_SAMPLES
-    ) {
-      // Close the previous hit at its own last-write time, not `currentTime` — otherwise a
-      // long gap before the next hit stretches the previous note across the gap.
-      noteOffPCMPercussion(this, 
-        this.ym2612DirectDACActiveVoice.descriptorId,
-        this.ym2612DirectDACActiveVoice.note,
-        lastWriteTime
-      );
-      this.ym2612DirectDACActiveVoice = undefined;
-    }
-
-    if (!this.ym2612DirectDACActiveVoice) {
-      const trackKey = 'ym2612dac_direct_stream';
-      const note = pcmNoteForSample(this, trackKey);
-      const descriptorId = noteOnPCMPercussion(this, trackKey, note, 100, currentTime);
-      this.ym2612DirectDACActiveVoice = { descriptorId, note };
-    }
-  }
-
   // Closes the direct-DAC voice at the last actual $2A write time, not `currentTime` —
   // called from both $2B-disable and EOF (stopAllPCMVoices()), neither of which should
   // stretch the final hit's duration out to whenever this happens to be called.
-  private stopYM2612DirectDACVoice(currentTime: number): void {
-    const voice = this.ym2612DirectDACActiveVoice;
-    if (!voice) return;
-    const closeTime = this.ym2612DirectDACLastWriteTime ?? currentTime;
-    noteOffPCMPercussion(this, voice.descriptorId, voice.note, closeTime);
-    this.ym2612DirectDACActiveVoice = undefined;
-    this.ym2612DirectDACLastWriteTime = undefined;
-  }
-
-  private handleYM2203Write(
-    cmd: VGMCommand,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    cmdIndex: number
-  ): void {
-    if (cmd.register === undefined || cmd.data === undefined) return;
-    const instance = cmd.instance === 1 ? 1 : 0;
-    const reg = cmd.register;
-    const data = cmd.data;
-    const keyPrefix = `ym2203_${instance}`;
-    const ch3Context = this.opnCh3Context('YM2203', instance);
-
-    if (this.handleOPNPanWrite(keyPrefix, 0, reg, data, currentTime)) return;
-
-    if (reg < 0x10) {
-      handleSSGWrite(this, `${keyPrefix}_ssg`, reg, data, currentTime, activeNotes, cmdIndex, 'YM2203', instance);
-      return;
-    }
-    if (reg >= 0x2D && reg <= 0x2F) {
-      this.updateYM2203Prescaler(instance, reg, currentTime, activeNotes);
-      return;
-    }
-    if (reg === 0x27) {
-      this.handleOPNCh3ModeWrite(ch3Context, data, currentTime, activeNotes);
-      this.updateOPNCsmTimer('YM2203', instance, data, currentTime, activeNotes);
-      return;
-    }
-    if (reg === 0x24 || reg === 0x25) {
-      this.updateOPNCsmTimerRegister('YM2203', instance, reg, data);
-      return;
-    }
-    if (this.handleOPNTimbreWrite(keyPrefix, 0, reg, data, currentTime)) return;
-    if (this.handleYM2203KeyWrite(ch3Context, data, reg, currentTime, activeNotes)) return;
-    if (this.handleOPNCh3SpecialFrequencyWrite(
-      ch3Context, reg, data, currentTime, activeNotes, cmdIndex
-    )) return;
-    this.updateYM2203Frequency(instance, reg, data, currentTime, activeNotes, cmdIndex);
-  }
-
-  private handleYM2203KeyWrite(
-    context: OPNCh3Context,
-    data: number,
-    register: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): boolean {
-    if (register !== 0x28) return false;
-    const channel = data & 0x03;
-    if (channel >= 3 || (data & 0x04) !== 0) return true;
-    if (channel === 2 && this.isOPNCh3SpecialMode(context)) {
-      this.handleOPNCh3SpecialKeyWrite(context, data, currentTime, activeNotes);
-      return true;
-    }
-    const key = `${context.stateKey}_fm_${channel}`;
-    const state = this.channels.get(key)!;
-    state.keyOnMask = (data >> 4) & 0x0F;
-    const shouldSound = state.keyOnMask !== 0;
-    if (shouldSound && !state.active) {
-      state.opnActivePitchScale = this.opnPitchScale(state);
-      state.opnActiveVelocity = this.opnCarrierVelocity(state);
-      state.active = true;
-      noteOn(this, key, 0, currentTime, activeNotes);
-    } else if (!shouldSound && state.active) {
-      state.active = false;
-      noteOff(this, key, 0, currentTime, activeNotes);
-      state.opnActivePitchScale = 1;
-    }
-    return true;
-  }
-
-  private updateYM2203Frequency(
-    instance: number,
-    reg: number,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    cmdIndex: number
-  ): void {
-    const isLowByte = reg >= 0xA0 && reg <= 0xA2;
-    const isHighByte = reg >= 0xA4 && reg <= 0xA6;
-    if (!isLowByte && !isHighByte) return;
-
-    const channel = reg & 0x03;
-    const key = `ym2203_${instance}_fm_${channel}`;
-    const state = this.channels.get(key)!;
-    if (isLowByte) state.freqLSB = data;
-    else {
-      state.freqMSB = data & 0x07;
-      state.block = (data >> 3) & 0x07;
-    }
-    const oldFrequency = state.frequency;
-    state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-    const otherReg = isLowByte ? reg + 4 : reg - 4;
-    const isSplitUpdate = this.isOPNMultiByteFreqUpdate(
-      cmdIndex,
-      'YM2203',
-      0,
-      otherReg,
-      instance
-    );
-    const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-    state.hasPendingFrequencyUpdate = isSplitUpdate;
-    if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-      this.updateKeyBoundFMPitch(key, currentTime, activeNotes, YM2203_FM_PITCH_BEND_RANGE);
-    }
-  }
-
-  private updateYM2203Prescaler(
-    instance: number,
-    register: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const oldPrescaler = this.ym2203Prescalers[instance];
-    let newPrescaler = oldPrescaler;
-    if (register === 0x2D) newPrescaler = 6;
-    else if (register === 0x2E && oldPrescaler === 6) newPrescaler = 3;
-    else if (register === 0x2F) newPrescaler = 2;
-    if (newPrescaler === oldPrescaler) return;
-
-    this.ym2203Prescalers[instance] = newPrescaler;
-    for (const section of ['fm', 'ssg']) {
-      for (let channel = 0; channel < 3; channel++) {
-        const key = `ym2203_${instance}_${section}_${channel}`;
-        if (this.channels.get(key)!.active) {
-          if (section === 'fm') {
-            this.updateKeyBoundFMPitch(
-              key,
-              currentTime,
-              activeNotes,
-              YM2203_FM_PITCH_BEND_RANGE
-            );
-          }
-          else updateNotePitch(this, key, 0, currentTime, activeNotes);
-        }
-      }
-    }
-    this.updateActiveOPNCh3SpecialPitches(
-      this.opnCh3Context('YM2203', instance), currentTime, activeNotes
-    );
-  }
-
   updateKeyBoundFMPitch(
     key: string,
     currentTime: number,
@@ -2628,307 +1917,7 @@ export class MidiConverter {
     addPitchBend(this, key, semitoneOffset, pitchBendRange, currentTime);
   }
 
-  private handleYM2608Write(
-    cmd: VGMCommand,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    cmdIndex: number
-  ): void {
-    if (cmd.register === undefined || cmd.data === undefined) return;
-    const instance = cmd.instance === 1 ? 1 : 0;
-    const port = cmd.port === 1 ? 1 : 0;
-    const reg = cmd.register;
-    const data = cmd.data;
-    const keyPrefix = `ym2608_${instance}`;
-    const ch3Context = this.opnCh3Context('YM2608', instance);
-
-    if (this.handleOPNPanWrite(keyPrefix, port, reg, data, currentTime)) return;
-
-    if (port === 0 && reg < 0x10) {
-      handleSSGWrite(this, `${keyPrefix}_ssg`, reg, data, currentTime, activeNotes, cmdIndex, 'YM2608', instance);
-      return;
-    }
-    if (port === 0 && reg >= 0x10 && reg <= 0x1D) {
-      this.handleYM2608RhythmWrite(instance, reg, data, currentTime, activeNotes);
-      return;
-    }
-    if (port === 1 && reg <= 0x10) {
-      this.handleYM2608ADPCMBWrite(instance, reg, data, currentTime);
-      return;
-    }
-    if (port === 0 && reg >= 0x2D && reg <= 0x2F) {
-      this.updateYM2608Prescaler(instance, reg, currentTime, activeNotes);
-      return;
-    }
-    if (port === 0 && reg === 0x27) {
-      this.handleOPNCh3ModeWrite(ch3Context, data, currentTime, activeNotes);
-      this.updateOPNCsmTimer('YM2608', instance, data, currentTime, activeNotes);
-      return;
-    }
-    if (port === 0 && (reg === 0x24 || reg === 0x25)) {
-      this.updateOPNCsmTimerRegister('YM2608', instance, reg, data);
-      return;
-    }
-    if (this.handleOPNTimbreWrite(keyPrefix, port, reg, data, currentTime)) return;
-    if (port === 0 && this.handleYM2608KeyWrite(
-      ch3Context, data, reg, currentTime, activeNotes
-    )) return;
-    if (port === 0 && this.handleOPNCh3SpecialFrequencyWrite(
-      ch3Context, reg, data, currentTime, activeNotes, cmdIndex
-    )) return;
-    this.updateYM2608Frequency(instance, port, reg, data, currentTime, activeNotes, cmdIndex);
-  }
-
-  private handleYM2608KeyWrite(
-    context: OPNCh3Context,
-    data: number,
-    register: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): boolean {
-    if (register !== 0x28) return false;
-    const channelOffset = data & 0x03;
-    if (channelOffset >= 3) return true;
-    const channel = channelOffset + ((data & 0x04) === 0 ? 0 : 3);
-    if (channel === 2 && this.isOPNCh3SpecialMode(context)) {
-      this.handleOPNCh3SpecialKeyWrite(context, data, currentTime, activeNotes);
-      return true;
-    }
-    const key = `${context.stateKey}_fm_${channel}`;
-    const state = this.channels.get(key)!;
-    state.keyOnMask = (data >> 4) & 0x0F;
-    const shouldSound = state.keyOnMask !== 0;
-    if (shouldSound && !state.active) {
-      state.opnActivePitchScale = this.opnPitchScale(state);
-      state.opnActiveVelocity = this.opnCarrierVelocity(state);
-      state.active = true;
-      noteOn(this, key, 0, currentTime, activeNotes);
-    } else if (!shouldSound && state.active) {
-      state.active = false;
-      noteOff(this, key, 0, currentTime, activeNotes);
-      state.opnActivePitchScale = 1;
-    }
-    return true;
-  }
-
-  private updateYM2608Frequency(
-    instance: number,
-    port: number,
-    reg: number,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    cmdIndex: number
-  ): void {
-    const isLowByte = reg >= 0xA0 && reg <= 0xA2;
-    const isHighByte = reg >= 0xA4 && reg <= 0xA6;
-    if (!isLowByte && !isHighByte) return;
-
-    const channel = (reg & 0x03) + (port * 3);
-    const key = `ym2608_${instance}_fm_${channel}`;
-    const state = this.channels.get(key)!;
-    if (isLowByte) state.freqLSB = data;
-    else {
-      state.freqMSB = data & 0x07;
-      state.block = (data >> 3) & 0x07;
-    }
-    const oldFrequency = state.frequency;
-    state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-    const otherReg = isLowByte ? reg + 4 : reg - 4;
-    const isSplitUpdate = this.isOPNMultiByteFreqUpdate(
-      cmdIndex,
-      'YM2608',
-      port,
-      otherReg,
-      instance
-    );
-    const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-    state.hasPendingFrequencyUpdate = isSplitUpdate;
-    if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-      this.updateKeyBoundFMPitch(key, currentTime, activeNotes, YM2608_FM_PITCH_BEND_RANGE);
-    }
-  }
-
-  private updateYM2608Prescaler(
-    instance: number,
-    register: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const oldPrescaler = this.ym2608Prescalers[instance];
-    let newPrescaler = oldPrescaler;
-    if (register === 0x2D) newPrescaler = 6;
-    else if (register === 0x2E && oldPrescaler === 6) newPrescaler = 3;
-    else if (register === 0x2F) newPrescaler = 2;
-    if (newPrescaler === oldPrescaler) return;
-    this.ym2608Prescalers[instance] = newPrescaler;
-
-    for (let channel = 0; channel < 6; channel++) {
-      const key = `ym2608_${instance}_fm_${channel}`;
-      if (this.channels.get(key)!.active) {
-        this.updateKeyBoundFMPitch(key, currentTime, activeNotes, YM2608_FM_PITCH_BEND_RANGE);
-      }
-    }
-    for (let channel = 0; channel < 3; channel++) {
-      const key = `ym2608_${instance}_ssg_${channel}`;
-      if (this.channels.get(key)!.active) updateNotePitch(this, key, 0, currentTime, activeNotes);
-    }
-    this.updateActiveOPNCh3SpecialPitches(
-      this.opnCh3Context('YM2608', instance), currentTime, activeNotes
-    );
-  }
-
-  private updateActiveOPNCh3SpecialPitches(
-    context: OPNCh3Context,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    for (const key of context.operatorKeys.slice(0, 3)) {
-      if (this.channels.get(key)!.active) updateNotePitch(this, key, 0, currentTime, activeNotes);
-    }
-  }
-
-  private handleYM2608RhythmWrite(
-    instance: number,
-    register: number,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    if (register === 0x10) {
-      this.updateYM2608RhythmKeys(instance, data, currentTime, activeNotes);
-      return;
-    }
-    if (register === 0x11) {
-      this.ym2608RhythmTotalLevels[instance] = data & 0x3F;
-      this.updateYM2608RhythmExpression(instance, currentTime, activeNotes);
-      return;
-    }
-    if (register >= 0x18 && register <= 0x1D) {
-      const channel = register - 0x18;
-      this.ym2608RhythmInstrumentLevels[instance][channel] = data & 0x1F;
-      this.updateYM2608RhythmExpression(instance, currentTime, activeNotes, channel);
-    }
-  }
-
-  private updateYM2608RhythmKeys(
-    instance: number,
-    data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
-  ): void {
-    const isDump = (data & 0x80) !== 0;
-    const mask = data & 0x3F;
-    for (let channel = 0; channel < 6; channel++) {
-      if ((mask & (1 << channel)) === 0) continue;
-      const key = `ym2608_${instance}_rhythm_${channel}`;
-      if (activeNotes.has(key)) noteOff(this, key, 0, currentTime, activeNotes);
-      if (!isDump) {
-        const velocity = this.ym2608RhythmVelocity(instance, channel);
-        noteOnPercussion(this, key, velocity, currentTime, activeNotes, YM2608_RHYTHM_NOTES[channel]);
-      }
-    }
-  }
-
-  private updateYM2608RhythmExpression(
-    instance: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>,
-    selectedChannel?: number
-  ): void {
-    for (let channel = 0; channel < 6; channel++) {
-      if (selectedChannel !== undefined && channel !== selectedChannel) continue;
-      const key = `ym2608_${instance}_rhythm_${channel}`;
-      if (!activeNotes.has(key)) continue;
-      const expression = Math.round((this.ym2608RhythmVelocity(instance, channel) / 100) * 127);
-      addExpression(this, key, expression, currentTime);
-    }
-  }
-
-  private ym2608RhythmVelocity(instance: number, channel: number): number {
-    const combinedLevel = this.ym2608RhythmTotalLevels[instance]
-      + this.ym2608RhythmInstrumentLevels[instance][channel];
-    const audibleLevel = Math.max(0, combinedLevel - 31);
-    return Math.max(1, Math.round((audibleLevel / 63) * 100));
-  }
-
-  private handleYM2608ADPCMBWrite(
-    instance: number,
-    register: number,
-    data: number,
-    currentTime: number
-  ): void {
-    const registers = this.ym2608ADPCMRegisters[instance];
-    registers[register] = data;
-    if (register === 0x0B) {
-      const voice = this.ym2608ADPCMActiveVoices[instance];
-      if (voice) addExpression(this, voice.descriptorId, Math.round((data / 255) * 127), currentTime);
-      return;
-    }
-    if (register !== 0x00) return;
-    if ((data & 0x01) !== 0 || (data & 0x80) === 0) {
-      this.stopYM2608ADPCMBVoice(instance, currentTime);
-      return;
-    }
-
-    this.stopYM2608ADPCMBVoice(instance, currentTime);
-    const address = registers[0x02] | (registers[0x03] << 8);
-    const endAddress = registers[0x04] | (registers[0x05] << 8);
-    // ADPCM-B's ROM start/end registers address 32-byte units.  RAM mode has
-    // no VGM ROM data-block equivalent, so preserve the trigger without a link.
-    const isROMMode = (registers[0x01] & 0x01) !== 0;
-    const isEightBitRAMMode = (registers[0x01] & 0x02) !== 0;
-    const addressUnitBytes = isROMMode || isEightBitRAMMode ? 32 : 4;
-    const isLoop = (data & 0x10) !== 0;
-    const dataLengthBytes = endAddress >= address ? (endAddress - address + 1) << 5 : undefined;
-    const dataBlock = isROMMode
-      ? this.pcmROMDataBlockForAddress(0x81, instance, address << 5, dataLengthBytes)
-      : undefined;
-    const sampleId = address.toString(16).padStart(4, '0');
-    const trackKey = `ym2608_${instance}_adpcmb_sample_${sampleId}`;
-    const note = pcmNoteForSample(this, trackKey);
-    const velocity = Math.max(1, Math.round((registers[0x0B] / 255) * 100));
-    const deltaN = registers[0x09] | (registers[0x0A] << 8);
-    const durationSamples = isLoop
-      ? undefined
-      : this.ym2608ADPCMDurationSamples(address, endAddress, deltaN, addressUnitBytes);
-    const descriptorId = noteOnPCMPercussion(this, 
-      trackKey,
-      note,
-      velocity,
-      currentTime,
-      isLoop,
-      dataBlock,
-      durationSamples,
-      undefined,
-      isROMMode ? ym2608ADPCMBAnalysis(this.vgmData, dataBlock, dataLengthBytes) : undefined
-    );
-    this.ym2608ADPCMActiveVoices[instance] = { descriptorId, note };
-  }
-
   /** YM2608 ADPCM-Bの非repeat範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
-  private ym2608ADPCMDurationSamples(
-    startAddress: number,
-    endAddress: number,
-    deltaN: number,
-    addressUnitBytes: number
-  ): number | undefined {
-    if (endAddress < startAddress || deltaN === 0) return undefined;
-    const clock = this.vgmData.header.ym2608Clock & CLOCK_MASK;
-    if (clock === 0) return undefined;
-    const byteLength = (endAddress - startAddress + 1) * addressUnitBytes;
-    // The ADPCM-B phase accumulator advances once per master-clock/144 tick.
-    // Each encoded byte contains two 4-bit ADPCM samples.
-    return Math.round((byteLength * 2 * this.sampleRate * 144 * 0x10000) / (deltaN * clock));
-  }
-
-  private stopYM2608ADPCMBVoice(instance: number, currentTime: number): void {
-    const voice = this.ym2608ADPCMActiveVoices[instance];
-    if (!voice) return;
-    noteOffPCMPercussion(this, voice.descriptorId, voice.note, currentTime);
-    this.ym2608ADPCMActiveVoices[instance] = undefined;
-  }
-
   // handleAY8910Write()はchips/ay8910.tsへ、handleSSGWrite()から始まる
   // AY-3-8910互換SSG（AY8910/YM2203/YM2608内蔵SSGコアで共有）の状態機械は
   // chips/ssg.tsへ移設した（上のimportを参照）。
@@ -2969,10 +1958,10 @@ export class MidiConverter {
   }
 
   private stopAllPCMVoices(currentTime: number): void {
-    this.stopYM2612DACVoice(currentTime);
-    this.stopYM2612DirectDACVoice(currentTime);
+    stopYM2612DACVoice(this, currentTime);
+    stopYM2612DirectDACVoice(this, currentTime);
     for (let instance = 0; instance < this.ym2608ADPCMActiveVoices.length; instance++) {
-      this.stopYM2608ADPCMBVoice(instance, currentTime);
+      stopYM2608ADPCMBVoice(this, instance, currentTime);
     }
     for (let channel = 0; channel < this.segaPCMActiveVoices.length; channel++) {
       this.stopPCMVoice(this.segaPCMActiveVoices, channel, currentTime);
@@ -3078,7 +2067,7 @@ export class MidiConverter {
   }
 
   /** data bank内の連結offsetを、sidecar用のblock/offset情報へ変換する。 */
-  private pcmDataBlockForRange(
+  pcmDataBlockForRange(
     bankType: number,
     bankInstance: number,
     bankOffset: number,

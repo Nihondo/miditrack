@@ -1,6 +1,8 @@
 import { VGMData, ConversionOptions } from './types';
 import { PCMTrackEvent, PCMDataBlockMetadata, PCMAnalysisMetadata } from './pcm-analysis';
 export declare const YM2151_FM_PITCH_BEND_RANGE = 96;
+export declare const YM2203_FM_PITCH_BEND_RANGE = 96;
+export declare const YM2608_FM_PITCH_BEND_RANGE = 96;
 export declare const OPL_FM_PITCH_BEND_RANGE = 96;
 export declare const CHIP_PITCH_BEND_RANGE = 96;
 export type OPLChip = 'YM3812' | 'YM3526' | 'Y8950';
@@ -15,6 +17,7 @@ interface OPNOperatorPath {
     carrier: number;
     operators: readonly number[];
 }
+export declare const OPN_OPERATOR_PATHS: readonly (readonly OPNOperatorPath[])[];
 export interface ChannelState {
     frequency: number;
     volume: number;
@@ -112,7 +115,16 @@ export interface PCMPlaybackRangeMetadata {
     endAddressExclusive: number;
     loopAddress?: number;
 }
-interface CSMTimerState {
+export type OPNCh3Chip = 'YM2203' | 'YM2608' | 'YM2612';
+export interface OPNCh3Context {
+    chip: OPNCh3Chip;
+    instance: number;
+    stateKey: string;
+    parentKey: string;
+    operatorKeys: readonly [string, string, string, string];
+    percussionPrefix: string;
+}
+export interface CSMTimerState {
     timerHigh: number;
     timerLow: number;
     isRunning: boolean;
@@ -151,24 +163,27 @@ export declare class MidiConverter {
     segaPCMActiveVoices: Array<PCMVoiceNote | undefined>;
     c140ActiveVoices: Array<PCMVoiceNote | undefined>;
     pcmSampleNotes: Map<string, number>;
-    private isYM2612DACEnabled;
-    private ym2612DACPendingAddress?;
-    private ym2612DACActiveVoice?;
-    private ym2612DirectDACActiveVoice?;
-    private ym2612DirectDACLastWriteTime?;
-    private opnCh3SpecialModes;
-    private opnCh3PercussionActiveKeys;
-    private opnCh3UnisonStats;
+    isYM2612DACEnabled: boolean;
+    ym2612DACPendingAddress?: number;
+    ym2612DACActiveVoice?: PCMVoiceNote;
+    ym2612DirectDACActiveVoice?: PCMVoiceNote;
+    ym2612DirectDACLastWriteTime?: number;
+    opnCh3SpecialModes: Map<string, boolean>;
+    opnCh3PercussionActiveKeys: Map<string, string>;
+    opnCh3UnisonStats: Map<string, {
+        totalAttacks: number;
+        unisonAttacks: number;
+    }>;
     private opnCsmTimers;
     private opmCsmTimers;
     oplRhythmModes: Map<string, boolean>;
     oplRhythmControlBytes: Map<string, number>;
     ym2203Prescalers: number[];
     ym2608Prescalers: number[];
-    private ym2608RhythmTotalLevels;
-    private ym2608RhythmInstrumentLevels;
-    private ym2608ADPCMRegisters;
-    private ym2608ADPCMActiveVoices;
+    ym2608RhythmTotalLevels: number[];
+    ym2608RhythmInstrumentLevels: any[][];
+    ym2608ADPCMRegisters: Uint8Array<ArrayBuffer>[];
+    ym2608ADPCMActiveVoices: Array<PCMVoiceNote | undefined>;
     ym2413RhythmMode: boolean;
     ym2413RhythmControlByte: number;
     ym2413RhythmVolumes: number[];
@@ -196,7 +211,7 @@ export declare class MidiConverter {
     /** OPN Ch3 Special関連state（opnCh3SpecialModes等）のMapキーを、YM2612は
      * インスタンス非依存、YM2203/YM2608はチップ+インスタンスで構築する。 */
     private opnCh3StateKey;
-    private opnCh3Context;
+    opnCh3Context(chip: OPNCh3Chip, instance?: number): OPNCh3Context;
     private initializeOPNCh3SpecialChannels;
     midiChannelForKey(key: string): number;
     /** VGM Extra Headerのチップ別volumeを、CC7に出力する0-127の値へ変換する。
@@ -228,7 +243,6 @@ export declare class MidiConverter {
     /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
     recordYM2413TimbreEvent(channel: number, currentTime: number, source: FMTimbreEvent['source']): void;
     /** OPN Ch3 Special時は親と発音中のオペレータ別トラックをまとめて更新する。 */
-    private recordOPNTimbreEvents;
     /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
     private pcmMetadataForTrack;
     getTrack(key: string): TrackState;
@@ -258,19 +272,19 @@ export declare class MidiConverter {
     convert(): any[];
     /** VGM $31 のAY/OPN SSG LR maskを各SSG voiceのCC10へ変換する。 */
     private handleAYSSGStereo;
-    private handleYM2612Write;
-    private isOPNCh3SpecialMode;
-    private handleOPNCh3ModeWrite;
+    isOPNCh3SpecialMode(context: OPNCh3Context): boolean;
     /** OPN Timer Aの値をCSM schedulerへ反映する。 */
-    private updateOPNCsmTimerRegister;
     /** OPN $27のCSM有効状態とTimer Aの開始状態を更新する。 */
-    private updateOPNCsmTimer;
     /** すべての動作中CSM Timer Aをwait区間内で進める。 */
     private advanceCSMTimers;
     /** Timer AのoverflowとMIDI pulse終了を時刻順に処理する。 */
     private advanceCSMTimer;
     /** OPN CSMを既存のCh3 Special出力形式へ変換する。 */
-    private emitOPNCsmPulse;
+    emitOPNCsmPulse(chip: OPNCh3Chip, instance: number, isKeyOn: boolean, currentTime: number, activeNotes: Map<string, {
+        note: number;
+        startTime: number;
+        startVolume: number;
+    }>): void;
     /** OPM CSMを各チャンネルの短いMIDIアタックとして出力する。 */
     emitOPMCsmPulse(instance: number, isKeyOn: boolean, currentTime: number, activeNotes: Map<string, {
         note: number;
@@ -280,22 +294,20 @@ export declare class MidiConverter {
     /** OPN/OPMが共通で使う1 MIDI tick分のCSM pulse長をsampleへ換算する。 */
     private csmPulseSamples;
     /** OPN Timer Aの1周期をVGM sampleへ換算する。 */
-    private opnCsmPeriodSamples;
+    opnCsmPeriodSamples(chip: OPNCh3Chip, timer: CSMTimerState): number;
     /** OPM Timer Aの1周期をVGM sampleへ換算する。 */
     opmCsmPeriodSamples(timer: CSMTimerState): number;
     /** OPN各機種のヘッダーclockを取得する。 */
-    private opnClockRate;
+    opnClockRate(chip: OPNCh3Chip): number;
     /** OPNチップインスタンスのCSM状態を初期化して返す。 */
-    private opnCsmTimer;
+    opnCsmTimer(chip: OPNCh3Chip, instance: number): CSMTimerState;
     /** OPMチップインスタンスのCSM状態を初期化して返す。 */
     opmCsmTimer(instance: number): CSMTimerState;
-    private handleOPNCh3SpecialKeyWrite;
     /** Ch3 Specialの新規キーオンで、発音中オペレータ同士がユニゾン(ほぼ同一音程)かを集計する。
      *
      * handleOPNCh3SpecialOperators()/handleOPNCh3SpecialPercussion()が parentState.keyOnMask を
      * 書き換える前に呼ぶ必要がある — 「新規にキーオンされたオペレータ」の判定に前回のマスクを使うため。
      */
-    private trackOPNCh3UnisonAttack;
     /** ユニゾン比率が高いOPN Ch3 Specialチップインスタンスをthis.warningsへ追記する。
      *
      * 全オペレータがほぼ同一音程で動いているチャンネルは、実際には複数オペレータで補強された
@@ -303,16 +315,7 @@ export declare class MidiConverter {
      * 適さない — 見た目上の見た目はどちらも「複数の異なる発音」だが、本来は1音。
      */
     private appendOPNCh3UnisonWarnings;
-    private handleOPNCh3SpecialOperators;
-    private handleOPNCh3SpecialPercussion;
-    private opnCh3SpecialPercussionNote;
-    private opnCh3OperatorFrequency;
-    private opnCh3PercussionNoteForCarrierNotes;
-    private handleOPNCh3SpecialFrequencyWrite;
-    private handleYM2612TimbreWrite;
-    private handleOPNTimbreWrite;
     /** OPN/OPNA の $B4-$B6 LR 出力マスクを CC10 に変換する。 */
-    private handleOPNPanWrite;
     opnPitchScale(state: ChannelState): number;
     oplPitchScale(state: ChannelState): number;
     fmPitchScale(state: ChannelState, paths: readonly (readonly OPNOperatorPath[])[], silentTotalLevel: number, doubledMultiples: readonly number[]): number;
@@ -324,33 +327,12 @@ export declare class MidiConverter {
     opnCarrierExpression(state: ChannelState): number;
     oplCarrierExpression(state: ChannelState): number;
     private fmCarrierExpression;
-    private handleYM2612DACSeek;
-    private handleYM2612DACWrite;
-    private stopYM2612DACVoice;
-    private handleYM2612DirectDACWrite;
-    private stopYM2612DirectDACVoice;
-    private handleYM2203Write;
-    private handleYM2203KeyWrite;
-    private updateYM2203Frequency;
-    private updateYM2203Prescaler;
     updateKeyBoundFMPitch(key: string, currentTime: number, activeNotes: Map<string, {
         note: number;
         startTime: number;
         startVolume: number;
     }>, pitchBendRange: number): void;
-    private handleYM2608Write;
-    private handleYM2608KeyWrite;
-    private updateYM2608Frequency;
-    private updateYM2608Prescaler;
-    private updateActiveOPNCh3SpecialPitches;
-    private handleYM2608RhythmWrite;
-    private updateYM2608RhythmKeys;
-    private updateYM2608RhythmExpression;
-    private ym2608RhythmVelocity;
-    private handleYM2608ADPCMBWrite;
     /** YM2608 ADPCM-Bの非repeat範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
-    private ym2608ADPCMDurationSamples;
-    private stopYM2608ADPCMBVoice;
     stopPCMVoice(activeVoices: Array<PCMVoiceNote | undefined>, channel: number, currentTime: number): void;
     private stopAllPCMVoices;
     /** DAC stream 0x90–0x95 を処理し、MSM6258は編集用GMトリガーとして残す。 */
@@ -360,7 +342,7 @@ export declare class MidiConverter {
     /** 0x91で選択したbank内の連結offsetとblock番号を求める。 */
     private resolveStreamBankOffset;
     /** data bank内の連結offsetを、sidecar用のblock/offset情報へ変換する。 */
-    private pcmDataBlockForRange;
+    pcmDataBlockForRange(bankType: number, bankInstance: number, bankOffset: number, lengthBytes?: number): PCMDataBlockMetadata | undefined;
     /** ROM data blockの実データ範囲から、物理サンプルアドレスをsidecar情報へ解決する。 */
     pcmROMDataBlockForAddress(bankType: number, bankInstance: number, romAddress: number, lengthBytes?: number): PCMDataBlockMetadata | undefined;
     /** bankの連結sizeを返し、0x93「終端まで」のcommand数計算に使用する。 */
