@@ -1664,28 +1664,71 @@ that reaches a sibling of `midi-converter.ts` therefore uses `../` (e.g.
   together in one place was judged clearer than splitting them across
   files prematurely.
 
-All five follow the exact mechanical recipe `event-output.ts` established:
+- **`chips/segapcm.ts`**/**`chips/c140.ts`**: `handleSegaPCMWrite()`/
+  `triggerSegaPCMVoice()` and `handleC140Write()`/`triggerC140Voice()`
+  respectively — two small, separate files (not one combined file) to keep
+  the established one-file-per-chip-family convention, even though each is
+  only ~70 lines. `segaPCMRegisters`/`segaPCMActiveVoices`/`c140Registers`/
+  `c140ActiveVoices` widened to `public`. `stopPCMVoice()` (a generic
+  by-array helper also called from `stopAllPCMVoices()`'s EOF cleanup) and
+  `pcmROMDataBlockForAddress()` (also used by the still-`midi-converter.ts`-
+  resident YM2608 ADPCM-B path) stayed in `midi-converter.ts` and were
+  widened to `public` rather than moved. `PCMVoiceNote` needed no export:
+  neither new file names the type directly, since assigning a `{
+  descriptorId, note }` literal to `host.segaPCMActiveVoices[channel]`/
+  `host.c140ActiveVoices[channel]` lets TypeScript infer it structurally
+  from the (already-visible, because the field itself is public) array
+  element type.
+- **`chips/ym2151.ts`**: `handleYM2151Write()` and its
+  `syncYM2151ToneState()`/`syncYM2151NoiseState()`/
+  `ym2151NoiseNoteForPeriod()`/`updateOPMCsmTimer()`/
+  `updateOPMCsmTimerRegister()` helpers. `YM2151_LOGICAL_OPERATOR_BY_REGISTER_SLOT`/
+  `YM2151_C2_OPERATOR_MASK` moved into the new file outright (used only
+  there); `YM2151_FM_PITCH_BEND_RANGE` exported (still read by
+  `pitchBendRangeForKey()` there). `opmCsmTimer()`/`opmCsmPeriodSamples()`/
+  `emitOPMCsmPulse()`/`opnCarrierVelocity()`/`opnCarrierExpression()` all
+  stayed `public` methods on `MidiConverter` rather than moving — the CSM
+  trio because `advanceCSMTimers()` (the OPN-and-OPM-shared Timer A
+  scheduler that runs from `convert()`'s own main loop) calls
+  `this.emitOPMCsmPulse(...)` directly and must keep working unmodified,
+  and the carrier-velocity/expression pair because OPN handlers
+  (not yet extracted) call them too. This is also the first extraction
+  where the dependency ran the *other* direction: `emitOPMCsmPulse()`
+  itself (staying in `midi-converter.ts`) needed to call the newly-moved
+  `syncYM2151ToneState()`/`syncYM2151NoiseState()`, so `midi-converter.ts`
+  gained an import *from* `chips/ym2151.ts` for those two names — the same
+  "type-only import back into the class file is fine, only a *value*-level
+  circular `require` would be a problem" reasoning as `event-output.ts`'s
+  original `host: MidiConverter` design, just exercised in the reverse
+  direction for the first time.
+
+All eight follow the exact mechanical recipe `event-output.ts` established:
 `host.foo(...)` reads/writes instead of `this.foo(...)`, call sites in
 `convert()`'s dispatch loop changed from `this.handleXWrite(...)` to
 `handleXWrite(this, ...)`, no formula/constant/comment changed. Verified
 identically each time: `npm test` (all 211 tests, unchanged) after every
 single-chip move, checked in isolation before starting the next chip.
-`midi-converter.ts` is 3,960 lines as of this writing, down from the
-original 6,181 (36% reduction) across all eight extractions so far.
+`midi-converter.ts` is 3,607 lines as of this writing, down from the
+original 6,181 (42% reduction) across all eleven extractions so far.
 
-Still remaining, roughly in order of expected difficulty: AY8910 (shares
-`handleSSGWrite()`'s tone/noise/envelope state machine with YM2203/YM2608's
-integrated SSG — extracting it alone means either duplicating that shared
-function or deciding which chip file owns it), SegaPCM and C140 (share
-`stopPCMVoice()` and `PCMVoiceNote` bookkeeping with each other and with
-the still-`midi-converter.ts`-resident YM2612 DAC/YM2608 ADPCM-B PCM
-paths), YM2151 (self-contained but large, with CSM timer interaction),
-and last YM2612/YM2203/YM2608 together (the OPN family's Ch3
+Still remaining: AY8910 (shares `handleSSGWrite()`'s tone/noise/envelope
+state machine with YM2203/YM2608's integrated SSG — extracting it alone
+means either duplicating that shared function or deciding which chip file
+owns it) and, last, YM2612/YM2203/YM2608 together (the OPN family's Ch3
 Special/CSM/algorithm-aware pitch-scale machinery is the most deeply
-cross-chip-shared code in the file — `opnPitchScale()`/`fmPitchScale()`/
-`opnCarrierVelocity()` etc., already `public` from the `event-output.ts`
-pass, are shared by all three OPN-family chips plus the OPL family's
-`oplPitchScale()`/`fmCarrierVelocity()` twins, extracted above).
+cross-chip-shared code left in the file — `opnPitchScale()`/`fmPitchScale()`/
+`opnCarrierVelocity()`/`opnCarrierExpression()`/`recordFMTimbreEvent()`/
+`updateKeyBoundFMPitch()` etc., already `public` from the `event-output.ts`
+pass and reused directly by every extraction above, are shared by all three
+OPN-family chips plus the OPL family's `oplPitchScale()`/
+`fmCarrierVelocity()` twins already extracted). Both remaining pieces are
+qualitatively different from the eight done so far: every chip extracted
+above owned its entire register-handling state machine outright, while
+AY8910/YM2203/YM2608/YM2612 genuinely *share* one, so extracting any one of
+them requires first deciding how that shared machinery itself should be
+organized — a real design question, not just a mechanical `host:
+MidiConverter` move, and best scoped as its own dedicated pass rather than
+folded into "the next chip in the list."
 
 ## Out of scope (for now)
 

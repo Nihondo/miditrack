@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MidiConverter = exports.GBDMG_FRAME_SAMPLES = exports.GBDMG_SQUARE_KEYS = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = exports.OPL_CHIPS = exports.CHIP_PITCH_BEND_RANGE = exports.OPL_FM_PITCH_BEND_RANGE = void 0;
+exports.MidiConverter = exports.GBDMG_FRAME_SAMPLES = exports.GBDMG_SQUARE_KEYS = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = exports.OPL_CHIPS = exports.CHIP_PITCH_BEND_RANGE = exports.OPL_FM_PITCH_BEND_RANGE = exports.YM2151_FM_PITCH_BEND_RANGE = void 0;
 const midi_writer_js_1 = __importDefault(require("midi-writer-js"));
 const vgm_chip_metadata_1 = require("./vgm-chip-metadata");
 const midi_math_1 = require("./midi-math");
@@ -14,6 +14,9 @@ const huc6280_1 = require("./chips/huc6280");
 const gbdmg_1 = require("./chips/gbdmg");
 const ym2413_1 = require("./chips/ym2413");
 const opl_1 = require("./chips/opl");
+const segapcm_1 = require("./chips/segapcm");
+const c140_1 = require("./chips/c140");
+const ym2151_1 = require("./chips/ym2151");
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
 // pulse/square-ish, so every track is given this one consistent voice explicitly rather
@@ -36,7 +39,7 @@ const GM_PERCUSSION_CHANNEL = 10;
 // (20ms at the VGM 44.1kHz timeline) reliably separates one drum hit from the next without
 // splitting a single sample's steady stream of writes.
 const YM2612_DAC_DIRECT_GAP_SAMPLES = 882;
-const YM2151_FM_PITCH_BEND_RANGE = 96;
+exports.YM2151_FM_PITCH_BEND_RANGE = 96;
 const YM2203_FM_PITCH_BEND_RANGE = 96;
 const YM2608_FM_PITCH_BEND_RANGE = 96;
 exports.OPL_FM_PITCH_BEND_RANGE = 96;
@@ -127,12 +130,6 @@ exports.YM2413_BUILTIN_CARRIER_MULTIPLES = [
     0, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 0, 1, 1,
 ];
 const YM2413_OPERATOR_MULTIPLES = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15];
-// YM2151's raw $08 bits 3-6 are ordered M1/C1/M2/C2, which is the logical
-// algorithm order used by OPN_OPERATOR_PATHS.  Its per-operator register groups however
-// are ordered M1/M2/C1/C2 ($60/$68/$70/$78).  MAME ymfm's OPM operator map
-// (operator_list(0,16,8,24)) performs the same physical-slot permutation.
-const YM2151_LOGICAL_OPERATOR_BY_REGISTER_SLOT = [0, 2, 1, 3];
-const YM2151_C2_OPERATOR_MASK = 1 << 3;
 // Game Boy DMG (LR35902) APU. VGM command $B3 writes register 0 = GameBoy address $FF10
 // (NR10), so these register offsets follow the NRxx numbering directly. Confirmed against
 // Pan Docs (gbdev.io/pandocs — the primary Game Boy hardware reference; fetched via a
@@ -1088,7 +1085,7 @@ class MidiConverter {
     }
     pitchBendRangeForKey(key) {
         if (this.isYM2151FMKey(key))
-            return YM2151_FM_PITCH_BEND_RANGE;
+            return exports.YM2151_FM_PITCH_BEND_RANGE;
         if (this.isOPLFMKey(key))
             return exports.OPL_FM_PITCH_BEND_RANGE;
         if (key.startsWith('ym2608_') && key.includes('_fm_'))
@@ -1351,15 +1348,15 @@ class MidiConverter {
                     else if (exports.OPL_CHIPS.includes(cmd.chip))
                         (0, opl_1.handleOPLWrite)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'YM2151')
-                        this.handleYM2151Write(cmd, currentTime, activeNotes);
+                        (0, ym2151_1.handleYM2151Write)(this, cmd, currentTime, activeNotes);
                     else if (cmd.chip === 'AY8910')
                         this.handleAY8910Write(cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'HuC6280')
                         (0, huc6280_1.handleHuC6280Write)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'SegaPCM')
-                        this.handleSegaPCMWrite(cmd, currentTime);
+                        (0, segapcm_1.handleSegaPCMWrite)(this, cmd, currentTime);
                     else if (cmd.chip === 'C140')
-                        this.handleC140Write(cmd, currentTime);
+                        (0, c140_1.handleC140Write)(this, cmd, currentTime);
                     else if (cmd.chip === 'YM2413')
                         (0, ym2413_1.handleYM2413Write)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'GBDMG')
@@ -1564,34 +1561,8 @@ class MidiConverter {
             timer.lastEmittedTick = undefined;
         }
     }
-    /** OPM Timer Aの値をCSM schedulerへ反映する。 */
-    updateOPMCsmTimerRegister(instance, register, data) {
-        const timer = this.opmCsmTimer(instance);
-        if (register === 0x10)
-            timer.timerHigh = data;
-        else
-            timer.timerLow = data & 0x03;
-    }
-    /** OPM $14のCSM有効状態とTimer Aの開始状態を更新する。 */
-    updateOPMCsmTimer(instance, data, currentTime, activeNotes) {
-        const timer = this.opmCsmTimer(instance);
-        const wasActive = timer.isRunning && timer.isCSMEnabled;
-        timer.isRunning = (data & 0x01) !== 0;
-        timer.isCSMEnabled = (data & 0x80) !== 0;
-        const isActive = timer.isRunning && timer.isCSMEnabled;
-        if (!isActive) {
-            if (timer.nextRelease !== undefined)
-                this.emitOPMCsmPulse(instance, false, currentTime, activeNotes);
-            timer.nextOverflow = undefined;
-            timer.nextRelease = undefined;
-            return;
-        }
-        if (!wasActive) {
-            timer.nextOverflow = currentTime + this.opmCsmPeriodSamples(timer);
-            timer.nextRelease = undefined;
-            timer.lastEmittedTick = undefined;
-        }
-    }
+    // updateOPMCsmTimerRegister()/updateOPMCsmTimer()は、YM2151のCSM Timer A設定処理
+    // としてchips/ym2151.tsへ移設した（上のimportを参照）。
     /** すべての動作中CSM Timer Aをwait区間内で進める。 */
     advanceCSMTimers(startTime, targetTime, activeNotes) {
         if (targetTime <= startTime)
@@ -1650,9 +1621,9 @@ class MidiConverter {
             const key = `ym2151_${channel}`;
             const state = this.channels.get(key);
             state.keyOnMask = timer.manualKeyOnMasks[channel] | (isKeyOn ? 0x0F : 0);
-            this.syncYM2151ToneState(channel, false, currentTime, activeNotes);
+            (0, ym2151_1.syncYM2151ToneState)(this, channel, false, currentTime, activeNotes);
             if (channel === 7)
-                this.syncYM2151NoiseState(false, currentTime, activeNotes);
+                (0, ym2151_1.syncYM2151NoiseState)(this, false, currentTime, activeNotes);
         }
     }
     /** OPN/OPMが共通で使う1 MIDI tick分のCSM pulse長をsampleへ換算する。 */
@@ -2603,259 +2574,14 @@ class MidiConverter {
             }
         }
     }
-    handleYM2151Write(cmd, currentTime, activeNotes) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const reg = cmd.register;
-        const data = cmd.data;
-        if (reg === 0x10 || reg === 0x11) {
-            this.updateOPMCsmTimerRegister(cmd.instance ?? 0, reg, data);
-            return;
-        }
-        if (reg === 0x14) {
-            this.updateOPMCsmTimer(cmd.instance ?? 0, data, currentTime, activeNotes);
-            return;
-        }
-        // $20-$27: RL pan bits plus algorithm/feedback. OPM stores each channel's
-        // pan in the same register, so emit a portable CC10 state change.
-        if (reg >= 0x20 && reg <= 0x27) {
-            const key = `ym2151_${reg - 0x20}`;
-            (0, event_output_1.addPan)(this, key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
-            const state = this.channels.get(key);
-            state.opnAlgorithm = data & 0x07;
-            this.recordFMTimbreEvent(key, currentTime, 'opm-timbre');
-            return;
-        }
-        // $40-$5f stores DT1 and MULTIPLE, arranged as four 8-register channel groups.
-        // The sidecar preserves the MULTIPLE nibble for later timbre reconstruction; MIDI
-        // itself only uses the existing key-code/fraction pitch representation for OPM.
-        if (reg >= 0x40 && reg <= 0x5F) {
-            const registerSlot = Math.floor((reg - 0x40) / 8);
-            const logicalOperator = YM2151_LOGICAL_OPERATOR_BY_REGISTER_SLOT[registerSlot];
-            const channel = (reg - 0x40) & 0x07;
-            const key = `ym2151_${channel}`;
-            const state = this.channels.get(key);
-            state.opnOperatorMultipliers ?? (state.opnOperatorMultipliers = [0, 0, 0, 0]);
-            state.opnOperatorMultiplierWritten ?? (state.opnOperatorMultiplierWritten = [false, false, false, false]);
-            state.opnOperatorMultipliers[logicalOperator] = data & 0x0F;
-            state.opnOperatorMultiplierWritten[logicalOperator] = true;
-            this.recordFMTimbreEvent(key, currentTime, 'opm-timbre');
-            return;
-        }
-        // $60-$7f is operator TL, arranged as four 8-register channel groups.
-        if (reg >= 0x60 && reg <= 0x7F) {
-            const registerSlot = Math.floor((reg - 0x60) / 8);
-            const logicalOperator = YM2151_LOGICAL_OPERATOR_BY_REGISTER_SLOT[registerSlot];
-            const channel = (reg - 0x60) & 0x07;
-            const state = this.channels.get(`ym2151_${channel}`);
-            state.opnOperatorTotalLevels ?? (state.opnOperatorTotalLevels = [0, 0, 0, 0]);
-            state.opnOperatorTotalLevels[logicalOperator] = data & 0x7F;
-            if (state.active) {
-                (0, event_output_1.addExpression)(this, `ym2151_${channel}`, this.opnCarrierExpression(state), currentTime);
-            }
-            this.recordFMTimbreEvent(`ym2151_${channel}`, currentTime, 'opm-timbre');
-            return;
-        }
-        // Register $0F: bit7 enables noise on channel 7; bits0-4 (NFRQ) select its frequency.
-        if (reg === 0x0F) {
-            const state = this.channels.get('ym2151_7');
-            const oldNoisePeriod = state.noisePeriod;
-            const wasNoiseActive = state.isNoiseActive;
-            state.isNoise = (data & 0x80) !== 0;
-            state.noisePeriod = data & 0x1F;
-            this.syncYM2151ToneState(7, false, currentTime, activeNotes);
-            this.syncYM2151NoiseState(false, currentTime, activeNotes);
-            // Same "still active, rate moved to a different drum band" re-evaluation as
-            // HuC6280's $07 handler — syncYM2151NoiseState() above already handles a fresh
-            // on/off transition, this only covers NFRQ changing without a mode change.
-            if (wasNoiseActive
-                && state.isNoiseActive
-                && oldNoisePeriod !== undefined
-                && this.ym2151NoiseNoteForPeriod(state.noisePeriod) !== this.ym2151NoiseNoteForPeriod(oldNoisePeriod)) {
-                const noiseKey = 'ym2151_noise_7';
-                (0, event_output_1.noteOff)(this, noiseKey, 7, currentTime, activeNotes);
-                (0, event_output_1.noteOnPercussion)(this, noiseKey, 80, currentTime, activeNotes, this.ym2151NoiseNoteForPeriod(state.noisePeriod));
-            }
-            return;
-        }
-        // Register $08: bits 0-2 select the channel and bits 3-6 key its four operators.
-        if (reg === 0x08) {
-            const channel = data & 0x07;
-            const key = `ym2151_${channel}`;
-            const state = this.channels.get(key);
-            const timer = this.opmCsmTimer(cmd.instance ?? 0);
-            timer.manualKeyOnMasks ?? (timer.manualKeyOnMasks = new Array(8).fill(0));
-            timer.manualKeyOnMasks[channel] = (data >> 3) & 0x0F;
-            const csmMask = timer.nextRelease === undefined ? 0 : 0x0F;
-            state.keyOnMask = timer.manualKeyOnMasks[channel] | csmMask;
-            // A repeated key-on retriggers the YM2151 envelope, so mirror that onset in MIDI.
-            this.syncYM2151ToneState(channel, true, currentTime, activeNotes);
-            if (channel === 7)
-                this.syncYM2151NoiseState(true, currentTime, activeNotes);
-            return;
-        }
-        // Registers $28-$2F: octave/key code; $30-$37: 1/64-semitone key fraction.
-        if (reg >= 0x28 && reg <= 0x2F) {
-            const channel = reg - 0x28;
-            const key = `ym2151_${channel}`;
-            const state = this.channels.get(key);
-            const oldKeyCode = state.keyCode;
-            state.keyCode = data & 0x7F;
-            if (state.active && state.keyCode !== oldKeyCode) {
-                this.updateKeyBoundFMPitch(key, currentTime, activeNotes, YM2151_FM_PITCH_BEND_RANGE);
-            }
-        }
-        else if (reg >= 0x30 && reg <= 0x37) {
-            const channel = reg - 0x30;
-            const key = `ym2151_${channel}`;
-            const state = this.channels.get(key);
-            const oldKeyFraction = state.keyFraction;
-            state.keyFraction = (data >> 2) & 0x3F;
-            if (state.active && state.keyFraction !== oldKeyFraction) {
-                this.updateKeyBoundFMPitch(key, currentTime, activeNotes, YM2151_FM_PITCH_BEND_RANGE);
-            }
-        }
-    }
-    syncYM2151ToneState(channel, shouldRetrigger, currentTime, activeNotes) {
-        const key = `ym2151_${channel}`;
-        const state = this.channels.get(key);
-        const noiseOperatorMask = channel === 7 && state.isNoise ? YM2151_C2_OPERATOR_MASK : 0;
-        const shouldSound = ((state.keyOnMask || 0) & ~noiseOperatorMask) !== 0;
-        if (shouldSound && (!state.active || shouldRetrigger)) {
-            if (state.active)
-                (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
-            state.active = true;
-            state.opnActiveVelocity = this.opnCarrierVelocity(state);
-            (0, event_output_1.noteOn)(this, key, channel, currentTime, activeNotes);
-        }
-        else if (!shouldSound && state.active) {
-            state.active = false;
-            (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
-        }
-    }
-    syncYM2151NoiseState(shouldRetrigger, currentTime, activeNotes) {
-        const state = this.channels.get('ym2151_7');
-        const noiseKey = 'ym2151_noise_7';
-        const shouldSound = state.isNoise && ((state.keyOnMask || 0) & YM2151_C2_OPERATOR_MASK) !== 0;
-        if (shouldSound && (!state.isNoiseActive || shouldRetrigger)) {
-            if (state.isNoiseActive)
-                (0, event_output_1.noteOff)(this, noiseKey, 7, currentTime, activeNotes);
-            state.isNoiseActive = true;
-            (0, event_output_1.noteOnPercussion)(this, noiseKey, 80, currentTime, activeNotes, this.ym2151NoiseNoteForPeriod(state.noisePeriod ?? 0));
-        }
-        else if (!shouldSound && state.isNoiseActive) {
-            state.isNoiseActive = false;
-            (0, event_output_1.noteOff)(this, noiseKey, 7, currentTime, activeNotes);
-        }
-    }
-    // Confirmed against ymfm_opm.cpp: the noise LFSR advances when a counter that
-    // increments every sample reaches the NFRQ-derived threshold (`m_noise_counter++ >=
-    // freq`). A LARGER NFRQ raises that threshold, so the counter takes longer to reach it
-    // and the noise updates LESS often — pitch is LOWER. (Opposite direction from
-    // HuC6280's $07 above.)
-    ym2151NoiseNoteForPeriod(nfrq) {
-        const normalizedRate = (31 - (nfrq & 0x1F)) / 31;
-        return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
-    }
+    // handleYM2151Write()から始まるYM2151のレジスタ処理群は、chips/ym2151.tsへ
+    // 移設した（上のimportを参照）。
     // handleHuC6280Write()/updateHuC6280Pan()は、HuC6280のレジスタ処理として
     // chips/huc6280.tsへ移設した（上のimportを参照）。
-    handleSegaPCMWrite(cmd, currentTime) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const register = cmd.register & 0xFF;
-        const data = cmd.data;
-        this.segaPCMRegisters[register] = data;
-        if ((register & 0x87) !== 0x86)
-            return;
-        const channel = (register & 0x78) >> 3;
-        if ((data & 0x01) !== 0) {
-            this.stopPCMVoice(this.segaPCMActiveVoices, channel, currentTime);
-        }
-        else {
-            this.triggerSegaPCMVoice(channel, data, cmd.instance ?? 0, currentTime);
-        }
-    }
-    triggerSegaPCMVoice(channel, control, instance, currentTime) {
-        this.stopPCMVoice(this.segaPCMActiveVoices, channel, currentTime);
-        const base = channel << 3;
-        // $84/$85 are the 16-bit byte address.  The chip advances it as a 16.8
-        // fixed-point value; the control register selects its physical ROM bank.
-        const address = this.segaPCMRegisters[base + 0x84] | (this.segaPCMRegisters[base + 0x85] << 8);
-        const bankBaseAddress = (0, pcm_analysis_1.segaPCMBankBaseAddress)(this.vgmData, control);
-        const physicalAddress = bankBaseAddress + address;
-        const sampleId = physicalAddress.toString(16).padStart(6, '0');
-        const trackKey = `segapcm_sample_${sampleId}`;
-        // base+2 = left volume, base+3 = right volume.
-        const left = this.segaPCMRegisters[base + 2];
-        const right = this.segaPCMRegisters[base + 3];
-        const volume = Math.max(left, right);
-        const velocity = Math.max(1, Math.round((Math.min(127, volume) / 127) * 100));
-        const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
-        const total = left + right;
-        (0, event_output_1.addPCMPan)(this, trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
-        const dataBlock = this.pcmROMDataBlockForAddress(0x80, instance, physicalAddress);
-        // SegaPCM's current/loop address is 16.8 fixed point.  Its end register
-        // names the final 256-byte page, therefore the useful end is exclusive.
-        const endAddressExclusive = bankBaseAddress + ((this.segaPCMRegisters[base + 0x06] + 1) << 8);
-        const isLoop = (control & 0x02) === 0;
-        const durationSamples = isLoop
-            ? undefined
-            : (0, pcm_analysis_1.segaPCMDurationSamples)(this.vgmData, address << 8, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07], this.sampleRate);
-        const loopAddress = bankBaseAddress + this.segaPCMRegisters[base + 0x04]
-            + (this.segaPCMRegisters[base + 0x05] << 8);
-        const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, { endAddressExclusive, ...(isLoop ? { loopAddress } : {}) });
-        this.segaPCMActiveVoices[channel] = { descriptorId, note };
-    }
-    // segaPCMBankBaseAddress()/segaPCMDurationSamples()/c140DurationSamples()/c140ROMAddress()
-    // は、他のPCM範囲解析と合わせてpcm-analysis.tsへ移設した（上のimportを参照）。
-    handleC140Write(cmd, currentTime) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const register = cmd.register & 0x1FF;
-        const data = cmd.data;
-        this.c140Registers[register] = data;
-        if (register >= 0x180 || (register & 0x0F) !== 0x05)
-            return;
-        const channel = register >> 4;
-        const isActive = this.c140ActiveVoices[channel] !== undefined;
-        const shouldTrigger = (data & 0x80) !== 0 || ((data & 0x40) !== 0 && isActive);
-        if (shouldTrigger)
-            this.triggerC140Voice(channel, cmd.instance ?? 0, currentTime);
-        else
-            this.stopPCMVoice(this.c140ActiveVoices, channel, currentTime);
-    }
-    triggerC140Voice(channel, instance, currentTime) {
-        this.stopPCMVoice(this.c140ActiveVoices, channel, currentTime);
-        const base = channel << 4;
-        const bank = this.c140Registers[base + 4];
-        const start = (this.c140Registers[base + 6] << 8) | this.c140Registers[base + 7];
-        const sampleId = `${bank.toString(16).padStart(2, '0')}${start.toString(16).padStart(4, '0')}`;
-        const trackKey = `c140_sample_${sampleId}`;
-        // Confirmed against MAME's c140.cpp: base+0 = right volume, base+1 = left volume
-        // (opposite order from SegaPCM above).
-        const right = this.c140Registers[base];
-        const left = this.c140Registers[base + 1];
-        const volume = Math.max(left, right);
-        const velocity = Math.max(1, Math.round((Math.min(127, volume) / 127) * 100));
-        const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
-        const total = left + right;
-        (0, event_output_1.addPCMPan)(this, trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
-        const end = (this.c140Registers[base + 8] << 8) | this.c140Registers[base + 9];
-        const isLoop = (this.c140Registers[base + 5] & 0x10) !== 0;
-        const isC219Noise = this.vgmData.header.c140Type === 2 && (this.c140Registers[base + 5] & 0x04) !== 0;
-        const loop = (this.c140Registers[base + 10] << 8) | this.c140Registers[base + 11];
-        const startAddress = (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, start);
-        const dataBlock = this.pcmROMDataBlockForAddress(0x8D, instance, startAddress);
-        const frequency = (this.c140Registers[base + 2] << 8) | this.c140Registers[base + 3];
-        const durationSamples = isLoop || isC219Noise
-            ? undefined
-            : (0, pcm_analysis_1.c140DurationSamples)(this.vgmData, start, end, frequency, this.sampleRate);
-        const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, {
-            endAddressExclusive: (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, end),
-            ...(isLoop ? { loopAddress: (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, loop) } : {}),
-        }, (0, pcm_analysis_1.c140PCMAnalysisForVoice)(this.vgmData, dataBlock, startAddress, (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, end), this.c140Registers[base + 5]));
-        this.c140ActiveVoices[channel] = { descriptorId, note };
-    }
+    // handleSegaPCMWrite()/triggerSegaPCMVoice()は、chips/segapcm.tsへ移設した
+    // （上のimportを参照）。
+    // handleC140Write()/triggerC140Voice()は、chips/c140.tsへ移設した
+    // （上のimportを参照）。
     // handleOPLWrite()から始まるOPLファミリー（YM3812/YM3526/Y8950）のレジスタ処理群は、
     // chips/opl.tsへ移設した（上のimportを参照）。
     // handleYM2413Write()から始まるYM2413のレジスタ処理群は、chips/ym2413.tsへ
