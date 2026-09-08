@@ -3,11 +3,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MidiConverter = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = void 0;
+exports.MidiConverter = exports.GBDMG_SQUARE_KEYS = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = exports.CHIP_PITCH_BEND_RANGE = void 0;
 const midi_writer_js_1 = __importDefault(require("midi-writer-js"));
 const vgm_chip_metadata_1 = require("./vgm-chip-metadata");
 const midi_math_1 = require("./midi-math");
 const pcm_analysis_1 = require("./pcm-analysis");
+const event_output_1 = require("./event-output");
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
 // pulse/square-ish, so every track is given this one consistent voice explicitly rather
@@ -23,9 +24,6 @@ const YM2413_GM_PROGRAM_BY_PATCH = [
     GM_PROGRAM_DRAWBAR_ORGAN, 60, GM_PROGRAM_LEAD_1_SQUARE, 6, 11, 38, 32, 27,
 ];
 const GM_PERCUSSION_CHANNEL = 10;
-const GM_CLOSED_HI_HAT_NOTE = 42;
-const GM_PCM_PERCUSSION_FIRST_NOTE = 35;
-const GM_PCM_PERCUSSION_LAST_NOTE = 81;
 const HUC6280_NOISE_RETRIGGER_MIN_VOLUME_RISE = 4;
 // Some HuC6280 drivers split the two frequency bytes across adjacent 50/60Hz updates.
 // Coalescing up to one 50Hz VGM frame avoids thousands of false MIDI note attacks, while
@@ -42,7 +40,7 @@ const YM2151_FM_PITCH_BEND_RANGE = 96;
 const YM2203_FM_PITCH_BEND_RANGE = 96;
 const YM2608_FM_PITCH_BEND_RANGE = 96;
 const OPL_FM_PITCH_BEND_RANGE = 96;
-const CHIP_PITCH_BEND_RANGE = 96;
+exports.CHIP_PITCH_BEND_RANGE = 96;
 // CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
 // MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
 // オーバーフローは1回へ集約し、出力ノートは1 tickだけ保持する。
@@ -165,7 +163,7 @@ const YM2151_C2_OPERATOR_MASK = 1 << 3;
 // - Wave RAM contents ($FF30-$FF3F / VGM register $20-$2F): timbre data, not pitch/volume,
 //   ignored per this file's "every melodic track uses the shared square-lead GM Program"
 //   convention.
-const GBDMG_SQUARE_KEYS = ['gbdmg_0', 'gbdmg_1'];
+exports.GBDMG_SQUARE_KEYS = ['gbdmg_0', 'gbdmg_1'];
 const GBDMG_FRAME_SAMPLES = 44100 / 512;
 // Logical operator order is O1, O2, O3, O4. Each entry describes the operators
 // whose frequencies can reach one audible carrier for the corresponding algorithm.
@@ -1109,7 +1107,7 @@ class MidiConverter {
         if (key.startsWith('ym2203_') && key.includes('_fm_'))
             return YM2203_FM_PITCH_BEND_RANGE;
         if (key.startsWith('psg_') || key.startsWith('ay8910_') || key.startsWith('huc6280_') || key.startsWith('gbdmg_') || key.includes('_ssg_'))
-            return CHIP_PITCH_BEND_RANGE;
+            return exports.CHIP_PITCH_BEND_RANGE;
         return 2;
     }
     addPitchBendRange(track, midiChannel, semitones) {
@@ -1383,7 +1381,7 @@ class MidiConverter {
         this.stopAllPCMVoices(currentTime);
         // Turn off any remaining notes
         for (const descriptorId of [...activeNotes.keys()]) {
-            this.noteOff(descriptorId, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, descriptorId, 0, currentTime, activeNotes);
         }
         this.appendOPNCh3UnisonWarnings();
         return Array.from(this.tracks.values()).map(t => t.track);
@@ -1393,7 +1391,7 @@ class MidiConverter {
     handleGameGearStereo(data, currentTime) {
         this.gameGearStereo = data;
         for (let channel = 0; channel < 4; channel++) {
-            this.addPan(`psg_${channel}`, (data & (1 << channel)) !== 0, (data & (1 << (channel + 4))) !== 0, currentTime);
+            (0, event_output_1.addPan)(this, `psg_${channel}`, (data & (1 << channel)) !== 0, (data & (1 << (channel + 4))) !== 0, currentTime);
         }
     }
     /** VGM $31 のAY/OPN SSG LR maskを各SSG voiceのCC10へ変換する。 */
@@ -1410,7 +1408,7 @@ class MidiConverter {
         for (let channel = 0; channel < 3; channel++) {
             const hasRight = (data & (1 << (channel * 2))) !== 0;
             const hasLeft = (data & (1 << (channel * 2 + 1))) !== 0;
-            this.addPan(`${keyPrefix}_${channel}`, hasLeft, hasRight, currentTime);
+            (0, event_output_1.addPan)(this, `${keyPrefix}_${channel}`, hasLeft, hasRight, currentTime);
         }
     }
     handlePSGWrite(data, currentTime, activeNotes, cmdIndex) {
@@ -1446,7 +1444,7 @@ class MidiConverter {
                     state.frequency = (state.frequency & 0x3F0) | nibble;
                     if (state.frequency !== oldFreq && !isMultiByteUpdate) {
                         if (state.active) {
-                            this.updateNotePitch(key, channel, currentTime, activeNotes);
+                            (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
                         }
                         // NF=3 makes the noise generator track this channel's own tone frequency, so
                         // a change here can move the noise's effective pitch even if this channel's
@@ -1472,12 +1470,12 @@ class MidiConverter {
                     if (wasOff && !isOff) {
                         // Note ON
                         state.active = true;
-                        this.noteOn(key, channel, currentTime, activeNotes);
+                        (0, event_output_1.noteOn)(this, key, channel, currentTime, activeNotes);
                     }
                     else if (!wasOff && isOff) {
                         // Note OFF
                         state.active = false;
-                        this.noteOff(key, channel, currentTime, activeNotes);
+                        (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
                     }
                     else if (!isOff && state.active && oldVolume !== nibble) {
                         // Volume change while active -> Send Expression (CC 11)
@@ -1512,7 +1510,7 @@ class MidiConverter {
                 state.frequency = (dataBits << 4) | (state.frequency & 0x0F);
                 if (state.frequency !== oldFreq) {
                     if (state.active) {
-                        this.updateNotePitch(key, channel, currentTime, activeNotes);
+                        (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
                     }
                     if (channel === 2) {
                         this.reevaluateSN76489NoiseForChannel2Frequency(currentTime, activeNotes);
@@ -1530,9 +1528,9 @@ class MidiConverter {
             return;
         const noiseKey = 'psg_noise_3';
         if (state.isNoiseActive)
-            this.noteOff(noiseKey, 3, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, 3, currentTime, activeNotes);
         state.isNoiseActive = true;
-        this.noteOnPercussion(noiseKey, this.sn76489Velocity(state.volume), currentTime, activeNotes, this.sn76489NoiseNote());
+        (0, event_output_1.noteOnPercussion)(this, noiseKey, this.sn76489Velocity(state.volume), currentTime, activeNotes, this.sn76489NoiseNote());
     }
     syncSN76489NoiseVolume(oldVolume, currentTime, activeNotes) {
         const state = this.channels.get('psg_3');
@@ -1542,14 +1540,14 @@ class MidiConverter {
         const shouldSound = state.volume !== 0x0F;
         if (shouldSound && !state.isNoiseActive) {
             state.isNoiseActive = true;
-            this.noteOnPercussion(noiseKey, this.sn76489Velocity(state.volume), currentTime, activeNotes, this.sn76489NoiseNote());
+            (0, event_output_1.noteOnPercussion)(this, noiseKey, this.sn76489Velocity(state.volume), currentTime, activeNotes, this.sn76489NoiseNote());
         }
         else if (!shouldSound && state.isNoiseActive) {
             state.isNoiseActive = false;
-            this.noteOff(noiseKey, 3, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, 3, currentTime, activeNotes);
         }
         else if (shouldSound && oldVolume !== state.volume) {
-            this.addExpression(noiseKey, this.sn76489Expression(state.volume), currentTime);
+            (0, event_output_1.addExpression)(this, noiseKey, this.sn76489Expression(state.volume), currentTime);
         }
     }
     sn76489Velocity(volume) {
@@ -1591,8 +1589,8 @@ class MidiConverter {
         const active = activeNotes.get(noiseKey);
         if (active === undefined || active.note === newNote)
             return;
-        this.noteOff(noiseKey, 3, currentTime, activeNotes);
-        this.noteOnPercussion(noiseKey, this.sn76489Velocity(noiseState.volume), currentTime, activeNotes, newNote);
+        (0, event_output_1.noteOff)(this, noiseKey, 3, currentTime, activeNotes);
+        (0, event_output_1.noteOnPercussion)(this, noiseKey, this.sn76489Velocity(noiseState.volume), currentTime, activeNotes, newNote);
     }
     handleYM2612Write(cmd, currentTime, activeNotes, cmdIndex) {
         if (cmd.register === undefined || cmd.data === undefined || cmd.port === undefined)
@@ -1661,11 +1659,11 @@ class MidiConverter {
                     state.opnActivePitchScale = this.opnPitchScale(state);
                     state.opnActiveVelocity = this.opnCarrierVelocity(state);
                     state.active = true;
-                    this.noteOn(key, channelIndex + 4, currentTime, activeNotes); // offset channel for MIDI
+                    (0, event_output_1.noteOn)(this, key, channelIndex + 4, currentTime, activeNotes); // offset channel for MIDI
                 }
                 else if (!keyOn && state.active) {
                     state.active = false;
-                    this.noteOff(key, channelIndex + 4, currentTime, activeNotes);
+                    (0, event_output_1.noteOff)(this, key, channelIndex + 4, currentTime, activeNotes);
                     state.opnActivePitchScale = 1;
                 }
             }
@@ -1703,7 +1701,7 @@ class MidiConverter {
             const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
             state.hasPendingFrequencyUpdate = isSplitUpdate;
             if (state.active && !isSplitUpdate && (state.frequency !== oldFreq || hadPendingUpdate)) {
-                this.updateNotePitch(key, channelIndex + 4, currentTime, activeNotes);
+                (0, event_output_1.updateNotePitch)(this, key, channelIndex + 4, currentTime, activeNotes);
             }
             return;
         }
@@ -1720,14 +1718,14 @@ class MidiConverter {
             return;
         const percussionKey = this.opnCh3PercussionActiveKeys.get(context.stateKey);
         if (percussionKey !== undefined)
-            this.noteOff(percussionKey, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, percussionKey, 0, currentTime, activeNotes);
         this.opnCh3PercussionActiveKeys.delete(context.stateKey);
         for (const key of context.operatorKeys) {
             const state = this.channels.get(key);
             if (!state.active)
                 continue;
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
         this.channels.get(context.parentKey).keyOnMask = 0;
         this.opnCsmTimer(context.chip, context.instance).manualKeyOnMask = 0;
@@ -1981,11 +1979,11 @@ class MidiConverter {
                     ? undefined
                     : this.operatorTotalLevelVelocity(totalLevel);
                 state.active = true;
-                this.noteOn(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
             }
             else if (!isKeyOn && state.active) {
                 state.active = false;
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
                 state.opnActivePitchScale = 1;
             }
         }
@@ -1999,14 +1997,14 @@ class MidiConverter {
         const activeKey = this.opnCh3PercussionActiveKeys.get(context.stateKey);
         if (newlyKeyedMask !== 0) {
             if (activeKey !== undefined)
-                this.noteOff(activeKey, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, activeKey, 0, currentTime, activeNotes);
             const note = this.opnCh3SpecialPercussionNote(context, slotMask);
             const key = `${context.percussionPrefix}${note}`;
-            this.noteOnPercussion(key, this.opnCarrierVelocity(parentState), currentTime, activeNotes, note);
+            (0, event_output_1.noteOnPercussion)(this, key, this.opnCarrierVelocity(parentState), currentTime, activeNotes, note);
             this.opnCh3PercussionActiveKeys.set(context.stateKey, key);
         }
         else if (slotMask === 0 && activeKey !== undefined) {
-            this.noteOff(activeKey, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, activeKey, 0, currentTime, activeNotes);
             this.opnCh3PercussionActiveKeys.delete(context.stateKey);
         }
     }
@@ -2085,7 +2083,7 @@ class MidiConverter {
         const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
         state.hasPendingFrequencyUpdate = isSplitUpdate;
         if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateNotePitch(key, 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
         return true;
     }
@@ -2119,7 +2117,7 @@ class MidiConverter {
             else {
                 state.opnOperatorTotalLevels[logicalOperator] = data & 0x7F;
                 if (state.active && currentTime !== undefined) {
-                    this.addExpression(key, this.opnCarrierExpression(state), currentTime);
+                    (0, event_output_1.addExpression)(this, key, this.opnCarrierExpression(state), currentTime);
                 }
             }
         }
@@ -2136,7 +2134,7 @@ class MidiConverter {
             return true;
         const channel = offset + port * 3;
         const key = keyPrefix === 'ym2612' ? `${keyPrefix}_${channel}` : `${keyPrefix}_fm_${channel}`;
-        this.addPan(key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
+        (0, event_output_1.addPan)(this, key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
         return true;
     }
     opnPitchScale(state) {
@@ -2246,16 +2244,16 @@ class MidiConverter {
         this.stopYM2612DACVoice(currentTime);
         const sampleId = address.toString(16).padStart(6, '0');
         const trackKey = `ym2612dac_sample_${sampleId}`;
-        const note = this.pcmNoteForSample(trackKey);
+        const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
         const dataBlock = this.pcmDataBlockForRange(0x00, 0, address);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, 100, currentTime, false, dataBlock);
+        const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, 100, currentTime, false, dataBlock);
         this.ym2612DACActiveVoice = { descriptorId, note };
     }
     stopYM2612DACVoice(currentTime) {
         const voice = this.ym2612DACActiveVoice;
         if (!voice)
             return;
-        this.noteOffPCMPercussion(voice.descriptorId, voice.note, currentTime);
+        (0, event_output_1.noteOffPCMPercussion)(this, voice.descriptorId, voice.note, currentTime);
         this.ym2612DACActiveVoice = undefined;
     }
     // Groups consecutive $2A writes into one note by elapsed-time gap (see
@@ -2273,13 +2271,13 @@ class MidiConverter {
             && currentTime - lastWriteTime > YM2612_DAC_DIRECT_GAP_SAMPLES) {
             // Close the previous hit at its own last-write time, not `currentTime` — otherwise a
             // long gap before the next hit stretches the previous note across the gap.
-            this.noteOffPCMPercussion(this.ym2612DirectDACActiveVoice.descriptorId, this.ym2612DirectDACActiveVoice.note, lastWriteTime);
+            (0, event_output_1.noteOffPCMPercussion)(this, this.ym2612DirectDACActiveVoice.descriptorId, this.ym2612DirectDACActiveVoice.note, lastWriteTime);
             this.ym2612DirectDACActiveVoice = undefined;
         }
         if (!this.ym2612DirectDACActiveVoice) {
             const trackKey = 'ym2612dac_direct_stream';
-            const note = this.pcmNoteForSample(trackKey);
-            const descriptorId = this.noteOnPCMPercussion(trackKey, note, 100, currentTime);
+            const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
+            const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, 100, currentTime);
             this.ym2612DirectDACActiveVoice = { descriptorId, note };
         }
     }
@@ -2291,7 +2289,7 @@ class MidiConverter {
         if (!voice)
             return;
         const closeTime = this.ym2612DirectDACLastWriteTime ?? currentTime;
-        this.noteOffPCMPercussion(voice.descriptorId, voice.note, closeTime);
+        (0, event_output_1.noteOffPCMPercussion)(this, voice.descriptorId, voice.note, closeTime);
         this.ym2612DirectDACActiveVoice = undefined;
         this.ym2612DirectDACLastWriteTime = undefined;
     }
@@ -2348,11 +2346,11 @@ class MidiConverter {
             state.opnActivePitchScale = this.opnPitchScale(state);
             state.opnActiveVelocity = this.opnCarrierVelocity(state);
             state.active = true;
-            this.noteOn(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
         }
         else if (!shouldSound && state.active) {
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             state.opnActivePitchScale = 1;
         }
         return true;
@@ -2401,7 +2399,7 @@ class MidiConverter {
                         this.updateKeyBoundFMPitch(key, currentTime, activeNotes, YM2203_FM_PITCH_BEND_RANGE);
                     }
                     else
-                        this.updateNotePitch(key, 0, currentTime, activeNotes);
+                        (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
                 }
             }
         }
@@ -2411,14 +2409,14 @@ class MidiConverter {
         const state = this.channels.get(key);
         if (!activeNotes.has(key)) {
             if (state.active)
-                this.noteOn(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
             return;
         }
-        const frequency = this.getNoteFrequency(key, state);
+        const frequency = (0, event_output_1.getNoteFrequency)(this, key, state);
         if (frequency <= 20)
             return;
         const semitoneOffset = (0, midi_math_1.frequencyToExactMidi)(frequency) - state.baseMidiNote;
-        this.addPitchBend(key, semitoneOffset, pitchBendRange, currentTime);
+        (0, event_output_1.addPitchBend)(this, key, semitoneOffset, pitchBendRange, currentTime);
     }
     handleYM2608Write(cmd, currentTime, activeNotes, cmdIndex) {
         if (cmd.register === undefined || cmd.data === undefined)
@@ -2483,11 +2481,11 @@ class MidiConverter {
             state.opnActivePitchScale = this.opnPitchScale(state);
             state.opnActiveVelocity = this.opnCarrierVelocity(state);
             state.active = true;
-            this.noteOn(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
         }
         else if (!shouldSound && state.active) {
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             state.opnActivePitchScale = 1;
         }
         return true;
@@ -2537,14 +2535,14 @@ class MidiConverter {
         for (let channel = 0; channel < 3; channel++) {
             const key = `ym2608_${instance}_ssg_${channel}`;
             if (this.channels.get(key).active)
-                this.updateNotePitch(key, 0, currentTime, activeNotes);
+                (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
         this.updateActiveOPNCh3SpecialPitches(this.opnCh3Context('YM2608', instance), currentTime, activeNotes);
     }
     updateActiveOPNCh3SpecialPitches(context, currentTime, activeNotes) {
         for (const key of context.operatorKeys.slice(0, 3)) {
             if (this.channels.get(key).active)
-                this.updateNotePitch(key, 0, currentTime, activeNotes);
+                (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
     }
     handleYM2608RhythmWrite(instance, register, data, currentTime, activeNotes) {
@@ -2571,10 +2569,10 @@ class MidiConverter {
                 continue;
             const key = `ym2608_${instance}_rhythm_${channel}`;
             if (activeNotes.has(key))
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             if (!isDump) {
                 const velocity = this.ym2608RhythmVelocity(instance, channel);
-                this.noteOnPercussion(key, velocity, currentTime, activeNotes, YM2608_RHYTHM_NOTES[channel]);
+                (0, event_output_1.noteOnPercussion)(this, key, velocity, currentTime, activeNotes, YM2608_RHYTHM_NOTES[channel]);
             }
         }
     }
@@ -2586,7 +2584,7 @@ class MidiConverter {
             if (!activeNotes.has(key))
                 continue;
             const expression = Math.round((this.ym2608RhythmVelocity(instance, channel) / 100) * 127);
-            this.addExpression(key, expression, currentTime);
+            (0, event_output_1.addExpression)(this, key, expression, currentTime);
         }
     }
     ym2608RhythmVelocity(instance, channel) {
@@ -2601,7 +2599,7 @@ class MidiConverter {
         if (register === 0x0B) {
             const voice = this.ym2608ADPCMActiveVoices[instance];
             if (voice)
-                this.addExpression(voice.descriptorId, Math.round((data / 255) * 127), currentTime);
+                (0, event_output_1.addExpression)(this, voice.descriptorId, Math.round((data / 255) * 127), currentTime);
             return;
         }
         if (register !== 0x00)
@@ -2625,13 +2623,13 @@ class MidiConverter {
             : undefined;
         const sampleId = address.toString(16).padStart(4, '0');
         const trackKey = `ym2608_${instance}_adpcmb_sample_${sampleId}`;
-        const note = this.pcmNoteForSample(trackKey);
+        const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
         const velocity = Math.max(1, Math.round((registers[0x0B] / 255) * 100));
         const deltaN = registers[0x09] | (registers[0x0A] << 8);
         const durationSamples = isLoop
             ? undefined
             : this.ym2608ADPCMDurationSamples(address, endAddress, deltaN, addressUnitBytes);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, undefined, isROMMode ? (0, pcm_analysis_1.ym2608ADPCMBAnalysis)(this.vgmData, dataBlock, dataLengthBytes) : undefined);
+        const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, undefined, isROMMode ? (0, pcm_analysis_1.ym2608ADPCMBAnalysis)(this.vgmData, dataBlock, dataLengthBytes) : undefined);
         this.ym2608ADPCMActiveVoices[instance] = { descriptorId, note };
     }
     /** YM2608 ADPCM-Bの非repeat範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
@@ -2650,7 +2648,7 @@ class MidiConverter {
         const voice = this.ym2608ADPCMActiveVoices[instance];
         if (!voice)
             return;
-        this.noteOffPCMPercussion(voice.descriptorId, voice.note, currentTime);
+        (0, event_output_1.noteOffPCMPercussion)(this, voice.descriptorId, voice.note, currentTime);
         this.ym2608ADPCMActiveVoices[instance] = undefined;
     }
     handleAY8910Write(cmd, currentTime, activeNotes, cmdIndex) {
@@ -2693,9 +2691,9 @@ class MidiConverter {
             const active = activeNotes.get(noiseKey);
             if (active === undefined || active.note === newNote)
                 continue;
-            this.noteOff(noiseKey, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
             const state = this.channels.get(`${keyPrefix}_${channel}`);
-            this.noteOnPercussion(noiseKey, Math.round((state.volume / 15) * 100), currentTime, activeNotes, newNote);
+            (0, event_output_1.noteOnPercussion)(this, noiseKey, Math.round((state.volume / 15) * 100), currentTime, activeNotes, newNote);
         }
     }
     ssgNoiseNoteForPeriod(period) {
@@ -2726,7 +2724,7 @@ class MidiConverter {
         const otherReg = reg % 2 === 0 ? reg + 1 : reg - 1;
         const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, chip, 0, otherReg, instance);
         if (state.active && !isSplitUpdate && state.frequency !== oldFreq) {
-            this.updateNotePitch(key, 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
     }
     updateSSGVolume(keyPrefix, channel, data, currentTime, activeNotes) {
@@ -2742,10 +2740,10 @@ class MidiConverter {
         this.syncSSGNoiseState(keyPrefix, channel, currentTime, activeNotes);
         const expression = Math.round((effectiveVolume / 15) * 127);
         if (wasToneActive && state.active && oldVolume !== effectiveVolume) {
-            this.addExpression(key, expression, currentTime);
+            (0, event_output_1.addExpression)(this, key, expression, currentTime);
         }
         if (wasNoiseActive && state.isNoiseActive && oldVolume !== effectiveVolume) {
-            this.addExpression(`${keyPrefix}_noise_${channel}`, expression, currentTime);
+            (0, event_output_1.addExpression)(this, `${keyPrefix}_noise_${channel}`, expression, currentTime);
         }
     }
     updateSSGMixer(keyPrefix, data, currentTime, activeNotes) {
@@ -2763,11 +2761,11 @@ class MidiConverter {
         const shouldSound = state.isToneEnabled && state.volume > 0;
         if (shouldSound && !state.active) {
             state.active = true;
-            this.noteOn(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
         }
         else if (!shouldSound && state.active) {
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
     }
     syncSSGNoiseState(keyPrefix, channel, currentTime, activeNotes) {
@@ -2776,11 +2774,11 @@ class MidiConverter {
         const shouldSound = state.isNoise && state.volume > 0;
         if (shouldSound && !state.isNoiseActive) {
             state.isNoiseActive = true;
-            this.noteOnPercussion(noiseKey, Math.round((state.volume / 15) * 100), currentTime, activeNotes, this.ssgNoiseNote(keyPrefix));
+            (0, event_output_1.noteOnPercussion)(this, noiseKey, Math.round((state.volume / 15) * 100), currentTime, activeNotes, this.ssgNoiseNote(keyPrefix));
         }
         else if (!shouldSound && state.isNoiseActive) {
             state.isNoiseActive = false;
-            this.noteOff(noiseKey, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
         }
     }
     retriggerSSGEnvelope(keyPrefix, currentTime, activeNotes) {
@@ -2790,13 +2788,13 @@ class MidiConverter {
             if (!state.isEnvelope)
                 continue;
             if (state.active) {
-                this.noteOff(key, 0, currentTime, activeNotes);
-                this.noteOn(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
             }
             if (state.isNoiseActive) {
                 const noiseKey = `${keyPrefix}_noise_${channel}`;
-                this.noteOff(noiseKey, 0, currentTime, activeNotes);
-                this.noteOnPercussion(noiseKey, 100, currentTime, activeNotes, this.ssgNoiseNote(keyPrefix));
+                (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOnPercussion)(this, noiseKey, 100, currentTime, activeNotes, this.ssgNoiseNote(keyPrefix));
             }
         }
     }
@@ -2817,7 +2815,7 @@ class MidiConverter {
         // pan in the same register, so emit a portable CC10 state change.
         if (reg >= 0x20 && reg <= 0x27) {
             const key = `ym2151_${reg - 0x20}`;
-            this.addPan(key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
+            (0, event_output_1.addPan)(this, key, (data & 0x80) !== 0, (data & 0x40) !== 0, currentTime);
             const state = this.channels.get(key);
             state.opnAlgorithm = data & 0x07;
             this.recordFMTimbreEvent(key, currentTime, 'opm-timbre');
@@ -2848,7 +2846,7 @@ class MidiConverter {
             state.opnOperatorTotalLevels ?? (state.opnOperatorTotalLevels = [0, 0, 0, 0]);
             state.opnOperatorTotalLevels[logicalOperator] = data & 0x7F;
             if (state.active) {
-                this.addExpression(`ym2151_${channel}`, this.opnCarrierExpression(state), currentTime);
+                (0, event_output_1.addExpression)(this, `ym2151_${channel}`, this.opnCarrierExpression(state), currentTime);
             }
             this.recordFMTimbreEvent(`ym2151_${channel}`, currentTime, 'opm-timbre');
             return;
@@ -2870,8 +2868,8 @@ class MidiConverter {
                 && oldNoisePeriod !== undefined
                 && this.ym2151NoiseNoteForPeriod(state.noisePeriod) !== this.ym2151NoiseNoteForPeriod(oldNoisePeriod)) {
                 const noiseKey = 'ym2151_noise_7';
-                this.noteOff(noiseKey, 7, currentTime, activeNotes);
-                this.noteOnPercussion(noiseKey, 80, currentTime, activeNotes, this.ym2151NoiseNoteForPeriod(state.noisePeriod));
+                (0, event_output_1.noteOff)(this, noiseKey, 7, currentTime, activeNotes);
+                (0, event_output_1.noteOnPercussion)(this, noiseKey, 80, currentTime, activeNotes, this.ym2151NoiseNoteForPeriod(state.noisePeriod));
             }
             return;
         }
@@ -2920,14 +2918,14 @@ class MidiConverter {
         const shouldSound = ((state.keyOnMask || 0) & ~noiseOperatorMask) !== 0;
         if (shouldSound && (!state.active || shouldRetrigger)) {
             if (state.active)
-                this.noteOff(key, channel, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
             state.active = true;
             state.opnActiveVelocity = this.opnCarrierVelocity(state);
-            this.noteOn(key, channel, currentTime, activeNotes);
+            (0, event_output_1.noteOn)(this, key, channel, currentTime, activeNotes);
         }
         else if (!shouldSound && state.active) {
             state.active = false;
-            this.noteOff(key, channel, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
         }
     }
     syncYM2151NoiseState(shouldRetrigger, currentTime, activeNotes) {
@@ -2936,13 +2934,13 @@ class MidiConverter {
         const shouldSound = state.isNoise && ((state.keyOnMask || 0) & YM2151_C2_OPERATOR_MASK) !== 0;
         if (shouldSound && (!state.isNoiseActive || shouldRetrigger)) {
             if (state.isNoiseActive)
-                this.noteOff(noiseKey, 7, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, noiseKey, 7, currentTime, activeNotes);
             state.isNoiseActive = true;
-            this.noteOnPercussion(noiseKey, 80, currentTime, activeNotes, this.ym2151NoiseNoteForPeriod(state.noisePeriod ?? 0));
+            (0, event_output_1.noteOnPercussion)(this, noiseKey, 80, currentTime, activeNotes, this.ym2151NoiseNoteForPeriod(state.noisePeriod ?? 0));
         }
         else if (!shouldSound && state.isNoiseActive) {
             state.isNoiseActive = false;
-            this.noteOff(noiseKey, 7, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, 7, currentTime, activeNotes);
         }
     }
     // Confirmed against ymfm_opm.cpp: the noise LFSR advances when a counter that
@@ -2987,7 +2985,7 @@ class MidiConverter {
             state.freqLSB = data;
             state.frequency = ((state.freqMSB || 0) << 8) | (state.freqLSB || 0);
             if (state.active && state.frequency !== oldFreq && !this.isHuC6280MultiByteFreqUpdate(cmdIndex, 0x03, instance)) {
-                this.updateNotePitch(key, channel, currentTime, activeNotes);
+                (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
             }
         }
         else if (reg === 0x03) {
@@ -2996,7 +2994,7 @@ class MidiConverter {
             state.freqMSB = data & 0x0F;
             state.frequency = ((state.freqMSB || 0) << 8) | (state.freqLSB || 0);
             if (state.active && state.frequency !== oldFreq && !this.isHuC6280MultiByteFreqUpdate(cmdIndex, 0x02, instance)) {
-                this.updateNotePitch(key, channel, currentTime, activeNotes);
+                (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
             }
         }
         else if (reg === 0x04) {
@@ -3038,7 +3036,7 @@ class MidiConverter {
                 && oldNoisePeriod !== undefined
                 && this.huc6280NoiseNoteForPeriod(state.noisePeriod) !== this.huc6280NoiseNoteForPeriod(oldNoisePeriod)) {
                 const noiseKey = `huc6280_${instance}_noise_${channel}`;
-                this.noteOff(noiseKey, channel, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, noiseKey, channel, currentTime, activeNotes);
                 this.noteOnHuC6280Noise(noiseKey, state, currentTime, activeNotes);
             }
         }
@@ -3053,7 +3051,7 @@ class MidiConverter {
         const global = this.huc6280GlobalBalance[instance];
         const hasLeft = ((local >> 4) & 0x0F) > 0 && ((global >> 4) & 0x0F) > 0;
         const hasRight = (local & 0x0F) > 0 && (global & 0x0F) > 0;
-        this.addPan(key, hasLeft, hasRight, currentTime);
+        (0, event_output_1.addPan)(this, key, hasLeft, hasRight, currentTime);
     }
     handleSegaPCMWrite(cmd, currentTime) {
         if (cmd.register === undefined || cmd.data === undefined)
@@ -3086,9 +3084,9 @@ class MidiConverter {
         const right = this.segaPCMRegisters[base + 3];
         const volume = Math.max(left, right);
         const velocity = Math.max(1, Math.round((Math.min(127, volume) / 127) * 100));
-        const note = this.pcmNoteForSample(trackKey);
+        const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
         const total = left + right;
-        this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
+        (0, event_output_1.addPCMPan)(this, trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
         const dataBlock = this.pcmROMDataBlockForAddress(0x80, instance, physicalAddress);
         // SegaPCM's current/loop address is 16.8 fixed point.  Its end register
         // names the final 256-byte page, therefore the useful end is exclusive.
@@ -3099,7 +3097,7 @@ class MidiConverter {
             : (0, pcm_analysis_1.segaPCMDurationSamples)(this.vgmData, address << 8, this.segaPCMRegisters[base + 0x06], this.segaPCMRegisters[base + 0x07], this.sampleRate);
         const loopAddress = bankBaseAddress + this.segaPCMRegisters[base + 0x04]
             + (this.segaPCMRegisters[base + 0x05] << 8);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, { endAddressExclusive, ...(isLoop ? { loopAddress } : {}) });
+        const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, { endAddressExclusive, ...(isLoop ? { loopAddress } : {}) });
         this.segaPCMActiveVoices[channel] = { descriptorId, note };
     }
     // segaPCMBankBaseAddress()/segaPCMDurationSamples()/c140DurationSamples()/c140ROMAddress()
@@ -3133,9 +3131,9 @@ class MidiConverter {
         const left = this.c140Registers[base + 1];
         const volume = Math.max(left, right);
         const velocity = Math.max(1, Math.round((Math.min(127, volume) / 127) * 100));
-        const note = this.pcmNoteForSample(trackKey);
+        const note = (0, event_output_1.pcmNoteForSample)(this, trackKey);
         const total = left + right;
-        this.addPCMPan(trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
+        (0, event_output_1.addPCMPan)(this, trackKey, total > 0 ? Math.round((right / total) * 127) : 64, currentTime);
         const end = (this.c140Registers[base + 8] << 8) | this.c140Registers[base + 9];
         const isLoop = (this.c140Registers[base + 5] & 0x10) !== 0;
         const isC219Noise = this.vgmData.header.c140Type === 2 && (this.c140Registers[base + 5] & 0x04) !== 0;
@@ -3146,7 +3144,7 @@ class MidiConverter {
         const durationSamples = isLoop || isC219Noise
             ? undefined
             : (0, pcm_analysis_1.c140DurationSamples)(this.vgmData, start, end, frequency, this.sampleRate);
-        const descriptorId = this.noteOnPCMPercussion(trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, {
+        const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, trackKey, note, velocity, currentTime, isLoop, dataBlock, durationSamples, {
             endAddressExclusive: (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, end),
             ...(isLoop ? { loopAddress: (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, loop) } : {}),
         }, (0, pcm_analysis_1.c140PCMAnalysisForVoice)(this.vgmData, dataBlock, startAddress, (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, end), this.c140Registers[base + 5]));
@@ -3205,7 +3203,7 @@ class MidiConverter {
         const state = this.channels.get(key);
         state.opnOperatorTotalLevels[operator] = data & 0x3F;
         if (state.active)
-            this.addExpression(key, this.oplCarrierExpression(state), currentTime);
+            (0, event_output_1.addExpression)(this, key, this.oplCarrierExpression(state), currentTime);
         this.recordFMTimbreEvent(key, currentTime, 'opl-timbre');
         if (!this.oplRhythmModes.get(`${chip}_${instance}`))
             return;
@@ -3217,7 +3215,7 @@ class MidiConverter {
             if (!activeNotes.has(rhythmKey))
                 continue;
             const expression = Math.round((this.oplRhythmVelocity(chip, instance, index) / 100) * 127);
-            this.addExpression(rhythmKey, expression, currentTime);
+            (0, event_output_1.addExpression)(this, rhythmKey, expression, currentTime);
         }
     }
     setOPLConnection(chip, instance, channel, data, currentTime) {
@@ -3271,7 +3269,7 @@ class MidiConverter {
             state.oplPendingKeyOn = false;
             if (state.active) {
                 state.active = false;
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
         }
         else if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
@@ -3286,7 +3284,7 @@ class MidiConverter {
         state.opnActiveVelocity = this.oplCarrierVelocity(state);
         state.opnActivePitchScale = this.oplPitchScale(state);
         state.active = true;
-        this.noteOn(key, 0, currentTime, activeNotes);
+        (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
     }
     handleOPLRhythmWrite(chip, instance, data, currentTime, activeNotes) {
         const stateKey = `${chip}_${instance}`;
@@ -3299,12 +3297,12 @@ class MidiConverter {
                 if (!state.active)
                     continue;
                 state.active = false;
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
             for (let index = 0; index < OPL_RHYTHM_NOTES.length; index++) {
                 const key = this.oplKey(chip, instance, 'rhythm', index);
                 if (activeNotes.has(key))
-                    this.noteOff(key, 0, currentTime, activeNotes);
+                    (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
             this.oplRhythmModes.set(stateKey, isRhythmMode);
             this.oplRhythmControlBytes.set(stateKey, 0);
@@ -3321,10 +3319,10 @@ class MidiConverter {
                 continue;
             const key = this.oplKey(chip, instance, 'rhythm', index);
             if ((newBits & bit) !== 0) {
-                this.noteOnPercussion(key, this.oplRhythmVelocity(chip, instance, index), currentTime, activeNotes, OPL_RHYTHM_NOTES[index]);
+                (0, event_output_1.noteOnPercussion)(this, key, this.oplRhythmVelocity(chip, instance, index), currentTime, activeNotes, OPL_RHYTHM_NOTES[index]);
             }
             else if (activeNotes.has(key)) {
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
         }
     }
@@ -3380,13 +3378,13 @@ class MidiConverter {
                 const state = this.channels.get(key);
                 if (state.active) {
                     state.active = false;
-                    this.noteOff(key, 0, currentTime, activeNotes);
+                    (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
                 }
             }
             for (let i = 0; i < YM2413_RHYTHM_NOTES.length; i++) {
                 const key = `ym2413_rhythm_${i}`;
                 if (activeNotes.has(key))
-                    this.noteOff(key, 0, currentTime, activeNotes);
+                    (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
             this.ym2413RhythmMode = isRhythmMode;
             this.ym2413RhythmControlByte = 0;
@@ -3402,10 +3400,10 @@ class MidiConverter {
                 continue;
             const key = `ym2413_rhythm_${i}`;
             if ((newBits & bit) !== 0) {
-                this.noteOnPercussion(key, this.ym2413RhythmVelocity(i), currentTime, activeNotes, YM2413_RHYTHM_NOTES[i]);
+                (0, event_output_1.noteOnPercussion)(this, key, this.ym2413RhythmVelocity(i), currentTime, activeNotes, YM2413_RHYTHM_NOTES[i]);
             }
             else if (activeNotes.has(key)) {
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
         }
     }
@@ -3429,7 +3427,7 @@ class MidiConverter {
         const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
         state.hasPendingFrequencyUpdate = isSplitUpdate;
         if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateNotePitch(key, 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
     }
     // $20-$28: bit0=F-Number MSB (9th bit), bits1-3=block, bit4=key-on, bit5=sustain (not
@@ -3462,10 +3460,10 @@ class MidiConverter {
         }
         else if (!isKeyOn && state.active) {
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
         else if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateNotePitch(key, 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
     }
     /** YM2413 key-onを、両方のfrequency byteとpatch carrier Multiple確定後にcommitする。 */
@@ -3477,7 +3475,7 @@ class MidiConverter {
         state.opnActiveVelocity = this.ym2413Velocity(state.volume);
         state.opnActivePitchScale = this.ym2413PitchScale(state);
         state.active = true;
-        this.noteOn(key, 0, currentTime, activeNotes);
+        (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
     }
     // $30-$38: upper nibble is normally the instrument number, which selects an initial GM
     // audition candidate and sidecar timbre snapshot; lower nibble is a 4-bit volume
@@ -3504,7 +3502,7 @@ class MidiConverter {
                 if (!activeNotes.has(key))
                     continue;
                 const expression = Math.round((this.ym2413RhythmVelocity(i) / 100) * 127);
-                this.addExpression(key, expression, currentTime);
+                (0, event_output_1.addExpression)(this, key, expression, currentTime);
             }
             return;
         }
@@ -3514,7 +3512,7 @@ class MidiConverter {
         state.volume = volume;
         if (state.active) {
             const expression = Math.round((this.ym2413Velocity(volume) / 100) * 127);
-            this.addExpression(key, expression, currentTime);
+            (0, event_output_1.addExpression)(this, key, expression, currentTime);
         }
         this.recordYM2413TimbreEvent(channel, currentTime, 'ym2413-patch');
     }
@@ -3563,7 +3561,7 @@ class MidiConverter {
             if (state.active)
                 state.active = false;
             if (activeNotes.has(key))
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
     }
     /** Channel 1のNR10 sweepを128Hzで評価し、連続音程はpitch bendで表現する。 */
@@ -3584,7 +3582,7 @@ class MidiConverter {
         if (nextFrequency < 0 || nextFrequency > 0x7FF) {
             state.gbDmgSweepEnabled = false;
             state.active = false;
-            this.noteOff('gbdmg_0', 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, 'gbdmg_0', 0, currentTime, activeNotes);
             return;
         }
         state.gbDmgSweepShadow = nextFrequency;
@@ -3592,7 +3590,7 @@ class MidiConverter {
         state.freqLSB = nextFrequency & 0xFF;
         state.freqMSB = (nextFrequency >> 8) & 0x07;
         if (state.active)
-            this.updateNotePitch('gbdmg_0', 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, 'gbdmg_0', 0, currentTime, activeNotes);
     }
     /** 64HzのDMG envelopeをCC11へ変換する。 */
     clockGBDMGEnvelopes(currentTime, activeNotes) {
@@ -3612,7 +3610,7 @@ class MidiConverter {
             if (next < 0 || next > 15)
                 continue;
             state.gbDmgEnvelopeVolume = next;
-            this.addExpression(key, Math.round((next / 15) * 127), currentTime);
+            (0, event_output_1.addExpression)(this, key, Math.round((next / 15) * 127), currentTime);
         }
     }
     /** NRx2の初期音量とenvelope timerを、ハードウェアtrigger時に再初期化する。 */
@@ -3642,7 +3640,7 @@ class MidiConverter {
     updateGBDMGPan(key, channel, currentTime) {
         const isRightRouted = (this.gbDmgStereoRouting & (1 << channel)) !== 0 && (this.gbDmgMasterVolume & 0x07) !== 0;
         const isLeftRouted = (this.gbDmgStereoRouting & (1 << (channel + 4))) !== 0 && ((this.gbDmgMasterVolume >> 4) & 0x07) !== 0;
-        this.addPan(key, isLeftRouted, isRightRouted, currentTime);
+        (0, event_output_1.addPan)(this, key, isLeftRouted, isRightRouted, currentTime);
     }
     /** NR50/NR51更新後、現在鳴っているDMG voiceだけを再panする。 */
     refreshGBDMGPans(currentTime) {
@@ -3778,7 +3776,7 @@ class MidiConverter {
             this.startGBDMGEnvelope(state);
         if (wasEnabled && !this.gbDmgEnvelopeDacEnabled(data) && state.active) {
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
     }
     updateGBDMGFrequencyLSB(key, reg, data, currentTime, activeNotes, cmdIndex, instance) {
@@ -3791,7 +3789,7 @@ class MidiConverter {
         const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
         state.hasPendingFrequencyUpdate = isSplitUpdate;
         if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateNotePitch(key, 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
     }
     // NRx4 (the paired trigger/frequency-MSB register for channels 1/2/3): bit7=trigger
@@ -3820,7 +3818,7 @@ class MidiConverter {
                 this.startGBDMGSweep(state);
             if (state.active) {
                 state.active = false;
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
             if (isDacEnabled) {
                 state.opnActiveVelocity = key === 'gbdmg_2'
@@ -3828,11 +3826,11 @@ class MidiConverter {
                     : this.gbDmgEnvelopeVelocity(state.volume);
                 state.active = true;
                 this.updateGBDMGPan(key, key === 'gbdmg_0' ? 0 : key === 'gbdmg_1' ? 1 : 2, currentTime);
-                this.noteOn(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
             }
         }
         else if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateNotePitch(key, 0, currentTime, activeNotes);
+            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
         }
     }
     // NR30 (wave channel DAC enable, bit7). Distinct from the pulse/noise channels' envelope-
@@ -3845,7 +3843,7 @@ class MidiConverter {
         state.isEnabled = (data & 0x80) !== 0;
         if (wasEnabled && !state.isEnabled && state.active) {
             state.active = false;
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
     }
     // NR32 bits6-5: 0=mute, 1=100%, 2=50%, 3=25% output level. Stored directly in
@@ -3858,7 +3856,7 @@ class MidiConverter {
         state.volume = (data >> 5) & 0x03;
         if (state.active) {
             const expression = Math.round((this.gbDmgWaveVelocity(state.volume) / 100) * 127);
-            this.addExpression(key, expression, currentTime);
+            (0, event_output_1.addExpression)(this, key, expression, currentTime);
         }
     }
     gbDmgWaveVelocity(outputLevelCode) {
@@ -3873,7 +3871,7 @@ class MidiConverter {
         if (!activeNotes.has(key))
             this.startGBDMGEnvelope(state);
         if (wasEnabled && !this.gbDmgEnvelopeDacEnabled(data) && activeNotes.has(key)) {
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         }
     }
     // NR43: re-evaluates an already-sounding noise voice's GM drum band the same way
@@ -3891,8 +3889,8 @@ class MidiConverter {
         const newNote = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(data, clockRate);
         if (oldNote === newNote)
             return;
-        this.noteOff(key, 0, currentTime, activeNotes);
-        this.noteOnPercussion(key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, newNote);
+        (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
+        (0, event_output_1.noteOnPercussion)(this, key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, newNote);
     }
     // NR44: bit7=trigger, bit6=length enable (not modeled). Same retrigger-on-write pattern
     // as the melodic channels' NRx4 registers.
@@ -3905,11 +3903,11 @@ class MidiConverter {
         this.reloadGBDMGLength(state, 64);
         this.startGBDMGEnvelope(state);
         if (activeNotes.has(key))
-            this.noteOff(key, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
         if (this.gbDmgEnvelopeDacEnabled(state.volume)) {
             const note = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(state.noisePeriod ?? 0, this.vgmData.header.gbDmgClock);
             this.updateGBDMGPan(key, 3, currentTime);
-            this.noteOnPercussion(key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, note);
+            (0, event_output_1.noteOnPercussion)(this, key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, note);
         }
     }
     // NR52 bit7=0 powers off the entire APU, immediately silencing every channel — the same
@@ -3923,18 +3921,18 @@ class MidiConverter {
             const state = this.channels.get(key);
             if (state.active) {
                 state.active = false;
-                this.noteOff(key, 0, currentTime, activeNotes);
+                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
             }
         }
         const noiseKey = 'gbdmg_noise_0';
         if (activeNotes.has(noiseKey))
-            this.noteOff(noiseKey, 0, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
     }
     stopPCMVoice(activeVoices, channel, currentTime) {
         const voice = activeVoices[channel];
         if (!voice)
             return;
-        this.noteOffPCMPercussion(voice.descriptorId, voice.note, currentTime);
+        (0, event_output_1.noteOffPCMPercussion)(this, voice.descriptorId, voice.note, currentTime);
         activeVoices[channel] = undefined;
     }
     stopAllPCMVoices(currentTime) {
@@ -3954,7 +3952,7 @@ class MidiConverter {
         // Secondary chip scalars are swapped out of the primary fields above. Descriptor-owned
         // PCM notes remain globally visible, so close every remaining one at EOF as well.
         for (const [descriptorId, note] of [...this.activePCMNotes]) {
-            this.noteOffPCMPercussion(descriptorId, note, currentTime);
+            (0, event_output_1.noteOffPCMPercussion)(this, descriptorId, note, currentTime);
         }
     }
     /** DAC stream 0x90–0x95 を処理し、MSM6258は編集用GMトリガーとして残す。 */
@@ -4000,13 +3998,13 @@ class MidiConverter {
                 }
                 const identity = this.streamIdentity(stream, range);
                 const key = `msm6258_sample_${identity}`;
-                const note = this.pcmNoteForSample(key);
+                const note = (0, event_output_1.pcmNoteForSample)(this, key);
                 const commandSize = this.streamCommandSize(stream);
                 const dataLengthBytes = range.commandCount > 0
                     ? range.commandCount * commandSize * Math.max(1, stream.stepSize)
                     : undefined;
                 const dataBlock = this.pcmDataBlockForRange(stream.bankId, stream.targetInstance ?? 0, range.start, dataLengthBytes);
-                const descriptorId = this.noteOnPCMPercussion(key, note, 80, currentTime, range.isLoop, dataBlock, range.isLoop ? undefined : range.durationSamples);
+                const descriptorId = (0, event_output_1.noteOnPCMPercussion)(this, key, note, 80, currentTime, range.isLoop, dataBlock, range.isLoop ? undefined : range.durationSamples);
                 stream.voice = { descriptorId, note };
                 if (!range.isLoop && range.durationSamples !== undefined) {
                     // Do not emit the Note Off yet.  A later $94 or a restart can occur before
@@ -4023,7 +4021,7 @@ class MidiConverter {
         if (stream.voice) {
             const scheduled = stream.scheduledEndSamples;
             const closeTime = isFinalizing && scheduled !== undefined ? scheduled : Math.min(currentTime, scheduled ?? currentTime);
-            this.noteOffPCMPercussion(stream.voice.descriptorId, stream.voice.note, closeTime);
+            (0, event_output_1.noteOffPCMPercussion)(this, stream.voice.descriptorId, stream.voice.note, closeTime);
         }
         stream.voice = undefined;
         stream.scheduledEndSamples = undefined;
@@ -4180,11 +4178,11 @@ class MidiConverter {
         const shouldSound = state.isEnabled && !state.isDDA && !state.isNoise && state.volume > 0;
         if (shouldSound && !state.active) {
             state.active = true;
-            this.noteOn(key, channel, currentTime, activeNotes);
+            (0, event_output_1.noteOn)(this, key, channel, currentTime, activeNotes);
         }
         else if (!shouldSound && state.active) {
             state.active = false;
-            this.noteOff(key, channel, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
         }
     }
     syncHuC6280NoiseState(key, channel, currentTime, activeNotes) {
@@ -4200,7 +4198,7 @@ class MidiConverter {
         }
         else if (!shouldSound && state.isNoiseActive) {
             state.isNoiseActive = false;
-            this.noteOff(noiseKey, channel, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, channel, currentTime, activeNotes);
         }
     }
     updateHuC6280NoiseEnvelope(key, channel, oldVolume, currentTime, activeNotes) {
@@ -4213,7 +4211,7 @@ class MidiConverter {
         const noiseKey = `huc6280_${instance}_noise_${channel}`;
         const volumeRise = state.volume - oldVolume;
         if (volumeRise >= HUC6280_NOISE_RETRIGGER_MIN_VOLUME_RISE) {
-            this.noteOff(noiseKey, channel, currentTime, activeNotes);
+            (0, event_output_1.noteOff)(this, noiseKey, channel, currentTime, activeNotes);
             this.noteOnHuC6280Noise(noiseKey, state, currentTime, activeNotes);
         }
         else {
@@ -4222,7 +4220,7 @@ class MidiConverter {
     }
     noteOnHuC6280Noise(key, state, currentTime, activeNotes) {
         const velocity = Math.max(1, Math.round((state.volume / 31) * 100));
-        this.noteOnPercussion(key, velocity, currentTime, activeNotes, this.huc6280NoiseNoteForPeriod(state.noisePeriod ?? 0));
+        (0, event_output_1.noteOnPercussion)(this, key, velocity, currentTime, activeNotes, this.huc6280NoiseNoteForPeriod(state.noisePeriod ?? 0));
     }
     // Confirmed against MAME's c6280.cpp: step = (value & 0x1F) ^ 0x1F, noise_counter =
     // step << 6 — a larger raw register value produces a smaller step/counter, so the LFSR
@@ -4233,7 +4231,7 @@ class MidiConverter {
         return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
     }
     addHuC6280Expression(key, volume, currentTime) {
-        this.addExpression(key, Math.round((volume / 31) * 127), currentTime);
+        (0, event_output_1.addExpression)(this, key, Math.round((volume / 31) * 127), currentTime);
     }
     // Looks ahead through at most one 50Hz frame for the other half of a split frequency
     // update. Some HuC6280 drivers intentionally distribute the two bytes across frames.
@@ -4280,396 +4278,12 @@ class MidiConverter {
         }
         return false;
     }
-    // --- Common Note Helpers ---
-    noteOnPCMPercussion(key, pitch, velocity, currentTime, isLoop = false, dataBlock, durationSamples, playbackRange, analysis) {
-        const descriptor = this.resolveDescriptor(key);
-        const trackState = this.getTrack(descriptor.id);
-        trackState.pcmEvents ?? (trackState.pcmEvents = []);
-        trackState.pcmDataBlock ?? (trackState.pcmDataBlock = dataBlock);
-        trackState.pcmAnalysis ?? (trackState.pcmAnalysis = analysis);
-        trackState.pcmEvents.push({
-            type: 'start',
-            sampleTime: currentTime,
-            ...(isLoop ? { isLoop: true } : {}),
-            ...(playbackRange === undefined ? {} : { endAddressExclusive: playbackRange.endAddressExclusive }),
-            ...(playbackRange?.loopAddress === undefined ? {} : { loopAddress: playbackRange.loopAddress }),
-            ...(isLoop || durationSamples === undefined ? {} : { durationSamples }),
-            ...(dataBlock?.lengthBytes === undefined ? {} : { dataLengthBytes: dataBlock.lengthBytes }),
-        });
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        trackState.track.addEvent(new midi_writer_js_1.default.NoteOnEvent({
-            pitch,
-            velocity: Math.max(1, Math.min(100, velocity)),
-            channel: descriptor.midiChannel,
-            wait: `T${gap}`,
-        }));
-        trackState.cursor = currentTick;
-        this.generatedNoteCount += 1;
-        this.registerDescriptorStart(descriptor, currentTime);
-        this.activePCMNotes.set(descriptor.id, pitch);
-        return descriptor.id;
-    }
-    noteOffPCMPercussion(key, pitch, currentTime) {
-        const descriptor = this.resolveDescriptor(key);
-        const trackState = this.getTrack(descriptor.id);
-        trackState.pcmEvents ?? (trackState.pcmEvents = []);
-        trackState.pcmEvents.push({ type: 'stop', sampleTime: currentTime });
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        trackState.track.addEvent(new midi_writer_js_1.default.NoteOffEvent({
-            pitch,
-            velocity: 64,
-            channel: descriptor.midiChannel,
-            duration: `T${gap}`,
-        }));
-        trackState.cursor = currentTick;
-        this.registerDescriptorStop(descriptor.id);
-        this.activePCMNotes.delete(descriptor.id);
-    }
-    noteOnPercussion(key, velocity, currentTime, activeNotes, pitch = GM_CLOSED_HI_HAT_NOTE) {
-        const descriptor = this.resolveDescriptor(key);
-        activeNotes.set(descriptor.id, {
-            note: pitch,
-            startTime: currentTime,
-            startVolume: velocity,
-        });
-        const trackState = this.getTrack(descriptor.id);
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        trackState.track.addEvent(new midi_writer_js_1.default.NoteOnEvent({
-            pitch,
-            velocity: Math.max(1, Math.min(100, velocity)),
-            channel: descriptor.midiChannel,
-            wait: `T${gap}`,
-        }));
-        trackState.cursor = currentTick;
-        this.generatedNoteCount += 1;
-        this.registerDescriptorStart(descriptor, currentTime);
-    }
-    pcmNoteForSample(sampleKey) {
-        const existingNote = this.pcmSampleNotes.get(sampleKey);
-        if (existingNote !== undefined)
-            return existingNote;
-        const noteCount = GM_PCM_PERCUSSION_LAST_NOTE - GM_PCM_PERCUSSION_FIRST_NOTE + 1;
-        const note = GM_PCM_PERCUSSION_FIRST_NOTE + (this.pcmSampleNotes.size % noteCount);
-        this.pcmSampleNotes.set(sampleKey, note);
-        return note;
-    }
-    /** 同じMIDI channelで異なるdescriptorが同時発音した場合だけ警告を記録する。 */
-    registerDescriptorStart(descriptor, currentTime) {
-        for (const [activeId, active] of this.activeMidiDescriptors) {
-            if (activeId === descriptor.id || active.midiChannel !== descriptor.midiChannel)
-                continue;
-            const warning = `MIDI channel ${descriptor.midiChannel} overlap: ${activeId} and ${descriptor.id}`;
-            if (!this.warnings.includes(warning))
-                this.warnings.push(warning);
-        }
-        this.activeMidiDescriptors.set(descriptor.id, { midiChannel: descriptor.midiChannel, startTime: currentTime });
-    }
-    /** descriptor単位で終了し、同一source keyの別instanceを消さない。 */
-    registerDescriptorStop(descriptorId) {
-        this.activeMidiDescriptors.delete(descriptorId);
-    }
-    addExpression(key, expression, currentTime) {
-        const descriptor = this.resolveDescriptor(key);
-        const trackState = this.getTrack(descriptor.id);
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        const clampedExpression = Math.max(0, Math.min(127, expression));
-        trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
-            controllerNumber: 11,
-            controllerValue: clampedExpression,
-            channel: descriptor.midiChannel,
-            delta: gap,
-        }));
-        trackState.cursor = currentTick;
-        trackState.expression = clampedExpression;
-    }
-    // SegaPCM/C140 sample tracks all share GM percussion channel 10, so CC10 (Pan) sent on
-    // one track's own MidiTrack object still affects every other sample track on that
-    // channel. A per-track "did I already send this pan" cache would therefore be wrong: if
-    // voice A pans left, voice B pans right, and A retriggers, a per-track cache would see
-    // "A's pan is unchanged" and skip resending — leaving channel 10 pointed right while A
-    // is actually sounding on the left. Caching one shared value for the whole channel and
-    // resending right before every Note On (regardless of which track sends it) avoids that.
-    // The one remaining limitation is inherent to sharing a channel: simultaneously
-    // sounding PCM voices on different pans still cannot be panned independently.
-    addPCMPan(key, pan, currentTime) {
-        const clampedPan = Math.max(0, Math.min(127, pan));
-        if (this.pcmChannel10Pan === clampedPan)
-            return;
-        this.pcmChannel10Pan = clampedPan;
-        const descriptor = this.resolveDescriptor(key);
-        const trackState = this.getTrack(descriptor.id);
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
-            controllerNumber: 10,
-            controllerValue: clampedPan,
-            channel: descriptor.midiChannel,
-            delta: gap,
-        }));
-        trackState.cursor = currentTick;
-    }
-    /** 左のみ/両方/右のみを CC10 の 0/64/127 に正規化して送る。 */
-    addPan(key, hasLeft, hasRight, currentTime) {
-        const pan = hasLeft && hasRight ? 64 : hasLeft ? 0 : hasRight ? 127 : 64;
-        const state = this.channels.get(key);
-        if (state?.pan === pan)
-            return;
-        if (state)
-            state.pan = pan;
-        const descriptor = this.resolveDescriptor(key);
-        const trackState = this.getTrack(descriptor.id);
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({ controllerNumber: 10, controllerValue: pan, channel: descriptor.midiChannel, delta: gap }));
-        trackState.cursor = currentTick;
-    }
-    getNoteFrequency(key, state) {
-        if (key.startsWith('psg_')) {
-            return (0, midi_math_1.psgRegisterToFrequency)(state.frequency, this.vgmData.header.sn76489Clock, this.vgmData.header.sn76489Flags);
-        }
-        else if (key.startsWith('ym2612_')) {
-            const baseFrequency = (0, midi_math_1.ym2612FrequencyToHz)(state.frequency, state.block || 0, this.vgmData.header.ym2612Clock);
-            const pitchScale = state.active
-                ? (state.opnActivePitchScale ?? 1)
-                : this.opnPitchScale(state);
-            return baseFrequency * pitchScale;
-        }
-        else if (key.startsWith('ym2203_')) {
-            const [, instanceText, section] = key.split('_');
-            const instance = parseInt(instanceText);
-            const prescaler = this.ym2203Prescalers[instance];
-            if (section === 'fm' || section === 'ch3sp') {
-                const baseFrequency = (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, this.vgmData.header.ym2203Clock, prescaler);
-                const pitchScale = state.active
-                    ? (state.opnActivePitchScale ?? 1)
-                    : this.opnPitchScale(state);
-                return baseFrequency * pitchScale;
-            }
-            return (0, midi_math_1.ym2203SSGRegisterToFrequency)(state.frequency, this.vgmData.header.ym2203Clock, prescaler, this.vgmData.header.ym2203AyFlags);
-        }
-        else if (key.startsWith('ym2608_')) {
-            const [, instanceText, section] = key.split('_');
-            const instance = parseInt(instanceText);
-            const prescaler = this.ym2608Prescalers[instance];
-            if (section === 'fm' || section === 'ch3sp') {
-                const baseFrequency = (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, this.vgmData.header.ym2608Clock, prescaler);
-                const pitchScale = state.active
-                    ? (state.opnActivePitchScale ?? 1)
-                    : this.opnPitchScale(state);
-                return baseFrequency * pitchScale;
-            }
-            return (0, midi_math_1.ym2203SSGRegisterToFrequency)(state.frequency, this.vgmData.header.ym2608Clock, prescaler, this.vgmData.header.ym2608AyFlags);
-        }
-        else if (this.isOPLFMKey(key)) {
-            const chip = key.split('_')[0].toUpperCase();
-            const clockRate = chip === 'YM3812'
-                ? this.vgmData.header.ym3812Clock
-                : chip === 'YM3526'
-                    ? this.vgmData.header.ym3526Clock
-                    : this.vgmData.header.y8950Clock;
-            const baseFrequency = (0, midi_math_1.oplFrequencyToHz)(state.frequency, state.block ?? 0, clockRate);
-            const pitchScale = state.active
-                ? (state.opnActivePitchScale ?? 1)
-                : this.oplPitchScale(state);
-            return baseFrequency * pitchScale;
-        }
-        else if (key.startsWith('ym2151_')) {
-            return this.ym2151KeyToFrequency(state.keyCode || 0, state.keyFraction || 0);
-        }
-        else if (key.startsWith('ay8910_')) {
-            return (0, midi_math_1.ay8910RegisterToFrequency)(state.frequency, this.vgmData.header.ay8910Clock, this.vgmData.header.ay8910Flags);
-        }
-        else if (key.startsWith('huc6280_')) {
-            return (0, midi_math_1.huc6280RegisterToFrequency)(state.frequency, this.vgmData.header.huc6280Clock);
-        }
-        else if (key.startsWith('ym2413_')) {
-            const rawFrequency = (0, midi_math_1.ym2413RegisterToFrequency)(state.frequency, state.block ?? 0, this.vgmData.header.ym2413Clock);
-            return rawFrequency * (state.active ? (state.opnActivePitchScale ?? 1) : this.ym2413PitchScale(state));
-        }
-        else if (key === 'gbdmg_2') {
-            return (0, midi_math_1.gbDmgWaveFrequencyToHz)(state.frequency, this.vgmData.header.gbDmgClock);
-        }
-        else if (GBDMG_SQUARE_KEYS.includes(key)) {
-            return (0, midi_math_1.gbDmgSquareFrequencyToHz)(state.frequency, this.vgmData.header.gbDmgClock);
-        }
-        return 0;
-    }
-    ym2151KeyToFrequency(keyCode, keyFraction) {
-        // YM2151 NOTE codes contain gaps. Both values on either side of a gap map
-        // to the same chromatic note, matching the chip's own phase-generator logic.
-        const semitoneByCode = [1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 9, 9, 10, 11, 12, 12];
-        const octave = (keyCode >> 4) & 0x07;
-        const semitone = semitoneByCode[keyCode & 0x0F];
-        const clockRate = this.vgmData.header.ym2151Clock & 0x3FFFFFFF;
-        const clockShift = clockRate > 0 ? 12 * Math.log2(clockRate / 3579545) : 0;
-        const exactMidiNote = ((octave + 1) * 12) + semitone + (keyFraction / 64) + clockShift;
-        return 440 * Math.pow(2, (exactMidiNote - 69) / 12);
-    }
-    noteOn(key, _midiChannelOffset, currentTime, activeNotes) {
-        const descriptor = this.resolveDescriptor(key);
-        key = descriptor.sourceKey;
-        const state = this.channels.get(key);
-        const freq = this.getNoteFrequency(key, state);
-        const midiNote = (0, midi_math_1.frequencyToMidiNote)(freq);
-        if (midiNote > 0 && midiNote < 128) {
-            state.midiNote = midiNote;
-            state.baseMidiNote = midiNote; // Capture base note
-            activeNotes.set(descriptor.id, { note: midiNote, startTime: currentTime, startVolume: state.volume });
-            const trackState = this.getTrack(descriptor.id);
-            const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-            const gap = Math.max(0, currentTick - trackState.cursor);
-            // Simple velocity mapping
-            let velocity = 80;
-            if (key.startsWith('psg_')) {
-                velocity = Math.max(20, Math.min(127, 100 - (state.volume * 6)));
-            }
-            else if (key.startsWith('ym2612_')
-                || ((key.startsWith('ym2203_') || key.startsWith('ym2608_'))
-                    && (key.includes('_fm_') || key.includes('_ch3sp_')))) {
-                // Derived from the channel's audible carrier operator(s) Total Level at key-on
-                // (opnCarrierVelocity(), latched alongside opnActivePitchScale). Falls back to a
-                // neutral 80 when no carrier was reachable for the active algorithm/key-on mask.
-                velocity = state.opnActiveVelocity ?? 80;
-            }
-            else if (key.startsWith('ym2151_')) {
-                velocity = state.opnActiveVelocity ?? 80;
-            }
-            else if (this.isOPLFMKey(key)) {
-                velocity = state.opnActiveVelocity ?? 80;
-            }
-            else if (key.startsWith('huc6280_')) {
-                // midi-writer-js expects velocity as a percentage (1-100).
-                velocity = Math.max(1, Math.round((state.volume / 31) * 100));
-            }
-            else if (key.startsWith('ym2413_')) {
-                // Latched from the channel's 4-bit volume register at key-on by
-                // handleYM2413KeyAndFrequencyWrite() via ym2413Velocity().
-                velocity = state.opnActiveVelocity ?? 80;
-            }
-            else if (key.startsWith('gbdmg_')) {
-                // Latched from the channel's envelope initial-volume (or, for the wave channel,
-                // its 2-bit output-level code) at trigger time by handleGBDMGTriggerWrite().
-                velocity = state.opnActiveVelocity ?? 80;
-            }
-            else {
-                velocity = Math.max(20, Math.min(127, 40 + (state.volume * 5)));
-            }
-            // Assign unique MIDI channel based on chip/channel
-            const midiCh = descriptor.midiChannel;
-            // Tune the rounded MIDI note back to the source chip's exact frequency. This
-            // avoids retaining as much as ±50 cents of onset quantization error.
-            // Unlike NoteOnEvent/NoteOffEvent/ControllerChangeEvent (which take a 1-based
-            // channel and subtract 1 internally), midi-writer-js's PitchBendEvent ORs the
-            // raw `channel` field into the status byte with no such conversion. Passing our
-            // 1-based midiCh straight through is off by one for every chip, and for
-            // midiCh === 16 (HuC6280's highest channel) it overflows into the status byte's
-            // event-type nibble, producing 0xE0 | 16 === 0xF0 (a SysEx-start byte) instead
-            // of a Pitch Bend byte — corrupting the rest of the track for any MIDI reader
-            // that doesn't happen to resync (GarageBand does not).
-            const exactMidiNote = (0, midi_math_1.frequencyToExactMidi)(freq);
-            const semitoneOffset = exactMidiNote - midiNote;
-            const bendRange = this.pitchBendRangeForKey(key);
-            const bend = Math.max(-1, Math.min(1, semitoneOffset / bendRange));
-            let eventGap = gap;
-            // CC11 is persistent channel state. Reset it at every Note On so the previous
-            // note's FM TL envelope does not attenuate the new TL-derived velocity a second time.
-            if (trackState.expression !== 127) {
-                trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
-                    controllerNumber: 11,
-                    controllerValue: 127,
-                    channel: midiCh,
-                    delta: eventGap,
-                }));
-                trackState.expression = 127;
-                eventGap = 0;
-            }
-            trackState.track.addEvent(new midi_writer_js_1.default.PitchBendEvent({
-                bend,
-                channel: midiCh - 1,
-                delta: eventGap
-            }));
-            // Note On immediately follows (delta 0 since gap used by PitchBend)
-            trackState.track.addEvent(new midi_writer_js_1.default.NoteOnEvent({
-                pitch: midiNote,
-                velocity: velocity,
-                channel: midiCh,
-                wait: `T0`
-            }));
-            this.generatedNoteCount += 1;
-            this.registerDescriptorStart(descriptor, currentTime);
-            // Advance cursor
-            trackState.cursor = currentTick;
-        }
-    }
-    noteOff(key, _midiChannelOffset, currentTime, activeNotes) {
-        const descriptor = this.resolveDescriptor(key);
-        if (activeNotes.has(descriptor.id)) {
-            const noteInfo = activeNotes.get(descriptor.id);
-            // We don't need duration from start time anymore, just delta from last event (cursor)
-            const trackState = this.getTrack(descriptor.id);
-            const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-            const gap = Math.max(0, currentTick - trackState.cursor);
-            const midiCh = descriptor.midiChannel;
-            trackState.track.addEvent(new midi_writer_js_1.default.NoteOffEvent({
-                pitch: noteInfo.note,
-                velocity: 64,
-                channel: midiCh,
-                duration: `T${gap}` // 'duration' is the wait/delta for NoteOffEvent
-            }));
-            trackState.cursor = currentTick;
-            activeNotes.delete(descriptor.id);
-            this.registerDescriptorStop(descriptor.id);
-        }
-    }
-    updateNotePitch(key, midiChannelOffset, currentTime, activeNotes) {
-        const state = this.channels.get(key);
-        const freq = this.getNoteFrequency(key, state);
-        const newExactNote = (0, midi_math_1.frequencyToExactMidi)(freq);
-        if (activeNotes.has(key)) {
-            const diff = newExactNote - state.baseMidiNote;
-            // Dynamic Threshold Logic:
-            // Bass (psg_2) uses the full standard ±2-semitone MIDI bend range to allow
-            // "decayed sustain" pitch slides without clipping the bend value.
-            // Melody channels need a tight threshold (e.g. 0.8) so that actual notes (semitones) 
-            // are retriggered as new notes, not bent.
-            const isContinuousPSG = key.startsWith('psg_') || key.startsWith('ay8910_')
-                || key.startsWith('huc6280_') || key.startsWith('gbdmg_') || key.includes('_ssg_');
-            const threshold = isContinuousPSG ? CHIP_PITCH_BEND_RANGE : (key === 'psg_2' ? 2 : 0.8);
-            if (Math.abs(diff) <= threshold) {
-                this.addPitchBend(key, diff, this.pitchBendRangeForKey(key), currentTime);
-            }
-            else {
-                // Large pitch change -> Retrigger
-                this.noteOff(key, midiChannelOffset, currentTime, activeNotes);
-                this.noteOn(key, midiChannelOffset, currentTime, activeNotes);
-            }
-        }
-        else {
-            // If state.active is true, we should try to start it.
-            if (state.active) {
-                this.noteOn(key, midiChannelOffset, currentTime, activeNotes);
-            }
-        }
-    }
-    addPitchBend(key, semitoneOffset, semitoneRange, currentTime) {
-        const descriptor = this.resolveDescriptor(key);
-        const trackState = this.getTrack(descriptor.id);
-        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-        const gap = Math.max(0, currentTick - trackState.cursor);
-        const midiChannel = descriptor.midiChannel;
-        const bend = Math.max(-1, Math.min(1, semitoneOffset / semitoneRange));
-        // PitchBendEvent is the one midi-writer-js channel event that expects 0-based input.
-        trackState.track.addEvent(new midi_writer_js_1.default.PitchBendEvent({
-            bend,
-            channel: midiChannel - 1,
-            delta: gap,
-        }));
-        trackState.cursor = currentTick;
-    }
+    // registerDescriptorStart()/registerDescriptorStop()/addExpression()/addPCMPan()/
+    // addPan()/noteOnPercussion()/noteOnPCMPercussion()/noteOffPCMPercussion()/
+    // pcmNoteForSample()は、イベント出力の定型処理としてevent-output.tsへ移設した
+    // （上のimportを参照）。
+    // getNoteFrequency()/ym2151KeyToFrequency()/noteOn()/noteOff()/updateNotePitch()/
+    // addPitchBend()は、event-output.tsへ移設した（上のimportを参照）。
     /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。
      *
      * Ch3 Specialの4オペレータ別トラック（Op1-3の専用トラックとOp4=通常のchannel3トラック）

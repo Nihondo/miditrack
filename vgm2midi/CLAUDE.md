@@ -1498,16 +1498,84 @@ it needed the register snapshot passed in rather than being read implicitly.
 applicable); no formula, constant, or comment changed. Verified the same way:
 `npm test` (all 211 tests, unchanged).
 
-The remaining pieces of the original refactor plan — event-output helpers
-(`addPan()`/`addExpression()`/`noteOn()`/`noteOff()` and friends) and the
-per-chip `handle*Write()` PSG/FM/PCM handlers — read and mutate
+The remaining event-output/`handle*Write()` pieces read and mutate
 `MidiConverter`'s own per-conversion instance state (`this.tracks`,
 `this.channels`, per-chip register/state maps) far more heavily than either
-extraction above, and cannot become plain functions without a larger
-context-object or class-composition redesign. That redesign is deliberately
-left as a separate, future incremental step, each piece landing with its own
-test run before the next, rather than attempted in the same pass as these two
-mechanical moves.
+extraction above, and cannot become plain functions the way `midi-math.ts`/
+`pcm-analysis.ts` did — see the next section for the composition approach that
+turned out to make the event-output half tractable anyway.
+
+## Refactor: `event-output.ts` — MIDI event emission extracted via a `host: MidiConverter` composition
+
+Unlike `midi-math.ts`/`pcm-analysis.ts`, the event-emission functions
+(`noteOn()`/`noteOff()`/`updateNotePitch()`/`getNoteFrequency()`/
+`ym2151KeyToFrequency()`/`addPan()`/`addExpression()`/`addPCMPan()`/
+`addPitchBend()`/`noteOnPercussion()`/`noteOnPCMPercussion()`/
+`noteOffPCMPercussion()`/`registerDescriptorStart()`/`registerDescriptorStop()`/
+`pcmNoteForSample()`) read and write a genuinely large slice of
+`MidiConverter`'s own per-conversion state (`tracks`, `channels`,
+`activeMidiDescriptors`, `activePCMNotes`, `generatedNoteCount`,
+`pcmSampleNotes`, `pcmChannel10Pan`, `options`, `sampleRate`, `vgmData`,
+`ym2203Prescalers`/`ym2608Prescalers`) and call back into chip-dispatch
+methods (`resolveDescriptor()`, `getTrack()`, `opnPitchScale()`/
+`oplPitchScale()`/`fmPitchScale()`/`ym2413PitchScale()`,
+`isOPLFMKey()`/`isOPLKey()`/`isYM2151FMKey()`, `pitchBendRangeForKey()`).
+Passing each of those individually as parameters would have meant an
+unwieldy 8-12-argument signature repeated across ~15 functions and ~140 call
+sites — not a meaningful reduction in coupling, just a worse-to-read version
+of the same coupling.
+
+**The chosen design**: `src/event-output.ts`'s functions take `host:
+MidiConverter` as their first parameter — a `import type { MidiConverter, ...
+} from './midi-converter'` (type-only, so no runtime circular `require`
+between the two files despite `midi-converter.ts` importing back from
+`event-output.ts` at the value level) — and read/write `host.<field>`
+instead of `this.<field>`. Every field and method these functions touch had
+its `private` modifier dropped (TypeScript privacy is compile-time-only for
+this class — it uses plain `private`, not real `#`-syntax JS private fields
+— so this is a zero-runtime-effect visibility relaxation, not a behavior
+change); `MidiConverter` itself keeps every one of those members, so nothing
+about its own code changed beyond `private` → (implicitly) `public`. Call
+sites throughout `midi-converter.ts` changed only from `this.foo(...)` to
+`foo(this, ...)`. `MidiConverter` still owns and calls all of its own
+chip-dispatch/pitch-scale/predicate methods normally; `event-output.ts`
+reaches them only through the `host` parameter, from outside the class.
+
+This is a real, if partial, decoupling: `event-output.ts` cannot see or touch
+anything on `MidiConverter` that wasn't explicitly widened, and the ~500
+lines of MIDI-track/event-emission plumbing now live in one file organized
+by that single responsibility, separate from the ~90 chip-register `handle*`
+methods that remain the bulk of `midi-converter.ts`. It does not achieve the
+zero-coupling purity of `midi-math.ts`/`pcm-analysis.ts` — `event-output.ts`
+still depends on a wide slice of `MidiConverter`'s shape — but further
+tightening that (e.g. a narrower structural interface instead of the
+concrete class) was judged not worth the added indirection for a vendored,
+single-consumer fork whose only importer is `index.ts`'s
+`export { MidiConverter }`.
+
+Two constants (`GM_CLOSED_HI_HAT_NOTE`, `GM_PCM_PERCUSSION_FIRST_NOTE`/
+`GM_PCM_PERCUSSION_LAST_NOTE`) moved into `event-output.ts` since they were
+each used only inside one moved function; `CHIP_PITCH_BEND_RANGE`/
+`GBDMG_SQUARE_KEYS`/the `OPLChip` type/the `ChannelState` interface stayed in
+`midi-converter.ts` (still used elsewhere there) and were exported instead,
+then imported into `event-output.ts`. Verified the same way as the two
+mechanical extractions: `npm test` (all 211 tests, unchanged) after the move.
+`midi-converter.ts` is 5,280 lines as of this writing, down from the original
+6,181 across all three extractions.
+
+The remaining per-chip `handle*Write()` PSG/FM/PCM handlers (SN76489,
+YM2612, YM2203, YM2608, YM2151, AY8910, HuC6280, YM2413, GBDMG, the OPL
+family, SegaPCM, C140 — roughly 90 methods, the actual register-to-MIDI
+interpretation logic and the bulk of what remains in `midi-converter.ts`)
+were deliberately left in place. The `host: MidiConverter` composition
+pattern above would technically work for them too, but each chip handler
+carries its own dense, individually-verified hardware-timing/register
+semantics (see every "Added: <chip>" section elsewhere in this file) — moving
+even one chip family's handler is a much larger unit of risk than any
+function moved so far, and is better done one chip at a time, in its own
+pass, with its own dedicated test run and (where a real source file is
+available) end-to-end verification, rather than as one large mechanical
+sweep across every chip at once.
 
 ## Out of scope (for now)
 

@@ -1,14 +1,115 @@
 import { VGMData, ConversionOptions } from './types';
+import { PCMTrackEvent, PCMDataBlockMetadata, PCMAnalysisMetadata } from './pcm-analysis';
+export declare const CHIP_PITCH_BEND_RANGE = 96;
+export type OPLChip = 'YM3812' | 'YM3526' | 'Y8950';
 /** libvgm/emu2413.c由来のYM2413内蔵patch carrier register ($01) byte。 */
 export declare const YM2413_BUILTIN_CARRIER_REGISTER_BYTES: readonly [0, 97, 65, 1, 97, 33, 34, 97, 33, 97, 97, 1, 193, 80, 1, 65];
 /** 内蔵patch carrier registerのMultiple下位nibble（patch番号を添字にする）。 */
 export declare const YM2413_BUILTIN_CARRIER_MULTIPLES: readonly [0, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 0, 1, 1];
+export declare const GBDMG_SQUARE_KEYS: readonly ["gbdmg_0", "gbdmg_1"];
+interface OPNOperatorPath {
+    carrier: number;
+    operators: readonly number[];
+}
+export interface ChannelState {
+    frequency: number;
+    volume: number;
+    active: boolean;
+    midiNote: number;
+    baseMidiNote: number;
+    block?: number;
+    opnAlgorithm?: number;
+    opnOperatorMultipliers?: number[];
+    opnOperatorMultiplierWritten?: boolean[];
+    opnOperatorTotalLevels?: number[];
+    opnActivePitchScale?: number;
+    opnActiveVelocity?: number;
+    freqLSB?: number;
+    freqMSB?: number;
+    hasPendingFrequencyUpdate?: boolean;
+    keyCode?: number;
+    keyFraction?: number;
+    keyOnMask?: number;
+    isToneEnabled?: boolean;
+    isEnvelope?: boolean;
+    isEnabled?: boolean;
+    isDDA?: boolean;
+    isNoise?: boolean;
+    isNoiseActive?: boolean;
+    noisePeriod?: number;
+    pan?: number;
+    balance?: number;
+    gbDmgLengthCounter?: number;
+    gbDmgLengthEnabled?: boolean;
+    gbDmgEnvelopeVolume?: number;
+    gbDmgEnvelopeTimer?: number;
+    gbDmgEnvelopePeriod?: number;
+    gbDmgEnvelopeIncrease?: boolean;
+    gbDmgSweepShadow?: number;
+    gbDmgSweepTimer?: number;
+    gbDmgSweepPeriod?: number;
+    gbDmgSweepShift?: number;
+    gbDmgSweepNegate?: boolean;
+    gbDmgSweepEnabled?: boolean;
+    ym2413Instrument?: number;
+    ym2413PendingKeyOn?: boolean;
+    oplKeyOn?: boolean;
+    oplPendingKeyOn?: boolean;
+}
+/** MIDI出力を一意に識別するチップ／instance／発音部の記述子。 */
+export interface TrackDescriptor {
+    chip: string;
+    instance: number;
+    section: string;
+    channel: number;
+    sourceKey: string;
+    midiChannel: number;
+    id: string;
+}
+/** 最初の発音時点におけるFMトラックの音色解釈。MIDIには表せない値をsidecarへ残す。 */
+interface FMTimbreMetadata {
+    model: 'opn' | 'opm' | 'opl' | 'opll';
+    suggestedProgram: number;
+    algorithm?: number;
+    carrierOperators?: number[];
+    operatorMultipliers?: number[];
+    operatorMultiplierWritten?: boolean[];
+    operatorTotalLevels?: number[];
+    keyOnMask?: number;
+    ym2413Instrument?: number;
+    ym2413CarrierMultiple?: number;
+    ym2413Volume?: number;
+    specialOperator?: number;
+    /** OPN Ch3 Specialの出力モード。CSM時はTimer Aによる自動キーオンを伴う。 */
+    opnCh3Mode?: 'special' | 'special-csm';
+}
+interface FMTimbreEvent {
+    sampleTime: number;
+    source: 'ym2413-patch' | 'ym2413-custom-patch' | 'opn-timbre' | 'opm-timbre' | 'opl-timbre';
+    timbre: FMTimbreMetadata;
+}
+interface TrackState {
+    descriptor: TrackDescriptor;
+    track: any;
+    cursor: number;
+    expression: number;
+    fmTimbre?: FMTimbreMetadata;
+    fmEvents?: FMTimbreEvent[];
+    pcmEvents?: PCMTrackEvent[];
+    pcmDataBlock?: PCMDataBlockMetadata;
+    pcmAnalysis?: PCMAnalysisMetadata;
+}
+/** PCMトリガーに付随するチップ固有の再生範囲。 */
+export interface PCMPlaybackRangeMetadata {
+    endAddressExclusive: number;
+    loopAddress?: number;
+}
 /** VGMのチップ書き込みを解析し、音程・音量・ノイズの発音状態をMIDIイベントへ変換する。 */
 export declare class MidiConverter {
-    private vgmData;
-    private options;
-    private sampleRate;
-    private channels;
+    vgmData: VGMData;
+    options: ConversionOptions;
+    sampleRate: number;
+    channels: Map<string, ChannelState>;
     private tracks;
     private descriptors;
     /** 実際に重なった異descriptorのMIDI channelだけを記録する（開発者向け、--verboseで表示）。 */
@@ -17,9 +118,12 @@ export declare class MidiConverter {
      * warnings（技術的な内部診断）とは別に扱い、--track-metadataサイドカーへ書き出して
      * miditrackのWeb UIがそのまま表示できるようにする。 */
     userWarnings: string[];
-    private activeMidiDescriptors;
-    private activePCMNotes;
-    private generatedNoteCount;
+    activeMidiDescriptors: Map<string, {
+        midiChannel: number;
+        startTime: number;
+    }>;
+    activePCMNotes: Map<string, number>;
+    generatedNoteCount: number;
     private lastLatchedChannel;
     private gameGearStereo;
     private huc6280SelectedChannels;
@@ -27,7 +131,7 @@ export declare class MidiConverter {
     private c140Registers;
     private segaPCMActiveVoices;
     private c140ActiveVoices;
-    private pcmSampleNotes;
+    pcmSampleNotes: Map<string, number>;
     private isYM2612DACEnabled;
     private ym2612DACPendingAddress?;
     private ym2612DACActiveVoice?;
@@ -40,8 +144,8 @@ export declare class MidiConverter {
     private opmCsmTimers;
     private oplRhythmModes;
     private oplRhythmControlBytes;
-    private ym2203Prescalers;
-    private ym2608Prescalers;
+    ym2203Prescalers: number[];
+    ym2608Prescalers: number[];
     private ym2608RhythmTotalLevels;
     private ym2608RhythmInstrumentLevels;
     private ym2608ADPCMRegisters;
@@ -52,7 +156,7 @@ export declare class MidiConverter {
     private ym2413CustomPatch;
     private hasYM2413CustomCarrierMultiple;
     private ssgNoisePeriods;
-    private pcmChannel10Pan?;
+    pcmChannel10Pan?: number;
     private initialChannels;
     private streams;
     private huc6280GlobalBalance;
@@ -87,7 +191,7 @@ export declare class MidiConverter {
     /** source keyを、現在のchip instanceを含む不変のtrack descriptorへ変換する。 */
     private descriptorForKey;
     /** descriptor IDまたは従来source keyからdescriptorを得る。 */
-    private resolveDescriptor;
+    resolveDescriptor(key: string): TrackDescriptor;
     /** FMトラックの初回発音時に使うGM音色候補を返す。 */
     private suggestedProgramForFMTimbre;
     /** YM2413内蔵patch番号に対応するGM試聴音色候補を返す。 */
@@ -108,13 +212,13 @@ export declare class MidiConverter {
     private recordOPNTimbreEvents;
     /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
     private pcmMetadataForTrack;
-    private getTrack;
+    getTrack(key: string): TrackState;
     private isPercussionKey;
     private isWidePitchBendFMKey;
-    private isYM2151FMKey;
-    private isOPLKey;
-    private isOPLFMKey;
-    private pitchBendRangeForKey;
+    isYM2151FMKey(key: string): boolean;
+    isOPLKey(key: string): boolean;
+    isOPLFMKey(key: string): boolean;
+    pitchBendRangeForKey(key: string): number;
     private addPitchBendRange;
     private formatPCMTrackName;
     private ym2203MidiChannel;
@@ -131,7 +235,7 @@ export declare class MidiConverter {
     private ym2608MidiChannel;
     private ym2608TrackName;
     /** 選択patchのcarrier Multipleを、明確な2の累乗だけoctave補正に変換する。 */
-    private ym2413PitchScale;
+    ym2413PitchScale(state: ChannelState): number;
     convert(): any[];
     /** Game Gear $4F のLRルーティングをSN76489各voiceのCC10へ反映する。 */
     private handleGameGearStereo;
@@ -199,9 +303,9 @@ export declare class MidiConverter {
     private handleOPNTimbreWrite;
     /** OPN/OPNA の $B4-$B6 LR 出力マスクを CC10 に変換する。 */
     private handleOPNPanWrite;
-    private opnPitchScale;
-    private oplPitchScale;
-    private fmPitchScale;
+    opnPitchScale(state: ChannelState): number;
+    oplPitchScale(state: ChannelState): number;
+    fmPitchScale(state: ChannelState, paths: readonly (readonly OPNOperatorPath[])[], silentTotalLevel: number, doubledMultiples: readonly number[]): number;
     private opnCarrierVelocity;
     private oplCarrierVelocity;
     private fmCarrierVelocity;
@@ -339,24 +443,6 @@ export declare class MidiConverter {
     private addHuC6280Expression;
     private isHuC6280MultiByteFreqUpdate;
     private isOPNMultiByteFreqUpdate;
-    private noteOnPCMPercussion;
-    private noteOffPCMPercussion;
-    private noteOnPercussion;
-    private pcmNoteForSample;
-    /** 同じMIDI channelで異なるdescriptorが同時発音した場合だけ警告を記録する。 */
-    private registerDescriptorStart;
-    /** descriptor単位で終了し、同一source keyの別instanceを消さない。 */
-    private registerDescriptorStop;
-    private addExpression;
-    private addPCMPan;
-    /** 左のみ/両方/右のみを CC10 の 0/64/127 に正規化して送る。 */
-    private addPan;
-    private getNoteFrequency;
-    private ym2151KeyToFrequency;
-    private noteOn;
-    private noteOff;
-    private updateNotePitch;
-    private addPitchBend;
     /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。
      *
      * Ch3 Specialの4オペレータ別トラック（Op1-3の専用トラックとOp4=通常のchannel3トラック）
@@ -385,3 +471,4 @@ export declare class MidiConverter {
     /** sidecar名はsource keyではなくdescriptorのchip/instanceから生成する。 */
     private chipNameForDescriptor;
 }
+export {};
