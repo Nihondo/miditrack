@@ -162,6 +162,10 @@ response rather than absorb business logic.
 - The Swift shell owns Finder/Dock integration and security-scoped source
   access. It stages files before calling `/api/open-local`; the backend reads
   only that staging directory.
+- Native open/save panels and alerts use `NSOpenPanel`/`NSSavePanel`/`NSAlert`
+  sheets attached to the main window. Keep an unattached, app-modal fallback
+  only before a parent window exists; independent windows can appear behind
+  the app window.
 - The native menu is built at launch. A Web UI language change takes effect in
   that menu on the next app launch.
 

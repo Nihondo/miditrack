@@ -130,6 +130,35 @@ class TestSwiftLauncherContract(unittest.TestCase):
         ):
             self.assertIn(required_symbol, self.source)
 
+    def test_attaches_native_file_panels_to_the_main_window(self) -> None:
+        """開く・保存パネルは独立パネルではなくメインウィンドウのシートとして表示する。"""
+        self.assertIn("weak var parentWindow: NSWindow?", self.source)
+        self.assertIn("delegate.parentWindow = mainWindow", self.source)
+        open_panel_start = self.source.index("runOpenPanelWith")
+        open_panel_end = self.source.index("runJavaScriptConfirmPanelWithMessage", open_panel_start)
+        self.assertIn("panel.beginSheetModal(for: parentWindow)", self.source[open_panel_start:open_panel_end])
+        save_panel_start = self.source.index("decideDestinationUsing response")
+        save_panel_end = self.source.index("didFailWithError", save_panel_start)
+        self.assertIn("panel.beginSheetModal(for: parentWindow)", self.source[save_panel_start:save_panel_end])
+
+    def test_attaches_native_alerts_to_the_main_window(self) -> None:
+        """WebKit通知と起動失敗通知はメインウィンドウのシートとして表示する。"""
+        self.assertIn("func presentNativeAlert(", self.source)
+        self.assertIn("alert.beginSheetModal(for: parentWindow", self.source)
+        self.assertIn("completionHandler(alert.runModal())", self.source)
+
+        confirm_start = self.source.index("runJavaScriptConfirmPanelWithMessage")
+        confirm_end = self.source.index("runJavaScriptAlertPanelWithMessage", confirm_start)
+        self.assertIn("presentNativeAlert(alert, attachedTo: parentWindow)", self.source[confirm_start:confirm_end])
+
+        notification_start = confirm_end
+        notification_end = self.source.index("decidePolicyFor navigationAction", notification_start)
+        self.assertIn("presentNativeAlert(alert, attachedTo: parentWindow)", self.source[notification_start:notification_end])
+
+        fatal_alert_start = self.source.index("private func presentFatalAlert")
+        fatal_alert_end = self.source.index("// MARK: - I. エントリポイント", fatal_alert_start)
+        self.assertIn("presentNativeAlert(alert, attachedTo: window)", self.source[fatal_alert_start:fatal_alert_end])
+
     def test_applies_the_native_fullscreen_layout_before_the_first_page_paint(self) -> None:
         self.assertIn('window.__miditrackNative = true', self.source)
         self.assertIn('document.body.classList.add("is-fullscreen")', self.source)

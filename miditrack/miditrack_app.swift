@@ -457,10 +457,29 @@ final class BackendController {
 
 // MARK: - F. WKWebViewデリゲート（WKWebViewの4つの穴を埋める）
 
+/// 親ウィンドウがある場合はネイティブ通知をシートとして表示する。
+///
+/// ウィンドウ構築前だけはアプリモーダル表示へフォールバックし、通知自体を
+/// 失わないようにする。
+func presentNativeAlert(
+    _ alert: NSAlert,
+    attachedTo parentWindow: NSWindow?,
+    completionHandler: @escaping (NSApplication.ModalResponse) -> Void
+) {
+    guard let parentWindow else {
+        completionHandler(alert.runModal())
+        return
+    }
+    alert.beginSheetModal(for: parentWindow, completionHandler: completionHandler)
+}
+
 /// 素のWKWebViewでは以下が無言で動かなくなる。ブラウザなら自動なので
 /// 見落としやすい: ダウンロード、<input type="file">、window.confirm()、
 /// target="_blank"を同一ウィンドウで開くこと。
 final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler {
+    /// ネイティブの開く・保存・通知を常にメイン画面のシートとして表示する親ウィンドウ。
+    weak var parentWindow: NSWindow?
+
     /// Web側のUI要素が実際に描画され終えた時点で一度だけ呼ばれる。
     /// スプラッシュオーバーレイを消すタイミングに使う。
     ///
@@ -526,8 +545,15 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.begin { response in
-            completionHandler(response == .OK ? panel.urls : nil)
+        if let parentWindow {
+            panel.beginSheetModal(for: parentWindow) { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+        } else {
+            // WebViewをウィンドウへ接続する前の異常系でもファイル選択は中断しない。
+            panel.begin { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
         }
     }
 
@@ -541,7 +567,9 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
         alert.messageText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: T("キャンセル"))
-        completionHandler(alert.runModal() == .alertFirstButtonReturn)
+        presentNativeAlert(alert, attachedTo: parentWindow) { response in
+            completionHandler(response == .alertFirstButtonReturn)
+        }
     }
 
     func webView(
@@ -553,8 +581,9 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
         let alert = NSAlert()
         alert.messageText = message
         alert.addButton(withTitle: "OK")
-        alert.runModal()
-        completionHandler()
+        presentNativeAlert(alert, attachedTo: parentWindow) { _ in
+            completionHandler()
+        }
     }
 
     func webView(
@@ -617,8 +646,15 @@ final class MiditrackWebDelegate: NSObject, WKUIDelegate, WKNavigationDelegate, 
     ) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedFilename
-        panel.begin { result in
-            completionHandler(result == .OK ? panel.url : nil)
+        if let parentWindow {
+            panel.beginSheetModal(for: parentWindow) { result in
+                completionHandler(result == .OK ? panel.url : nil)
+            }
+        } else {
+            // WebViewをウィンドウへ接続する前の異常系でもダウンロード自体は中断しない。
+            panel.begin { result in
+                completionHandler(result == .OK ? panel.url : nil)
+            }
         }
     }
 
@@ -974,6 +1010,7 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         let mainWindow = makeMainWindow(contentView: contentContainer)
         mainWindow.backgroundColor = startupBackgroundColor
         window = mainWindow
+        delegate.parentWindow = mainWindow
         delegate.onInitialLoadFinished = { [weak self] in
             self?.revealMainContent()
         }
@@ -1245,8 +1282,9 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "miditrack"
         alert.informativeText = "\(message)\n\n" + T("詳細: {path}").replacingOccurrences(of: "{path}", with: logFileURL.path)
         alert.addButton(withTitle: "OK")
-        alert.runModal()
-        NSApp.terminate(nil)
+        presentNativeAlert(alert, attachedTo: window) { _ in
+            NSApp.terminate(nil)
+        }
     }
 }
 
