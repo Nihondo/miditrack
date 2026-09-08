@@ -12,6 +12,8 @@ import {
   pianorollPitchCenterY,
   pianorollWhiteKeyBounds,
 } from "./pianoroll_math.mjs";
+import { createPianorollLoopController } from "./pianoroll_loop.mjs";
+import { createPianorollPointerController } from "./pianoroll_pointer.mjs";
 
 // 他の初期化処理より前にdata-themeを確定させ、ライト→ダークの一瞬のちらつきを
 // 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
@@ -176,17 +178,10 @@ const state = {
   pianorollKeyboardSize: null,
   pianorollTimelineWidth: 0,
   pianorollScrollFrameId: null,
-  pianorollPointerId: null,
-  pianorollPointerStartClientX: null,
-  pianorollPointerAnchorSeconds: null,
-  isPianorollLoopDragging: false,
   pianorollZoom: 1,
   pianorollZoomWheelDelta: 0,
   isPianorollAutoFollowing: false,
   pianorollAutoScrollTarget: null,
-  loopStartSeconds: null,
-  loopEndSeconds: null,
-  isLoopEnabled: false,
   highlightedTrackIndex: null,
   ensemblePresets: [],
   ensemblePresetId: null,
@@ -237,6 +232,13 @@ const state = {
   // 参照）。複数の変更が重なった場合に備え、trueは反映するまでOR蓄積する。
   pendingPianorollNeedsRedraw: false,
 };
+
+const pianorollLoopController = createPianorollLoopController({
+  minimumSeconds: MIN_LOOP_SECONDS,
+});
+const pianorollPointerController = createPianorollPointerController({
+  dragThresholdPixels: LOOP_DRAG_THRESHOLD_PX,
+});
 
 const trackListController = createTrackListController({
   locale: uiLang,
@@ -1971,21 +1973,16 @@ function getTrackOutlineColor(trackIndex, trackCount, opacity = 1) {
   return activeTrackColorPalette().outline(trackIndex, trackCount, opacity);
 }
 
-function normalizePianorollLoopRange(startSeconds, endSeconds) {
-  const duration = state.pianoroll?.durationSeconds || 0;
-  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || duration <= 0) return null;
-  const start = Math.min(duration, Math.max(0, startSeconds));
-  const end = Math.min(duration, Math.max(0, endSeconds));
-  if (end - start < MIN_LOOP_SECONDS) return null;
-  return { start, end };
+function pianorollDurationSeconds() {
+  return state.pianoroll?.durationSeconds || 0;
 }
 
 function selectedPianorollLoopRange() {
-  return normalizePianorollLoopRange(state.loopStartSeconds, state.loopEndSeconds);
+  return pianorollLoopController.getSelectedRange(pianorollDurationSeconds());
 }
 
 function activePianorollLoopRange() {
-  return state.isLoopEnabled ? selectedPianorollLoopRange() : null;
+  return pianorollLoopController.getActiveRange(pianorollDurationSeconds());
 }
 
 function updatePianorollLoopRegion() {
@@ -2008,25 +2005,25 @@ function updatePianorollLoopRegion() {
     return;
   }
   region.hidden = false;
-  region.classList.toggle("is-enabled", state.isLoopEnabled);
+  region.classList.toggle("is-enabled", pianorollLoopController.isEnabled());
   region.style.inlineSize = `${visibleEnd - visibleStart}px`;
   region.style.transform = `translate3d(${visibleStart}px, 0, 0)`;
 }
 
-function setPianorollLoopRange(startSeconds, endSeconds, { enable = state.isLoopEnabled } = {}) {
-  const range = normalizePianorollLoopRange(startSeconds, endSeconds);
-  if (!range) return false;
-  state.loopStartSeconds = range.start;
-  state.loopEndSeconds = range.end;
-  state.isLoopEnabled = enable;
+function setPianorollLoopRange(startSeconds, endSeconds, { enable } = {}) {
+  const didSetRange = pianorollLoopController.setRange(
+    startSeconds,
+    endSeconds,
+    pianorollDurationSeconds(),
+    { enable },
+  );
+  if (!didSetRange) return false;
   updatePianorollLoopRegion();
   return true;
 }
 
 function clearPianorollLoop() {
-  state.loopStartSeconds = null;
-  state.loopEndSeconds = null;
-  state.isLoopEnabled = false;
+  pianorollLoopController.clearRange();
   updatePianorollLoopRegion();
 }
 
@@ -2603,28 +2600,29 @@ function setupPianoroll() {
   viewportObserver.observe(scrollArea);
   canvas.addEventListener("pointerdown", (event) => {
     if (!state.pianoroll || event.pointerType === "touch" || event.button !== 0) return;
-    state.pianorollPointerId = event.pointerId;
-    state.pianorollPointerStartClientX = event.clientX;
-    state.pianorollPointerAnchorSeconds = pianorollSecondsAt(event.clientX);
-    state.isPianorollLoopDragging = false;
+    pianorollPointerController.beginPointer(
+      event.pointerId,
+      event.clientX,
+      pianorollSecondsAt(event.clientX),
+    );
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (event.pointerId !== state.pianorollPointerId) return;
-    const anchor = state.pianorollPointerAnchorSeconds;
-    const current = pianorollSecondsAt(event.clientX);
-    if (anchor === null || current === null) return;
-    const distance = Math.abs(event.clientX - state.pianorollPointerStartClientX);
-    if (!state.isPianorollLoopDragging && distance < LOOP_DRAG_THRESHOLD_PX) return;
-    state.isPianorollLoopDragging = true;
-    setPianorollLoopRange(Math.min(anchor, current), Math.max(anchor, current), { enable: true });
+    const range = pianorollPointerController.updatePointer(
+      event.pointerId,
+      event.clientX,
+      pianorollSecondsAt(event.clientX),
+    );
+    if (!range) return;
+    setPianorollLoopRange(Math.min(range.anchorSeconds, range.currentSeconds), Math.max(range.anchorSeconds, range.currentSeconds), { enable: true });
   });
   // クリック（ドラッグではない）時の挙動: 有効なループ範囲内をクリックした場合は
   // 区間を維持したまま再生位置だけをクリック箇所へ移動し、範囲外をクリックした場合は
   // ループ選択自体を解除してから再生位置を移動する。
   const finishPointerInteraction = (event) => {
-    if (event.pointerId !== state.pianorollPointerId) return;
-    const wasDragging = state.isPianorollLoopDragging;
+    const interaction = pianorollPointerController.finishPointer(event.pointerId);
+    if (!interaction) return;
+    const wasDragging = interaction.isDragging;
     if (!wasDragging && event.type === "pointerup") {
       const range = activePianorollLoopRange();
       const seconds = pianorollSecondsAt(event.clientX);
@@ -2637,10 +2635,6 @@ function setupPianoroll() {
       const range = activePianorollLoopRange();
       if (range) seekPlaybackTo(range.start);
     }
-    state.pianorollPointerId = null;
-    state.pianorollPointerStartClientX = null;
-    state.pianorollPointerAnchorSeconds = null;
-    state.isPianorollLoopDragging = false;
   };
   canvas.addEventListener("pointerup", finishPointerInteraction);
   canvas.addEventListener("pointercancel", finishPointerInteraction);

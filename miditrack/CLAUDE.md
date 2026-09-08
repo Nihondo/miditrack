@@ -84,8 +84,9 @@ src/miditrack/
                             preferences.json
   web.py                   create_app() / run_server() (tools/pixelart_web.py shape)
   web_assets/               index.html / app.css / app.js bootstrap; i18n.mjs, api.mjs,
-                            track_list.mjs, track_edits.mjs, and pianoroll_math.mjs isolate translation,
-                            authenticated fetch, track coordination, and pure piano-roll math without cycles
+                            track_list.mjs, track_edits.mjs, pianoroll_math.mjs, pianoroll_loop.mjs,
+                            and pianoroll_pointer.mjs isolate translation, authenticated fetch, track coordination,
+                            pure piano-roll math, loop-range state, and pointer-drag state without cycles
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
 

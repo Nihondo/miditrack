@@ -225,7 +225,8 @@ class TestWebApp(unittest.TestCase):
 
         self.assertIn('<script type="module" src="/assets/app.js"></script>', html)
         for module_name in (
-            "i18n.mjs", "api.mjs", "track_list.mjs", "track_edits.mjs", "pianoroll_math.mjs"
+            "i18n.mjs", "api.mjs", "track_list.mjs", "track_edits.mjs", "pianoroll_math.mjs",
+            "pianoroll_loop.mjs", "pianoroll_pointer.mjs",
         ):
             self.assertIn(f'<link rel="modulepreload" href="/assets/{module_name}">', html)
             response = self.client.get(f"/assets/{module_name}")
