@@ -1702,33 +1702,55 @@ that reaches a sibling of `midi-converter.ts` therefore uses `../` (e.g.
   original `host: MidiConverter` design, just exercised in the reverse
   direction for the first time.
 
-All eight follow the exact mechanical recipe `event-output.ts` established:
+- **`chips/ssg.ts`** + **`chips/ay8910.ts`**: the first extraction where the
+  moved state machine is not owned by one physical chip. `handleSSGWrite()`
+  and its `updateSSGTonePeriod()`/`updateSSGNoisePeriod()`/`ssgNoiseNoteForPeriod()`/
+  `ssgNoiseNote()`/`updateSSGVolume()`/`updateSSGMixer()`/`syncSSGToneState()`/
+  `syncSSGNoiseState()`/`retriggerSSGEnvelope()` helpers implement the
+  AY-3-8910-compatible SSG register interpreter shared, byte-for-byte
+  identically, by three different chips: standalone AY8910 and the SSG
+  cores integrated into YM2203 and YM2608 — every function already took
+  `keyPrefix`/`chip`/`instance` as plain parameters rather than reading
+  chip identity off `this`, so it needed no redesign to become chip-agnostic,
+  only the mechanical `host:` parameter. `chips/ssg.ts` holds that whole
+  shared engine; `chips/ay8910.ts` holds only `handleAY8910Write()`, a
+  thin wrapper that builds `ay8910_<instance>` as the `keyPrefix` and
+  calls `handleSSGWrite()` from `./ssg`. `midi-converter.ts` itself now
+  imports `handleSSGWrite` *from* `chips/ssg.ts` for its own two remaining
+  callers — the still-resident YM2203/YM2608 FM handlers' own `reg < 0x10`
+  SSG branches — the same "class file importing back from a chips/ file"
+  direction `chips/ym2151.ts` established for `emitOPMCsmPulse()`.
+  `ssgNoisePeriods` widened to `public`.
+
+All nine follow the exact mechanical recipe `event-output.ts` established:
 `host.foo(...)` reads/writes instead of `this.foo(...)`, call sites in
-`convert()`'s dispatch loop changed from `this.handleXWrite(...)` to
+`convert()`'s dispatch loop (or, for the SSG engine, the two remaining
+in-class FM handlers) changed from `this.handleXWrite(...)` to
 `handleXWrite(this, ...)`, no formula/constant/comment changed. Verified
 identically each time: `npm test` (all 211 tests, unchanged) after every
 single-chip move, checked in isolation before starting the next chip.
-`midi-converter.ts` is 3,607 lines as of this writing, down from the
-original 6,181 (42% reduction) across all eleven extractions so far.
+`midi-converter.ts` is 3,385 lines as of this writing, down from the
+original 6,181 (45% reduction) across all thirteen extractions so far.
 
-Still remaining: AY8910 (shares `handleSSGWrite()`'s tone/noise/envelope
-state machine with YM2203/YM2608's integrated SSG — extracting it alone
-means either duplicating that shared function or deciding which chip file
-owns it) and, last, YM2612/YM2203/YM2608 together (the OPN family's Ch3
-Special/CSM/algorithm-aware pitch-scale machinery is the most deeply
-cross-chip-shared code left in the file — `opnPitchScale()`/`fmPitchScale()`/
-`opnCarrierVelocity()`/`opnCarrierExpression()`/`recordFMTimbreEvent()`/
-`updateKeyBoundFMPitch()` etc., already `public` from the `event-output.ts`
-pass and reused directly by every extraction above, are shared by all three
-OPN-family chips plus the OPL family's `oplPitchScale()`/
-`fmCarrierVelocity()` twins already extracted). Both remaining pieces are
-qualitatively different from the eight done so far: every chip extracted
-above owned its entire register-handling state machine outright, while
-AY8910/YM2203/YM2608/YM2612 genuinely *share* one, so extracting any one of
-them requires first deciding how that shared machinery itself should be
-organized — a real design question, not just a mechanical `host:
-MidiConverter` move, and best scoped as its own dedicated pass rather than
-folded into "the next chip in the list."
+Still remaining, and last: YM2612/YM2203/YM2608 together. Unlike AY8910's
+SSG engine — a genuinely separable shared component with a clean parameter
+interface already in place — the OPN family's Ch3 Special/CSM/algorithm-aware
+pitch-scale machinery is woven through the three chips' own FM handlers
+rather than factored into one already-parametrized function: `opnPitchScale()`/
+`fmPitchScale()`/`opnCarrierVelocity()`/`opnCarrierExpression()`/
+`recordFMTimbreEvent()`/`updateKeyBoundFMPitch()` (already `public` from the
+`event-output.ts` pass, and reused directly by every extraction above) are
+the easy, already-parametrized part; the OPN Ch3 Special/CSM timer
+dispatch (`opnCh3Context()`, `handleOPNCh3ModeWrite()`,
+`handleOPNCh3SpecialKeyWrite()`, `updateOPNCsmTimer()`/`updateOPNCsmTimerRegister()`,
+`advanceCSMTimers()`'s OPN half, `emitOPNCsmPulse()`) and the FM
+register-write handlers themselves (`handleYM2612Write()`, `handleYM2203Write()`,
+`handleYM2608Write()`, plus DAC/rhythm/ADPCM-B sub-handlers) are not. Whether
+this becomes one `chips/opn.ts` for all three chips (mirroring `ssg.ts`'s
+"one engine, several thin per-chip entry points" shape) or three separate
+files sharing an `opn-shared.ts` core is a real design decision to make
+before touching code, not a mechanical move — it is deliberately left as
+its own dedicated future pass.
 
 ## Out of scope (for now)
 

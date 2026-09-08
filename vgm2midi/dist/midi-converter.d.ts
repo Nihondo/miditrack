@@ -174,7 +174,7 @@ export declare class MidiConverter {
     ym2413RhythmVolumes: number[];
     ym2413CustomPatch: Uint8Array<ArrayBuffer>;
     hasYM2413CustomCarrierMultiple: boolean;
-    private ssgNoisePeriods;
+    ssgNoisePeriods: Map<string, number>;
     pcmChannel10Pan?: number;
     private initialChannels;
     private streams;
@@ -351,17 +351,6 @@ export declare class MidiConverter {
     /** YM2608 ADPCM-Bの非repeat範囲を、VGMの44.1 kHz時間単位へ概算変換する。 */
     private ym2608ADPCMDurationSamples;
     private stopYM2608ADPCMBVoice;
-    private handleAY8910Write;
-    private handleSSGWrite;
-    private updateSSGNoisePeriod;
-    private ssgNoiseNoteForPeriod;
-    private ssgNoiseNote;
-    private updateSSGTonePeriod;
-    private updateSSGVolume;
-    private updateSSGMixer;
-    private syncSSGToneState;
-    private syncSSGNoiseState;
-    private retriggerSSGEnvelope;
     stopPCMVoice(activeVoices: Array<PCMVoiceNote | undefined>, channel: number, currentTime: number): void;
     private stopAllPCMVoices;
     /** DAC stream 0x90–0x95 を処理し、MSM6258は編集用GMトリガーとして残す。 */

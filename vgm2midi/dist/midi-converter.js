@@ -17,6 +17,8 @@ const opl_1 = require("./chips/opl");
 const segapcm_1 = require("./chips/segapcm");
 const c140_1 = require("./chips/c140");
 const ym2151_1 = require("./chips/ym2151");
+const ay8910_1 = require("./chips/ay8910");
+const ssg_1 = require("./chips/ssg");
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
 // pulse/square-ish, so every track is given this one consistent voice explicitly rather
@@ -1350,7 +1352,7 @@ class MidiConverter {
                     else if (cmd.chip === 'YM2151')
                         (0, ym2151_1.handleYM2151Write)(this, cmd, currentTime, activeNotes);
                     else if (cmd.chip === 'AY8910')
-                        this.handleAY8910Write(cmd, currentTime, activeNotes, i);
+                        (0, ay8910_1.handleAY8910Write)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'HuC6280')
                         (0, huc6280_1.handleHuC6280Write)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'SegaPCM')
@@ -2080,7 +2082,7 @@ class MidiConverter {
         if (this.handleOPNPanWrite(keyPrefix, 0, reg, data, currentTime))
             return;
         if (reg < 0x10) {
-            this.handleSSGWrite(`${keyPrefix}_ssg`, reg, data, currentTime, activeNotes, cmdIndex, 'YM2203', instance);
+            (0, ssg_1.handleSSGWrite)(this, `${keyPrefix}_ssg`, reg, data, currentTime, activeNotes, cmdIndex, 'YM2203', instance);
             return;
         }
         if (reg >= 0x2D && reg <= 0x2F) {
@@ -2206,7 +2208,7 @@ class MidiConverter {
         if (this.handleOPNPanWrite(keyPrefix, port, reg, data, currentTime))
             return;
         if (port === 0 && reg < 0x10) {
-            this.handleSSGWrite(`${keyPrefix}_ssg`, reg, data, currentTime, activeNotes, cmdIndex, 'YM2608', instance);
+            (0, ssg_1.handleSSGWrite)(this, `${keyPrefix}_ssg`, reg, data, currentTime, activeNotes, cmdIndex, 'YM2608', instance);
             return;
         }
         if (port === 0 && reg >= 0x10 && reg <= 0x1D) {
@@ -2427,153 +2429,9 @@ class MidiConverter {
         (0, event_output_1.noteOffPCMPercussion)(this, voice.descriptorId, voice.note, currentTime);
         this.ym2608ADPCMActiveVoices[instance] = undefined;
     }
-    handleAY8910Write(cmd, currentTime, activeNotes, cmdIndex) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const instance = cmd.instance === 1 ? 1 : 0;
-        this.handleSSGWrite(`ay8910_${instance}`, cmd.register, cmd.data, currentTime, activeNotes, cmdIndex, 'AY8910', instance);
-    }
-    handleSSGWrite(keyPrefix, reg, data, currentTime, activeNotes, cmdIndex, chip, instance) {
-        if (reg <= 5) {
-            this.updateSSGTonePeriod(keyPrefix, reg, data, currentTime, activeNotes, cmdIndex, chip, instance);
-        }
-        else if (reg === 6)
-            this.updateSSGNoisePeriod(keyPrefix, data, currentTime, activeNotes);
-        else if (reg === 7)
-            this.updateSSGMixer(keyPrefix, data, currentTime, activeNotes);
-        else if (reg >= 8 && reg <= 10) {
-            this.updateSSGVolume(keyPrefix, reg - 8, data, currentTime, activeNotes);
-        }
-        else if (reg === 13) {
-            this.retriggerSSGEnvelope(keyPrefix, currentTime, activeNotes);
-        }
-    }
-    // reg 6 (5-bit noise period) is one shared generator per chip instance, unlike tone/
-    // volume/mixer which are per-channel — a change here can affect up to 3 channels'
-    // noise pitch at once, so every currently-sounding noise channel on this keyPrefix is
-    // re-evaluated (not just retriggered unconditionally, to avoid machine-gunning notes
-    // for a sweep that stays within the same drum band).
-    updateSSGNoisePeriod(keyPrefix, data, currentTime, activeNotes) {
-        const period = data & 0x1F;
-        const previousPeriod = this.ssgNoisePeriods.get(keyPrefix);
-        this.ssgNoisePeriods.set(keyPrefix, period);
-        if (previousPeriod === undefined)
-            return;
-        const newNote = this.ssgNoiseNoteForPeriod(period);
-        if (newNote === this.ssgNoiseNoteForPeriod(previousPeriod))
-            return;
-        for (let channel = 0; channel < 3; channel++) {
-            const noiseKey = `${keyPrefix}_noise_${channel}`;
-            const active = activeNotes.get(noiseKey);
-            if (active === undefined || active.note === newNote)
-                continue;
-            (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
-            const state = this.channels.get(`${keyPrefix}_${channel}`);
-            (0, event_output_1.noteOnPercussion)(this, noiseKey, Math.round((state.volume / 15) * 100), currentTime, activeNotes, newNote);
-        }
-    }
-    ssgNoiseNoteForPeriod(period) {
-        // Period 0 behaves like 1 on real hardware (a 5-bit down-counter that reloads on
-        // underflow), matching the register-0 handling used elsewhere in this file.
-        const effectivePeriod = period === 0 ? 1 : period;
-        const normalizedRate = 1 - (effectivePeriod - 1) / 30;
-        return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
-    }
-    ssgNoiseNote(keyPrefix) {
-        return this.ssgNoiseNoteForPeriod(this.ssgNoisePeriods.get(keyPrefix) ?? 1);
-    }
-    // Looks ahead through at most 16 samples for the other half ($reg ± 1) of a split SSG
-    // tone-period write on the same chip/instance, reusing isOPNMultiByteFreqUpdate() the
-    // same way OPN FM frequency pairs do. Without this, updating pitch after only the LSB
-    // or MSB half has landed briefly combines the new half with a stale other half and can
-    // retrigger a spurious note roughly an octave away.
-    updateSSGTonePeriod(keyPrefix, reg, data, currentTime, activeNotes, cmdIndex, chip, instance) {
-        const channel = Math.floor(reg / 2);
-        const key = `${keyPrefix}_${channel}`;
-        const state = this.channels.get(key);
-        if (reg % 2 === 0)
-            state.freqLSB = data;
-        else
-            state.freqMSB = data & 0x0F;
-        const oldFreq = state.frequency;
-        state.frequency = ((state.freqMSB || 0) << 8) | (state.freqLSB || 0);
-        const otherReg = reg % 2 === 0 ? reg + 1 : reg - 1;
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, chip, 0, otherReg, instance);
-        if (state.active && !isSplitUpdate && state.frequency !== oldFreq) {
-            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    updateSSGVolume(keyPrefix, channel, data, currentTime, activeNotes) {
-        const key = `${keyPrefix}_${channel}`;
-        const state = this.channels.get(key);
-        state.isEnvelope = (data & 0x10) !== 0;
-        const effectiveVolume = state.isEnvelope ? 15 : data & 0x0F;
-        const oldVolume = state.volume;
-        const wasToneActive = state.active;
-        const wasNoiseActive = state.isNoiseActive;
-        state.volume = effectiveVolume;
-        this.syncSSGToneState(keyPrefix, channel, currentTime, activeNotes);
-        this.syncSSGNoiseState(keyPrefix, channel, currentTime, activeNotes);
-        const expression = Math.round((effectiveVolume / 15) * 127);
-        if (wasToneActive && state.active && oldVolume !== effectiveVolume) {
-            (0, event_output_1.addExpression)(this, key, expression, currentTime);
-        }
-        if (wasNoiseActive && state.isNoiseActive && oldVolume !== effectiveVolume) {
-            (0, event_output_1.addExpression)(this, `${keyPrefix}_noise_${channel}`, expression, currentTime);
-        }
-    }
-    updateSSGMixer(keyPrefix, data, currentTime, activeNotes) {
-        for (let channel = 0; channel < 3; channel++) {
-            const state = this.channels.get(`${keyPrefix}_${channel}`);
-            state.isToneEnabled = (data & (1 << channel)) === 0;
-            state.isNoise = (data & (1 << (channel + 3))) === 0;
-            this.syncSSGToneState(keyPrefix, channel, currentTime, activeNotes);
-            this.syncSSGNoiseState(keyPrefix, channel, currentTime, activeNotes);
-        }
-    }
-    syncSSGToneState(keyPrefix, channel, currentTime, activeNotes) {
-        const key = `${keyPrefix}_${channel}`;
-        const state = this.channels.get(key);
-        const shouldSound = state.isToneEnabled && state.volume > 0;
-        if (shouldSound && !state.active) {
-            state.active = true;
-            (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
-        }
-        else if (!shouldSound && state.active) {
-            state.active = false;
-            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    syncSSGNoiseState(keyPrefix, channel, currentTime, activeNotes) {
-        const state = this.channels.get(`${keyPrefix}_${channel}`);
-        const noiseKey = `${keyPrefix}_noise_${channel}`;
-        const shouldSound = state.isNoise && state.volume > 0;
-        if (shouldSound && !state.isNoiseActive) {
-            state.isNoiseActive = true;
-            (0, event_output_1.noteOnPercussion)(this, noiseKey, Math.round((state.volume / 15) * 100), currentTime, activeNotes, this.ssgNoiseNote(keyPrefix));
-        }
-        else if (!shouldSound && state.isNoiseActive) {
-            state.isNoiseActive = false;
-            (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
-        }
-    }
-    retriggerSSGEnvelope(keyPrefix, currentTime, activeNotes) {
-        for (let channel = 0; channel < 3; channel++) {
-            const key = `${keyPrefix}_${channel}`;
-            const state = this.channels.get(key);
-            if (!state.isEnvelope)
-                continue;
-            if (state.active) {
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-                (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
-            }
-            if (state.isNoiseActive) {
-                const noiseKey = `${keyPrefix}_noise_${channel}`;
-                (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
-                (0, event_output_1.noteOnPercussion)(this, noiseKey, 100, currentTime, activeNotes, this.ssgNoiseNote(keyPrefix));
-            }
-        }
-    }
+    // handleAY8910Write()はchips/ay8910.tsへ、handleSSGWrite()から始まる
+    // AY-3-8910互換SSG（AY8910/YM2203/YM2608内蔵SSGコアで共有）の状態機械は
+    // chips/ssg.tsへ移設した（上のimportを参照）。
     // handleYM2151Write()から始まるYM2151のレジスタ処理群は、chips/ym2151.tsへ
     // 移設した（上のimportを参照）。
     // handleHuC6280Write()/updateHuC6280Pan()は、HuC6280のレジスタ処理として
