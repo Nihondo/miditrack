@@ -1563,19 +1563,129 @@ mechanical extractions: `npm test` (all 211 tests, unchanged) after the move.
 `midi-converter.ts` is 5,280 lines as of this writing, down from the original
 6,181 across all three extractions.
 
-The remaining per-chip `handle*Write()` PSG/FM/PCM handlers (SN76489,
-YM2612, YM2203, YM2608, YM2151, AY8910, HuC6280, YM2413, GBDMG, the OPL
-family, SegaPCM, C140 — roughly 90 methods, the actual register-to-MIDI
-interpretation logic and the bulk of what remains in `midi-converter.ts`)
-were deliberately left in place. The `host: MidiConverter` composition
-pattern above would technically work for them too, but each chip handler
-carries its own dense, individually-verified hardware-timing/register
-semantics (see every "Added: <chip>" section elsewhere in this file) — moving
-even one chip family's handler is a much larger unit of risk than any
-function moved so far, and is better done one chip at a time, in its own
-pass, with its own dedicated test run and (where a real source file is
-available) end-to-end verification, rather than as one large mechanical
-sweep across every chip at once.
+The remaining per-chip `handle*Write()` PSG/FM/PCM handlers (YM2612, YM2203,
+YM2608, YM2151, AY8910, YM2413, the OPL family, SegaPCM, C140 — the actual
+register-to-MIDI interpretation logic and the bulk of what remains in
+`midi-converter.ts`) were deliberately left in place at first: each chip
+handler carries its own dense, individually-verified hardware-timing/register
+semantics (see every "Added: <chip>" section elsewhere in this file), so
+moving one is a much larger unit of risk than any function moved above, and
+is done one chip at a time, in its own pass, with its own dedicated test run
+— see the next section for the three chip families extracted so far under
+this same `host: MidiConverter` pattern.
+
+## Refactor: per-chip handler files under `src/chips/`
+
+Five chip families extracted so far using the `event-output.ts` `host:
+MidiConverter` composition pattern, each its own single-owner file under
+`src/chips/` — chosen in rough order of self-containment (no shared
+SSG/OPN state machine with another chip, unlike AY8910/YM2203/YM2608's
+shared `handleSSGWrite()`, or YM2612's central role in the OPN Ch3
+Special/CSM machinery). The first three (`sn76489.ts`, `huc6280.ts`,
+`gbdmg.ts`) were originally written flat under `src/` and moved into
+`src/chips/` once the directory was introduced — every import inside them
+that reaches a sibling of `midi-converter.ts` therefore uses `../` (e.g.
+`from '../event-output'`), while imports between files that both live in
+`src/chips/` (none yet, but a future extraction may add one) would use `./`.
+
+- **`chips/sn76489.ts`**: `handleGameGearStereo()`/`handlePSGWrite()`/
+  `handleSN76489NoiseControl()`/`syncSN76489NoiseVolume()`/
+  `sn76489Velocity()`/`sn76489Expression()`/`sn76489NoiseNote()`/
+  `reevaluateSN76489NoiseForChannel2Frequency()`. `midiChannelForKey()`,
+  `lastLatchedChannel`, and `gameGearStereo` widened to `public` on
+  `MidiConverter` (called via `host.`/read via `host.`); `handleAYSSGStereo()`
+  stayed in `midi-converter.ts` since it is not SN76489-specific.
+- **`chips/huc6280.ts`**: `handleHuC6280Write()` and its
+  `syncHuC6280ToneState()`/`syncHuC6280NoiseState()`/
+  `updateHuC6280NoiseEnvelope()`/`noteOnHuC6280Noise()`/
+  `huc6280NoiseNoteForPeriod()`/`addHuC6280Expression()`/
+  `updateHuC6280Pan()`/`isHuC6280MultiByteFreqUpdate()` helpers.
+  `huc6280SelectedChannels`/`huc6280GlobalBalance` widened to `public`.
+  `HUC6280_NOISE_RETRIGGER_MIN_VOLUME_RISE`/`HUC6280_SPLIT_FREQUENCY_MAX_GAP_SAMPLES`
+  moved into the new file outright (used only there, unlike the constants
+  `midi-math.ts`/`pcm-analysis.ts` had to export-and-share because
+  `midi-converter.ts` still needed them elsewhere).
+- **`chips/gbdmg.ts`**: the whole Game Boy DMG cluster — the 512Hz frame
+  sequencer (`advanceGBDMGFrameSequencers()`/`clockGBDMGFrameStep()`/
+  `clockGBDMGLengths()`/`clockGBDMGSweep()`/`clockGBDMGEnvelopes()`) plus
+  every `handleGBDMG*Write()` register handler and their
+  `startGBDMGEnvelope()`/`startGBDMGSweep()`/`setGBDMGLength()`/
+  `reloadGBDMGLength()`/`updateGBDMGPan()`/`refreshGBDMGPans()`/
+  `gbDmgEnvelopeDacEnabled()`/`gbDmgEnvelopeVelocity()`/`gbDmgWaveVelocity()`
+  helpers — 25 functions, the largest single extraction so far.
+  `gbDmgNextFrameSamples`/`gbDmgFrameSteps`/`gbDmgMasterVolume`/
+  `gbDmgStereoRouting` widened to `public`; `GBDMG_FRAME_SAMPLES` exported
+  (still read from `midi-converter.ts` itself, in the `convert()` reset
+  block and the field default). `withChipInstance()` and
+  `isOPNMultiByteFreqUpdate()` — generic per-instance-state-swap and
+  split-register-write helpers shared by multiple chip families, not
+  GBDMG-specific — stayed in `midi-converter.ts` and were widened to
+  `public` rather than moved, the same treatment `resolveDescriptor()`/
+  `getTrack()` got for `event-output.ts`.
+- **`chips/ym2413.ts`**: `handleYM2413Write()` and its
+  `handleYM2413RhythmModeWrite()`/`updateYM2413Frequency()`/
+  `handleYM2413KeyAndFrequencyWrite()`/`commitYM2413KeyOn()`/
+  `handleYM2413VolumeWrite()`/`ym2413Velocity()`/`ym2413RhythmVelocity()`
+  helpers. `ym2413RhythmMode`/`ym2413RhythmControlByte`/
+  `ym2413RhythmVolumes`/`ym2413CustomPatch`/`hasYM2413CustomCarrierMultiple`
+  widened to `public`; `YM2413_RHYTHM_NOTES`/`YM2413_RHYTHM_KEY_BITS`
+  moved into the new file outright (used only there); `YM2413_RHYTHM_NAMES`
+  stayed exported from `midi-converter.ts` (still read by `getTrack()`'s
+  track-naming there). `recordYM2413TimbreEvent()` — a thin per-chip
+  wrapper around the shared `recordFMTimbreEvent()` sidecar mechanism that
+  YM2151/OPL/OPN's own handlers call directly, not just through a
+  chip-specific wrapper — stayed in `midi-converter.ts` and was widened to
+  `public` rather than moved, the same "shared FM-timbre/dispatch helper"
+  treatment given to `resolveDescriptor()`/`getTrack()` for
+  `event-output.ts` and to `withChipInstance()`/`isOPNMultiByteFreqUpdate()`
+  for `chips/gbdmg.ts`. `suggestedProgramForYM2413Patch()`/
+  `ym2413CarrierMultiple()` — called only from `fmTimbreForDescriptor()`,
+  itself shared dispatch/sidecar logic for every FM chip — stayed private
+  and untouched.
+- **`chips/opl.ts`**: `handleOPLWrite()` (the shared YM3812/YM3526/Y8950
+  register dispatcher) and its `oplKey()`/`oplOperatorSlot()`/
+  `setOPLOperatorMultiple()`/`setOPLOperatorTotalLevel()`/
+  `setOPLConnection()`/`updateOPLFrequencyLow()`/`updateOPLKeyAndBlock()`/
+  `commitOPLKeyOn()`/`handleOPLRhythmWrite()`/`oplRhythmVelocity()`
+  helpers. `OPL_CHIPS`/`OPL_FM_PITCH_BEND_RANGE` exported from
+  `midi-converter.ts` (both still read elsewhere there);
+  `OPL_RHYTHM_NOTES`/`OPL_RHYTHM_KEY_BITS`/`OPL_RHYTHM_SLOTS`/
+  `OPL_SLOT_BY_REGISTER_OFFSET` moved into the new file outright (used
+  only there — `OPL_RHYTHM_NAMES`, a different constant, is what
+  `getTrack()` still needs, so it alone stayed). `oplRhythmModes`/
+  `oplRhythmControlBytes` widened to `public`. `recordFMTimbreEvent()`/
+  `updateKeyBoundFMPitch()`/`operatorTotalLevelVelocity()`/
+  `oplCarrierVelocity()`/`oplCarrierExpression()` all stayed in
+  `midi-converter.ts` as `public` methods rather than moving, even though
+  the latter two are (today) only called from this one chip file — they
+  pair directly with `opnCarrierVelocity()`/`opnCarrierExpression()` and
+  share `fmCarrierVelocity()`/`fmCarrierExpression()`/`fmPitchScale()`
+  with the still-unextracted OPN family, so keeping the OPN/OPL pairs
+  together in one place was judged clearer than splitting them across
+  files prematurely.
+
+All five follow the exact mechanical recipe `event-output.ts` established:
+`host.foo(...)` reads/writes instead of `this.foo(...)`, call sites in
+`convert()`'s dispatch loop changed from `this.handleXWrite(...)` to
+`handleXWrite(this, ...)`, no formula/constant/comment changed. Verified
+identically each time: `npm test` (all 211 tests, unchanged) after every
+single-chip move, checked in isolation before starting the next chip.
+`midi-converter.ts` is 3,960 lines as of this writing, down from the
+original 6,181 (36% reduction) across all eight extractions so far.
+
+Still remaining, roughly in order of expected difficulty: AY8910 (shares
+`handleSSGWrite()`'s tone/noise/envelope state machine with YM2203/YM2608's
+integrated SSG — extracting it alone means either duplicating that shared
+function or deciding which chip file owns it), SegaPCM and C140 (share
+`stopPCMVoice()` and `PCMVoiceNote` bookkeeping with each other and with
+the still-`midi-converter.ts`-resident YM2612 DAC/YM2608 ADPCM-B PCM
+paths), YM2151 (self-contained but large, with CSM timer interaction),
+and last YM2612/YM2203/YM2608 together (the OPN family's Ch3
+Special/CSM/algorithm-aware pitch-scale machinery is the most deeply
+cross-chip-shared code in the file — `opnPitchScale()`/`fmPitchScale()`/
+`opnCarrierVelocity()` etc., already `public` from the `event-output.ts`
+pass, are shared by all three OPN-family chips plus the OPL family's
+`oplPitchScale()`/`fmCarrierVelocity()` twins, extracted above).
 
 ## Out of scope (for now)
 

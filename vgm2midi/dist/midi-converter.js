@@ -3,12 +3,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MidiConverter = exports.GBDMG_SQUARE_KEYS = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = exports.CHIP_PITCH_BEND_RANGE = void 0;
+exports.MidiConverter = exports.GBDMG_FRAME_SAMPLES = exports.GBDMG_SQUARE_KEYS = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = exports.OPL_CHIPS = exports.CHIP_PITCH_BEND_RANGE = exports.OPL_FM_PITCH_BEND_RANGE = void 0;
 const midi_writer_js_1 = __importDefault(require("midi-writer-js"));
 const vgm_chip_metadata_1 = require("./vgm-chip-metadata");
 const midi_math_1 = require("./midi-math");
 const pcm_analysis_1 = require("./pcm-analysis");
 const event_output_1 = require("./event-output");
+const sn76489_1 = require("./chips/sn76489");
+const huc6280_1 = require("./chips/huc6280");
+const gbdmg_1 = require("./chips/gbdmg");
+const ym2413_1 = require("./chips/ym2413");
+const opl_1 = require("./chips/opl");
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
 // pulse/square-ish, so every track is given this one consistent voice explicitly rather
@@ -24,11 +29,6 @@ const YM2413_GM_PROGRAM_BY_PATCH = [
     GM_PROGRAM_DRAWBAR_ORGAN, 60, GM_PROGRAM_LEAD_1_SQUARE, 6, 11, 38, 32, 27,
 ];
 const GM_PERCUSSION_CHANNEL = 10;
-const HUC6280_NOISE_RETRIGGER_MIN_VOLUME_RISE = 4;
-// Some HuC6280 drivers split the two frequency bytes across adjacent 50/60Hz updates.
-// Coalescing up to one 50Hz VGM frame avoids thousands of false MIDI note attacks, while
-// still preventing an unrelated write seconds later from being mistaken for the pair.
-const HUC6280_SPLIT_FREQUENCY_MAX_GAP_SAMPLES = 882;
 // Register $2A drives the DAC one byte at a time with no seek/address information (unlike
 // the $E0-seek + $80-8F stream path), so there is no sample identity to key retriggering
 // off. Consecutive $2A writes are instead grouped into one note by elapsed-time gap: a
@@ -39,7 +39,7 @@ const YM2612_DAC_DIRECT_GAP_SAMPLES = 882;
 const YM2151_FM_PITCH_BEND_RANGE = 96;
 const YM2203_FM_PITCH_BEND_RANGE = 96;
 const YM2608_FM_PITCH_BEND_RANGE = 96;
-const OPL_FM_PITCH_BEND_RANGE = 96;
+exports.OPL_FM_PITCH_BEND_RANGE = 96;
 exports.CHIP_PITCH_BEND_RANGE = 96;
 // CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
 // MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
@@ -105,25 +105,14 @@ const OPN_CH3_PERCUSSION_NAMES = new Map([
 // emulator; https://github.com/digital-sound-antiques/emu2413, see update_key_status() for
 // the $0E key-bit-to-slot mapping and OPLL_writeReg()'s $30-$38 case for the $37/$38
 // upper-nibble HH/TOM volume reuse). $0E bit4=BD, bit3=SD, bit2=TOM, bit1=CYM, bit0=HH.
-const YM2413_RHYTHM_NOTES = [36, 42, 38, 45, 49]; // BD, HH, SD, TOM, CYM (GM Bass Drum 1, Closed Hi-Hat, Acoustic Snare, Low Tom, Crash Cymbal 1)
 const YM2413_RHYTHM_NAMES = ['Bass Drum', 'Hi-Hat', 'Snare Drum', 'Tom-Tom', 'Top Cymbal'];
-const YM2413_RHYTHM_KEY_BITS = [0x10, 0x01, 0x08, 0x04, 0x02]; // BD, HH, SD, TOM, CYM -> $0E bit masks
-const OPL_CHIPS = ['YM3812', 'YM3526', 'Y8950'];
+exports.OPL_CHIPS = ['YM3812', 'YM3526', 'Y8950'];
 const OPL_DISPLAY_NAMES = {
     YM3812: 'YM3812',
     YM3526: 'YM3526',
     Y8950: 'Y8950',
 };
-const OPL_RHYTHM_NOTES = [36, 42, 38, 45, 49];
 const OPL_RHYTHM_NAMES = ['Bass Drum', 'Hi-Hat', 'Snare Drum', 'Tom-Tom', 'Top Cymbal'];
-const OPL_RHYTHM_KEY_BITS = [0x10, 0x01, 0x08, 0x04, 0x02];
-const OPL_RHYTHM_SLOTS = [[6, 1], [7, 0], [7, 1], [8, 0], [8, 1]];
-// fmopl.c slot_array[32]: only these 18 offsets address the two operators of channels 0-8.
-const OPL_SLOT_BY_REGISTER_OFFSET = [
-    [0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], undefined, undefined,
-    [3, 0], [4, 0], [5, 0], [3, 1], [4, 1], [5, 1], undefined, undefined,
-    [6, 0], [7, 0], [8, 0], [6, 1], [7, 1], [8, 1], undefined, undefined,
-];
 // OPLL built-in patches 1-15's carrier register ($01).  These are the second byte of each
 // `default_inst` record in pinned libvgm's emu2413.c.  Patch 0 is the writable user patch
 // and is read from $00-$07 below.  Keeping the source bytes public makes this hardware
@@ -164,7 +153,7 @@ const YM2151_C2_OPERATOR_MASK = 1 << 3;
 //   ignored per this file's "every melodic track uses the shared square-lead GM Program"
 //   convention.
 exports.GBDMG_SQUARE_KEYS = ['gbdmg_0', 'gbdmg_1'];
-const GBDMG_FRAME_SAMPLES = 44100 / 512;
+exports.GBDMG_FRAME_SAMPLES = 44100 / 512;
 // Logical operator order is O1, O2, O3, O4. Each entry describes the operators
 // whose frequencies can reach one audible carrier for the corresponding algorithm.
 const OPN_OPERATOR_PATHS = [
@@ -280,7 +269,7 @@ class MidiConverter {
         this.gbDmgMasterVolume = 0x77;
         this.gbDmgStereoRouting = 0xFF;
         this.gbDmgFrameSteps = [0, 0];
-        this.gbDmgNextFrameSamples = [GBDMG_FRAME_SAMPLES, GBDMG_FRAME_SAMPLES];
+        this.gbDmgNextFrameSamples = [exports.GBDMG_FRAME_SAMPLES, exports.GBDMG_FRAME_SAMPLES];
         this.vgmData = vgmData;
         this.options = {
             tempo: options.tempo || 120,
@@ -394,7 +383,7 @@ class MidiConverter {
         }
         // YM3526/YM3812/Y8950 share the OPL 9-channel, two-operator FM register map.
         // Instance is embedded in the key so both chips retain independent register latches.
-        for (const chip of OPL_CHIPS) {
+        for (const chip of exports.OPL_CHIPS) {
             const prefix = chip.toLowerCase();
             for (let instance = 0; instance < 2; instance++) {
                 for (let channel = 0; channel < 9; channel++) {
@@ -852,7 +841,7 @@ class MidiConverter {
         const chip = descriptor.chip;
         const model = chip === 'YM2151' ? 'opm'
             : chip === 'YM2413' ? 'opll'
-                : OPL_CHIPS.includes(chip) ? 'opl'
+                : exports.OPL_CHIPS.includes(chip) ? 'opl'
                     : ['YM2203', 'YM2608', 'YM2612'].includes(chip) ? 'opn' : undefined;
         if (!model)
             return undefined;
@@ -1101,7 +1090,7 @@ class MidiConverter {
         if (this.isYM2151FMKey(key))
             return YM2151_FM_PITCH_BEND_RANGE;
         if (this.isOPLFMKey(key))
-            return OPL_FM_PITCH_BEND_RANGE;
+            return exports.OPL_FM_PITCH_BEND_RANGE;
         if (key.startsWith('ym2608_') && key.includes('_fm_'))
             return YM2608_FM_PITCH_BEND_RANGE;
         if (key.startsWith('ym2203_') && key.includes('_fm_'))
@@ -1302,7 +1291,7 @@ class MidiConverter {
         this.gbDmgMasterVolume = 0x77;
         this.gbDmgStereoRouting = 0xFF;
         this.gbDmgFrameSteps = [0, 0];
-        this.gbDmgNextFrameSamples = [GBDMG_FRAME_SAMPLES, GBDMG_FRAME_SAMPLES];
+        this.gbDmgNextFrameSamples = [exports.GBDMG_FRAME_SAMPLES, exports.GBDMG_FRAME_SAMPLES];
         this.streams.clear();
         this.activeChipInstance = undefined;
         for (const chip of this.secondaryChipStates.keys()) {
@@ -1321,7 +1310,7 @@ class MidiConverter {
             if (cmd.type === 'wait' && cmd.samples) {
                 this.advanceCSMTimers(currentTime, currentTime + cmd.samples, activeNotes);
                 currentTime += cmd.samples;
-                this.advanceGBDMGFrameSequencers(currentTime, activeNotes);
+                (0, gbdmg_1.advanceGBDMGFrameSequencers)(this, currentTime, activeNotes);
             }
             else if (cmd.type === 'pcm_seek' && cmd.chip === 'YM2612') {
                 this.handleYM2612DACSeek(cmd);
@@ -1341,11 +1330,11 @@ class MidiConverter {
             else if (cmd.type === 'psg_write' && cmd.data !== undefined) {
                 // SN76489 PSG
                 this.withChipInstance('SN76489', cmd.instance ?? 0, () => {
-                    this.handlePSGWrite(cmd.data, currentTime, activeNotes, i);
+                    (0, sn76489_1.handlePSGWrite)(this, cmd.data, currentTime, activeNotes, i);
                 });
             }
             else if (cmd.type === 'psg_stereo' && cmd.data !== undefined) {
-                this.withChipInstance('SN76489', cmd.instance ?? 0, () => this.handleGameGearStereo(cmd.data, currentTime));
+                this.withChipInstance('SN76489', cmd.instance ?? 0, () => (0, sn76489_1.handleGameGearStereo)(this, cmd.data, currentTime));
             }
             else if (cmd.type === 'ay_stereo' && cmd.data !== undefined && cmd.chip !== undefined) {
                 this.handleAYSSGStereo(cmd.chip, cmd.instance ?? 0, cmd.data, currentTime);
@@ -1359,22 +1348,22 @@ class MidiConverter {
                         this.handleYM2203Write(cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'YM2608')
                         this.handleYM2608Write(cmd, currentTime, activeNotes, i);
-                    else if (OPL_CHIPS.includes(cmd.chip))
-                        this.handleOPLWrite(cmd, currentTime, activeNotes, i);
+                    else if (exports.OPL_CHIPS.includes(cmd.chip))
+                        (0, opl_1.handleOPLWrite)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'YM2151')
                         this.handleYM2151Write(cmd, currentTime, activeNotes);
                     else if (cmd.chip === 'AY8910')
                         this.handleAY8910Write(cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'HuC6280')
-                        this.handleHuC6280Write(cmd, currentTime, activeNotes, i);
+                        (0, huc6280_1.handleHuC6280Write)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'SegaPCM')
                         this.handleSegaPCMWrite(cmd, currentTime);
                     else if (cmd.chip === 'C140')
                         this.handleC140Write(cmd, currentTime);
                     else if (cmd.chip === 'YM2413')
-                        this.handleYM2413Write(cmd, currentTime, activeNotes, i);
+                        (0, ym2413_1.handleYM2413Write)(this, cmd, currentTime, activeNotes, i);
                     else if (cmd.chip === 'GBDMG')
-                        this.handleGBDMGWrite(cmd, currentTime, activeNotes, i);
+                        (0, gbdmg_1.handleGBDMGWrite)(this, cmd, currentTime, activeNotes, i);
                 });
             }
         }
@@ -1387,13 +1376,10 @@ class MidiConverter {
         return Array.from(this.tracks.values()).map(t => t.track);
     }
     // --- Chip Handling Logic ---
-    /** Game Gear $4F のLRルーティングをSN76489各voiceのCC10へ反映する。 */
-    handleGameGearStereo(data, currentTime) {
-        this.gameGearStereo = data;
-        for (let channel = 0; channel < 4; channel++) {
-            (0, event_output_1.addPan)(this, `psg_${channel}`, (data & (1 << channel)) !== 0, (data & (1 << (channel + 4))) !== 0, currentTime);
-        }
-    }
+    // handleGameGearStereo()/handlePSGWrite()/handleSN76489NoiseControl()/
+    // syncSN76489NoiseVolume()/sn76489Velocity()/sn76489Expression()/sn76489NoiseNote()/
+    // reevaluateSN76489NoiseForChannel2Frequency()は、SN76489のレジスタ処理として
+    // chips/sn76489.tsへ移設した（上のimportを参照）。
     /** VGM $31 のAY/OPN SSG LR maskを各SSG voiceのCC10へ変換する。 */
     handleAYSSGStereo(chip, instance, data, currentTime) {
         const keyPrefix = chip === 'AY8910'
@@ -1410,187 +1396,6 @@ class MidiConverter {
             const hasLeft = (data & (1 << (channel * 2 + 1))) !== 0;
             (0, event_output_1.addPan)(this, `${keyPrefix}_${channel}`, hasLeft, hasRight, currentTime);
         }
-    }
-    handlePSGWrite(data, currentTime, activeNotes, cmdIndex) {
-        if ((data & 0x80) === 0x80) {
-            // Latch/Data byte
-            const channel = (data >> 5) & 0x03;
-            const type = (data >> 4) & 0x01;
-            const nibble = data & 0x0F;
-            this.lastLatchedChannel = channel;
-            if (type === 0) {
-                // Tone register - lower 4 bits
-                if (channel < 3) {
-                    const key = `psg_${channel}`;
-                    const state = this.channels.get(key);
-                    const oldFreq = state.frequency;
-                    // Peek ahead check for split-byte updates
-                    let isMultiByteUpdate = false;
-                    for (let k = cmdIndex + 1; k < this.vgmData.commands.length; k++) {
-                        const next = this.vgmData.commands[k];
-                        if (next.type === 'wait')
-                            continue;
-                        if (next.type === 'psg_write' && next.data !== undefined) {
-                            if ((next.data & 0x80) === 0) {
-                                isMultiByteUpdate = true;
-                            }
-                            break;
-                        }
-                        else {
-                            break;
-                        }
-                    }
-                    // Keep upper 6 bits, set lower 4 bits
-                    state.frequency = (state.frequency & 0x3F0) | nibble;
-                    if (state.frequency !== oldFreq && !isMultiByteUpdate) {
-                        if (state.active) {
-                            (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
-                        }
-                        // NF=3 makes the noise generator track this channel's own tone frequency, so
-                        // a change here can move the noise's effective pitch even if this channel's
-                        // own tone isn't currently active.
-                        if (channel === 2) {
-                            this.reevaluateSN76489NoiseForChannel2Frequency(currentTime, activeNotes);
-                        }
-                    }
-                }
-                else {
-                    this.handleSN76489NoiseControl(nibble, currentTime, activeNotes);
-                }
-            }
-            else {
-                // Volume register
-                const key = `psg_${channel}`;
-                const state = this.channels.get(key);
-                const oldVolume = state.volume;
-                state.volume = nibble;
-                if (channel < 3) {
-                    const wasOff = oldVolume === 0x0F;
-                    const isOff = nibble === 0x0F;
-                    if (wasOff && !isOff) {
-                        // Note ON
-                        state.active = true;
-                        (0, event_output_1.noteOn)(this, key, channel, currentTime, activeNotes);
-                    }
-                    else if (!wasOff && isOff) {
-                        // Note OFF
-                        state.active = false;
-                        (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
-                    }
-                    else if (!isOff && state.active && oldVolume !== nibble) {
-                        // Volume change while active -> Send Expression (CC 11)
-                        const expression = Math.max(0, Math.min(127, 127 - (state.volume * 8)));
-                        const trackState = this.getTrack(key);
-                        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
-                        const gap = Math.max(0, currentTick - trackState.cursor);
-                        const midiCh = this.midiChannelForKey(key);
-                        trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
-                            controllerNumber: 11,
-                            controllerValue: expression,
-                            channel: midiCh,
-                            delta: gap
-                        }));
-                        trackState.cursor = currentTick;
-                    }
-                }
-                else {
-                    this.syncSN76489NoiseVolume(oldVolume, currentTime, activeNotes);
-                }
-            }
-        }
-        else {
-            // Data byte - upper 6 bits of tone frequency
-            const dataBits = data & 0x3F;
-            const channel = this.lastLatchedChannel;
-            if (channel < 3) {
-                const key = `psg_${channel}`;
-                const state = this.channels.get(key);
-                const oldFreq = state.frequency;
-                // Set upper 6 bits, keep lower 4 bits
-                state.frequency = (dataBits << 4) | (state.frequency & 0x0F);
-                if (state.frequency !== oldFreq) {
-                    if (state.active) {
-                        (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
-                    }
-                    if (channel === 2) {
-                        this.reevaluateSN76489NoiseForChannel2Frequency(currentTime, activeNotes);
-                    }
-                }
-            }
-        }
-    }
-    handleSN76489NoiseControl(data, currentTime, activeNotes) {
-        const state = this.channels.get('psg_3');
-        state.frequency = data & 0x07;
-        if (state.volume === 0x0F)
-            return;
-        if (this.options.suppressHardwareNoise)
-            return;
-        const noiseKey = 'psg_noise_3';
-        if (state.isNoiseActive)
-            (0, event_output_1.noteOff)(this, noiseKey, 3, currentTime, activeNotes);
-        state.isNoiseActive = true;
-        (0, event_output_1.noteOnPercussion)(this, noiseKey, this.sn76489Velocity(state.volume), currentTime, activeNotes, this.sn76489NoiseNote());
-    }
-    syncSN76489NoiseVolume(oldVolume, currentTime, activeNotes) {
-        const state = this.channels.get('psg_3');
-        if (this.options.suppressHardwareNoise)
-            return;
-        const noiseKey = 'psg_noise_3';
-        const shouldSound = state.volume !== 0x0F;
-        if (shouldSound && !state.isNoiseActive) {
-            state.isNoiseActive = true;
-            (0, event_output_1.noteOnPercussion)(this, noiseKey, this.sn76489Velocity(state.volume), currentTime, activeNotes, this.sn76489NoiseNote());
-        }
-        else if (!shouldSound && state.isNoiseActive) {
-            state.isNoiseActive = false;
-            (0, event_output_1.noteOff)(this, noiseKey, 3, currentTime, activeNotes);
-        }
-        else if (shouldSound && oldVolume !== state.volume) {
-            (0, event_output_1.addExpression)(this, noiseKey, this.sn76489Expression(state.volume), currentTime);
-        }
-    }
-    sn76489Velocity(volume) {
-        return Math.max(1, Math.round(((15 - volume) / 15) * 100));
-    }
-    sn76489Expression(volume) {
-        return Math.max(0, Math.round(((15 - volume) / 15) * 127));
-    }
-    // psg_3's `frequency` field holds the noise control nibble (data & 0x07) rather than an
-    // actual tone period — see handleSN76489NoiseControl(). Bit2 = FB (0 = periodic/tonal
-    // noise, 1 = white noise), bits0-1 = NF (fixed clock/512, /1024, /2048 divisor select;
-    // NF=3 instead follows channel 2's own tone frequency).
-    sn76489NoiseNote() {
-        const control = this.channels.get('psg_3').frequency;
-        const isPeriodic = (control & 0x04) === 0;
-        const nf = control & 0x03;
-        let normalizedRate;
-        if (nf === 3) {
-            const toneFreq = (0, midi_math_1.psgRegisterToFrequency)(this.channels.get('psg_2').frequency, this.vgmData.header.sn76489Clock, this.vgmData.header.sn76489Flags);
-            const clamped = Math.max(100, Math.min(8000, toneFreq || 100));
-            normalizedRate = Math.log2(clamped / 100) / Math.log2(8000 / 100);
-        }
-        else {
-            normalizedRate = [1.0, 0.55, 0.25][nf];
-        }
-        return (0, midi_math_1.noiseDrumNote)(normalizedRate, isPeriodic);
-    }
-    // NF=3 makes the noise generator follow channel 2's own tone frequency, so a change to
-    // that channel's period can move the noise's effective pitch even though nothing on
-    // channel 3 itself was written. Called from channel 2's tone-frequency write paths.
-    reevaluateSN76489NoiseForChannel2Frequency(currentTime, activeNotes) {
-        if (this.options.suppressHardwareNoise)
-            return;
-        const noiseState = this.channels.get('psg_3');
-        if (!noiseState.isNoiseActive || (noiseState.frequency & 0x03) !== 3)
-            return;
-        const noiseKey = 'psg_noise_3';
-        const newNote = this.sn76489NoiseNote();
-        const active = activeNotes.get(noiseKey);
-        if (active === undefined || active.note === newNote)
-            return;
-        (0, event_output_1.noteOff)(this, noiseKey, 3, currentTime, activeNotes);
-        (0, event_output_1.noteOnPercussion)(this, noiseKey, this.sn76489Velocity(noiseState.volume), currentTime, activeNotes, newNote);
     }
     handleYM2612Write(cmd, currentTime, activeNotes, cmdIndex) {
         if (cmd.register === undefined || cmd.data === undefined || cmd.port === undefined)
@@ -2952,107 +2757,8 @@ class MidiConverter {
         const normalizedRate = (31 - (nfrq & 0x1F)) / 31;
         return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
     }
-    handleHuC6280Write(cmd, currentTime, activeNotes, cmdIndex) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const instance = cmd.instance === 1 ? 1 : 0;
-        const reg = cmd.register;
-        const data = cmd.data;
-        // Register $00: channel select (0-5). Every subsequent register write until the
-        // next $00 targets whichever channel was selected here.
-        if (reg === 0x00) {
-            this.huc6280SelectedChannels[instance] = data & 0x07;
-            return;
-        }
-        if (reg === 0x01) {
-            this.huc6280GlobalBalance[instance] = data;
-            for (let index = 0; index < 6; index += 1)
-                this.updateHuC6280Pan(instance, index, currentTime);
-            return;
-        }
-        const channel = this.huc6280SelectedChannels[instance];
-        if (channel > 5)
-            return; // Only 6 channels (0-5) exist on the real chip
-        const key = `huc6280_${instance}_${channel}`;
-        const state = this.channels.get(key);
-        if (reg === 0x02) {
-            // Frequency (low 8 bits). $02/$03 are always written as a pair, so peek ahead
-            // for the matching $03 write before reacting — otherwise every frequency change
-            // briefly passes through a bogus intermediate value (new LSB + stale MSB) and
-            // retriggers a spurious note, the same problem handlePSGWrite() already guards
-            // against for SN76489's split tone-frequency writes.
-            const oldFreq = state.frequency;
-            state.freqLSB = data;
-            state.frequency = ((state.freqMSB || 0) << 8) | (state.freqLSB || 0);
-            if (state.active && state.frequency !== oldFreq && !this.isHuC6280MultiByteFreqUpdate(cmdIndex, 0x03, instance)) {
-                (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
-            }
-        }
-        else if (reg === 0x03) {
-            // Frequency (high 4 bits) - same split-write guard as $02 above.
-            const oldFreq = state.frequency;
-            state.freqMSB = data & 0x0F;
-            state.frequency = ((state.freqMSB || 0) << 8) | (state.freqLSB || 0);
-            if (state.active && state.frequency !== oldFreq && !this.isHuC6280MultiByteFreqUpdate(cmdIndex, 0x02, instance)) {
-                (0, event_output_1.updateNotePitch)(this, key, channel, currentTime, activeNotes);
-            }
-        }
-        else if (reg === 0x04) {
-            // Channel control: bit7 = enable, bit6 = Direct D/A mode,
-            // bits0-4 = volume (0=silent, 31=loudest).
-            const enable = (data & 0x80) !== 0;
-            const isDDA = (data & 0x40) !== 0;
-            const volume = data & 0x1F;
-            const wasActive = state.active;
-            const wasNoiseActive = state.isNoiseActive;
-            const oldVolume = state.volume;
-            state.volume = volume;
-            state.isEnabled = enable;
-            state.isDDA = isDDA;
-            this.syncHuC6280ToneState(key, channel, currentTime, activeNotes);
-            this.syncHuC6280NoiseState(key, channel, currentTime, activeNotes);
-            if (wasActive && state.active && oldVolume !== volume) {
-                this.addHuC6280Expression(key, volume, currentTime);
-            }
-            if (wasNoiseActive && state.isNoiseActive) {
-                this.updateHuC6280NoiseEnvelope(key, channel, oldVolume, currentTime, activeNotes);
-            }
-        }
-        else if (reg === 0x07 && channel >= 4) {
-            // Noise control (channels 4-5 only). MIDI has no synthesized-noise
-            // equivalent, so emit its rhythm on the GM percussion channel instead.
-            const oldNoisePeriod = state.noisePeriod;
-            const wasNoiseActive = state.isNoiseActive;
-            state.isNoise = (data & 0x80) !== 0;
-            state.noisePeriod = data & 0x1F;
-            this.syncHuC6280ToneState(key, channel, currentTime, activeNotes);
-            this.syncHuC6280NoiseState(key, channel, currentTime, activeNotes);
-            // Only re-evaluate a rate change on a channel that was already sounding noise
-            // before and after this write — syncHuC6280NoiseState() above already handles a
-            // fresh on/off transition, so this only covers "still active, rate moved to a
-            // different drum band" without double-triggering a note that was just started.
-            if (wasNoiseActive
-                && state.isNoiseActive
-                && oldNoisePeriod !== undefined
-                && this.huc6280NoiseNoteForPeriod(state.noisePeriod) !== this.huc6280NoiseNoteForPeriod(oldNoisePeriod)) {
-                const noiseKey = `huc6280_${instance}_noise_${channel}`;
-                (0, event_output_1.noteOff)(this, noiseKey, channel, currentTime, activeNotes);
-                this.noteOnHuC6280Noise(noiseKey, state, currentTime, activeNotes);
-            }
-        }
-        else if (reg === 0x05) {
-            state.balance = data;
-            this.updateHuC6280Pan(instance, channel, currentTime);
-        }
-    }
-    updateHuC6280Pan(instance, channel, currentTime) {
-        const key = `huc6280_${instance}_${channel}`;
-        const local = this.channels.get(key)?.balance ?? 0xFF;
-        const global = this.huc6280GlobalBalance[instance];
-        const hasLeft = ((local >> 4) & 0x0F) > 0 && ((global >> 4) & 0x0F) > 0;
-        const hasRight = (local & 0x0F) > 0 && (global & 0x0F) > 0;
-        (0, event_output_1.addPan)(this, key, hasLeft, hasRight, currentTime);
-    }
+    // handleHuC6280Write()/updateHuC6280Pan()は、HuC6280のレジスタ処理として
+    // chips/huc6280.tsへ移設した（上のimportを参照）。
     handleSegaPCMWrite(cmd, currentTime) {
         if (cmd.register === undefined || cmd.data === undefined)
             return;
@@ -3150,784 +2856,12 @@ class MidiConverter {
         }, (0, pcm_analysis_1.c140PCMAnalysisForVoice)(this.vgmData, dataBlock, startAddress, (0, pcm_analysis_1.c140ROMAddress)(this.vgmData, this.c140Registers, channel, bank, end), this.c140Registers[base + 5]));
         this.c140ActiveVoices[channel] = { descriptorId, note };
     }
-    handleOPLWrite(cmd, currentTime, activeNotes, cmdIndex) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        if (!OPL_CHIPS.includes(cmd.chip))
-            return;
-        const chip = cmd.chip;
-        const instance = cmd.instance === 1 ? 1 : 0;
-        const register = cmd.register;
-        const data = cmd.data;
-        if (register === 0xBD) {
-            this.handleOPLRhythmWrite(chip, instance, data, currentTime, activeNotes);
-        }
-        else if (register >= 0x20 && register <= 0x35) {
-            this.setOPLOperatorMultiple(chip, instance, register, data, currentTime);
-        }
-        else if (register >= 0x40 && register <= 0x55) {
-            this.setOPLOperatorTotalLevel(chip, instance, register, data, currentTime, activeNotes);
-        }
-        else if (register >= 0xA0 && register <= 0xA8) {
-            this.updateOPLFrequencyLow(chip, instance, register - 0xA0, data, currentTime, activeNotes, cmdIndex);
-        }
-        else if (register >= 0xB0 && register <= 0xB8) {
-            this.updateOPLKeyAndBlock(chip, instance, register - 0xB0, data, currentTime, activeNotes, cmdIndex);
-        }
-        else if (register >= 0xC0 && register <= 0xC8) {
-            this.setOPLConnection(chip, instance, register - 0xC0, data, currentTime);
-        }
-    }
-    oplKey(chip, instance, section, channel) {
-        return `${chip.toLowerCase()}_${instance}_${section}_${channel}`;
-    }
-    oplOperatorSlot(register, bankStart) {
-        return OPL_SLOT_BY_REGISTER_OFFSET[register - bankStart];
-    }
-    setOPLOperatorMultiple(chip, instance, register, data, currentTime) {
-        const slot = this.oplOperatorSlot(register, 0x20);
-        if (!slot)
-            return;
-        const [channel, operator] = slot;
-        const state = this.channels.get(this.oplKey(chip, instance, 'fm', channel));
-        state.opnOperatorMultipliers[operator] = data & 0x0F;
-        state.opnOperatorMultiplierWritten[operator] = true;
-        this.recordFMTimbreEvent(this.oplKey(chip, instance, 'fm', channel), currentTime, 'opl-timbre');
-    }
-    setOPLOperatorTotalLevel(chip, instance, register, data, currentTime, activeNotes) {
-        const slot = this.oplOperatorSlot(register, 0x40);
-        if (!slot)
-            return;
-        const [channel, operator] = slot;
-        const key = this.oplKey(chip, instance, 'fm', channel);
-        const state = this.channels.get(key);
-        state.opnOperatorTotalLevels[operator] = data & 0x3F;
-        if (state.active)
-            (0, event_output_1.addExpression)(this, key, this.oplCarrierExpression(state), currentTime);
-        this.recordFMTimbreEvent(key, currentTime, 'opl-timbre');
-        if (!this.oplRhythmModes.get(`${chip}_${instance}`))
-            return;
-        for (let index = 0; index < OPL_RHYTHM_SLOTS.length; index++) {
-            const [rhythmChannel, rhythmOperator] = OPL_RHYTHM_SLOTS[index];
-            if (rhythmChannel !== channel || rhythmOperator !== operator)
-                continue;
-            const rhythmKey = this.oplKey(chip, instance, 'rhythm', index);
-            if (!activeNotes.has(rhythmKey))
-                continue;
-            const expression = Math.round((this.oplRhythmVelocity(chip, instance, index) / 100) * 127);
-            (0, event_output_1.addExpression)(this, rhythmKey, expression, currentTime);
-        }
-    }
-    setOPLConnection(chip, instance, channel, data, currentTime) {
-        const key = this.oplKey(chip, instance, 'fm', channel);
-        const state = this.channels.get(key);
-        state.opnAlgorithm = data & 0x01;
-        this.recordFMTimbreEvent(key, currentTime, 'opl-timbre');
-    }
-    updateOPLFrequencyLow(chip, instance, channel, data, currentTime, activeNotes, cmdIndex) {
-        const key = this.oplKey(chip, instance, 'fm', channel);
-        const state = this.channels.get(key);
-        const oldFrequency = state.frequency;
-        state.freqLSB = data;
-        state.frequency = ((state.freqMSB ?? 0) << 8) | data;
-        if (this.oplRhythmModes.get(`${chip}_${instance}`) && channel >= 6)
-            return;
-        if (state.oplPendingKeyOn) {
-            state.oplPendingKeyOn = false;
-            this.commitOPLKeyOn(chip, instance, channel, currentTime, activeNotes);
-            return;
-        }
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, chip, 0, 0xB0 + channel, instance);
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateKeyBoundFMPitch(key, currentTime, activeNotes, OPL_FM_PITCH_BEND_RANGE);
-        }
-    }
-    updateOPLKeyAndBlock(chip, instance, channel, data, currentTime, activeNotes, cmdIndex) {
-        const key = this.oplKey(chip, instance, 'fm', channel);
-        const state = this.channels.get(key);
-        const oldFrequency = state.frequency;
-        const wasKeyOn = state.oplKeyOn ?? false;
-        const isKeyOn = (data & 0x20) !== 0;
-        state.freqMSB = data & 0x03;
-        state.block = (data >> 2) & 0x07;
-        state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-        state.oplKeyOn = isKeyOn;
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, chip, 0, 0xA0 + channel, instance);
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        if (this.oplRhythmModes.get(`${chip}_${instance}`) && channel >= 6)
-            return;
-        if (isKeyOn && !wasKeyOn) {
-            if (isSplitUpdate)
-                state.oplPendingKeyOn = true;
-            else
-                this.commitOPLKeyOn(chip, instance, channel, currentTime, activeNotes);
-        }
-        else if (!isKeyOn && wasKeyOn) {
-            state.oplPendingKeyOn = false;
-            if (state.active) {
-                state.active = false;
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-        }
-        else if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            this.updateKeyBoundFMPitch(key, currentTime, activeNotes, OPL_FM_PITCH_BEND_RANGE);
-        }
-    }
-    commitOPLKeyOn(chip, instance, channel, currentTime, activeNotes) {
-        const key = this.oplKey(chip, instance, 'fm', channel);
-        const state = this.channels.get(key);
-        if (state.active)
-            return;
-        state.opnActiveVelocity = this.oplCarrierVelocity(state);
-        state.opnActivePitchScale = this.oplPitchScale(state);
-        state.active = true;
-        (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
-    }
-    handleOPLRhythmWrite(chip, instance, data, currentTime, activeNotes) {
-        const stateKey = `${chip}_${instance}`;
-        const wasRhythmMode = this.oplRhythmModes.get(stateKey) ?? false;
-        const isRhythmMode = (data & 0x20) !== 0;
-        if (isRhythmMode !== wasRhythmMode) {
-            for (const channel of [6, 7, 8]) {
-                const key = this.oplKey(chip, instance, 'fm', channel);
-                const state = this.channels.get(key);
-                if (!state.active)
-                    continue;
-                state.active = false;
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-            for (let index = 0; index < OPL_RHYTHM_NOTES.length; index++) {
-                const key = this.oplKey(chip, instance, 'rhythm', index);
-                if (activeNotes.has(key))
-                    (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-            this.oplRhythmModes.set(stateKey, isRhythmMode);
-            this.oplRhythmControlBytes.set(stateKey, 0);
-        }
-        if (!isRhythmMode)
-            return;
-        const newBits = data & 0x1F;
-        const oldBits = this.oplRhythmControlBytes.get(stateKey) ?? 0;
-        const changedBits = newBits ^ oldBits;
-        this.oplRhythmControlBytes.set(stateKey, newBits);
-        for (let index = 0; index < OPL_RHYTHM_KEY_BITS.length; index++) {
-            const bit = OPL_RHYTHM_KEY_BITS[index];
-            if ((changedBits & bit) === 0)
-                continue;
-            const key = this.oplKey(chip, instance, 'rhythm', index);
-            if ((newBits & bit) !== 0) {
-                (0, event_output_1.noteOnPercussion)(this, key, this.oplRhythmVelocity(chip, instance, index), currentTime, activeNotes, OPL_RHYTHM_NOTES[index]);
-            }
-            else if (activeNotes.has(key)) {
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-        }
-    }
-    oplRhythmVelocity(chip, instance, index) {
-        const [channel, operator] = OPL_RHYTHM_SLOTS[index];
-        const state = this.channels.get(this.oplKey(chip, instance, 'fm', channel));
-        return this.operatorTotalLevelVelocity(state.opnOperatorTotalLevels?.[operator] ?? 0);
-    }
-    handleYM2413Write(cmd, currentTime, activeNotes, cmdIndex) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const reg = cmd.register;
-        const data = cmd.data;
-        if (reg >= 0x00 && reg <= 0x07) {
-            this.ym2413CustomPatch[reg] = data;
-            if (reg === 0x01)
-                this.hasYM2413CustomCarrierMultiple = true;
-            for (let channel = 0; channel < 9; channel++) {
-                if (this.channels.get(`ym2413_${channel}`).ym2413Instrument === 0) {
-                    this.recordYM2413TimbreEvent(channel, currentTime, 'ym2413-custom-patch');
-                }
-            }
-            return;
-        }
-        if (reg === 0x0E) {
-            this.handleYM2413RhythmModeWrite(data, currentTime, activeNotes);
-            return;
-        }
-        if (reg >= 0x10 && reg <= 0x18) {
-            this.updateYM2413Frequency(reg - 0x10, currentTime, activeNotes, cmdIndex, data, cmd.instance ?? 0);
-            return;
-        }
-        if (reg >= 0x20 && reg <= 0x28) {
-            this.handleYM2413KeyAndFrequencyWrite(reg - 0x20, currentTime, activeNotes, cmdIndex, data, cmd.instance ?? 0);
-            return;
-        }
-        if (reg >= 0x30 && reg <= 0x38) {
-            this.handleYM2413VolumeWrite(reg - 0x30, data, currentTime, activeNotes);
-        }
-    }
-    // Register $0E bit 5 toggles rhythm mode; bits 0-4 (while rhythm mode is on) are the
-    // five percussion key-on bits. See YM2413_RHYTHM_* above for the bit/note mapping.
-    handleYM2413RhythmModeWrite(data, currentTime, activeNotes) {
-        const wasRhythmMode = this.ym2413RhythmMode;
-        const isRhythmMode = (data & 0x20) !== 0;
-        if (isRhythmMode !== wasRhythmMode) {
-            // Channels 6-8 are about to change what they represent (one melodic voice each <->
-            // two-operator-pair percussion), so close whichever of those five possibly-active
-            // keys are currently sounding — the same principle as YM2612 channel 3 special
-            // mode's own mode-switch handling and HuC6280's tone/noise switch.
-            for (const channel of [6, 7, 8]) {
-                const key = `ym2413_${channel}`;
-                const state = this.channels.get(key);
-                if (state.active) {
-                    state.active = false;
-                    (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-                }
-            }
-            for (let i = 0; i < YM2413_RHYTHM_NOTES.length; i++) {
-                const key = `ym2413_rhythm_${i}`;
-                if (activeNotes.has(key))
-                    (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-            this.ym2413RhythmMode = isRhythmMode;
-            this.ym2413RhythmControlByte = 0;
-        }
-        if (!isRhythmMode)
-            return;
-        const newBits = data & 0x1F;
-        const changedBits = newBits ^ (this.ym2413RhythmControlByte & 0x1F);
-        this.ym2413RhythmControlByte = data;
-        for (let i = 0; i < YM2413_RHYTHM_KEY_BITS.length; i++) {
-            const bit = YM2413_RHYTHM_KEY_BITS[i];
-            if ((changedBits & bit) === 0)
-                continue;
-            const key = `ym2413_rhythm_${i}`;
-            if ((newBits & bit) !== 0) {
-                (0, event_output_1.noteOnPercussion)(this, key, this.ym2413RhythmVelocity(i), currentTime, activeNotes, YM2413_RHYTHM_NOTES[i]);
-            }
-            else if (activeNotes.has(key)) {
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-        }
-    }
-    updateYM2413Frequency(channel, currentTime, activeNotes, cmdIndex, data, instance) {
-        const key = `ym2413_${channel}`;
-        const state = this.channels.get(key);
-        const oldFrequency = state.frequency;
-        state.freqLSB = data;
-        state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-        // Not audible while this channel is rhythm-controlled, but the pitch state is still
-        // latched above so it stays consistent if rhythm mode later turns back off.
-        if (this.ym2413RhythmMode && channel >= 6)
-            return;
-        if (state.ym2413PendingKeyOn) {
-            state.ym2413PendingKeyOn = false;
-            this.commitYM2413KeyOn(channel, currentTime, activeNotes);
-            return;
-        }
-        const otherReg = 0x20 + channel;
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, 'YM2413', 0, otherReg, instance);
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    // $20-$28: bit0=F-Number MSB (9th bit), bits1-3=block, bit4=key-on, bit5=sustain (not
-    // modeled — no chip in this file currently distinguishes EG sustain/release shape).
-    handleYM2413KeyAndFrequencyWrite(channel, currentTime, activeNotes, cmdIndex, data, instance) {
-        const key = `ym2413_${channel}`;
-        const state = this.channels.get(key);
-        state.freqMSB = data & 0x01;
-        state.block = (data >> 1) & 0x07;
-        const oldFrequency = state.frequency;
-        state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-        const otherReg = 0x10 + channel;
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, 'YM2413', 0, otherReg, instance);
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        // While rhythm mode has channels 6-8 repurposed, their own key-on bit here is ignored
-        // — the $0E rhythm key bits are the sole trigger for those voices (see
-        // handleYM2413RhythmModeWrite()). Frequency/block are still latched above.
-        if (this.ym2413RhythmMode && channel >= 6)
-            return;
-        const isKeyOn = (data & 0x10) !== 0;
-        if (isKeyOn && !state.active) {
-            // Drivers occasionally write $20 (key-on/MSB) before $10 (LSB).  Defer just this
-            // adjacent pair so the note starts with the final 9-bit F-Number rather than a stale
-            // low byte; commands not followed by its matching $10 retain immediate key-on.
-            if (isSplitUpdate)
-                state.ym2413PendingKeyOn = true;
-            else
-                this.commitYM2413KeyOn(channel, currentTime, activeNotes);
-        }
-        else if (!isKeyOn && state.active) {
-            state.active = false;
-            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        }
-        else if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    /** YM2413 key-onを、両方のfrequency byteとpatch carrier Multiple確定後にcommitする。 */
-    commitYM2413KeyOn(channel, currentTime, activeNotes) {
-        const key = `ym2413_${channel}`;
-        const state = this.channels.get(key);
-        if (state.active)
-            return;
-        state.opnActiveVelocity = this.ym2413Velocity(state.volume);
-        state.opnActivePitchScale = this.ym2413PitchScale(state);
-        state.active = true;
-        (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
-    }
-    // $30-$38: upper nibble is normally the instrument number, which selects an initial GM
-    // audition candidate and sidecar timbre snapshot; lower nibble is a 4-bit volume
-    // (0=loudest, 15=quietest). In rhythm mode, $37/$38's upper
-    // nibble is repurposed as HH/TOM volume (confirmed against emu2413's OPLL_writeReg()
-    // $30-$38 case); the lower nibble always carries SD/CYM (or, for $30-$36, the normal
-    // per-channel) volume.
-    handleYM2413VolumeWrite(channel, data, currentTime, activeNotes) {
-        const volume = data & 0x0F;
-        if (this.ym2413RhythmMode && channel >= 6) {
-            if (channel === 6) {
-                this.ym2413RhythmVolumes[0] = volume; // BD
-            }
-            else if (channel === 7) {
-                this.ym2413RhythmVolumes[1] = (data >> 4) & 0x0F; // HH
-                this.ym2413RhythmVolumes[2] = volume; // SD
-            }
-            else {
-                this.ym2413RhythmVolumes[3] = (data >> 4) & 0x0F; // TOM
-                this.ym2413RhythmVolumes[4] = volume; // CYM
-            }
-            for (let i = 0; i < YM2413_RHYTHM_NOTES.length; i++) {
-                const key = `ym2413_rhythm_${i}`;
-                if (!activeNotes.has(key))
-                    continue;
-                const expression = Math.round((this.ym2413RhythmVelocity(i) / 100) * 127);
-                (0, event_output_1.addExpression)(this, key, expression, currentTime);
-            }
-            return;
-        }
-        const key = `ym2413_${channel}`;
-        const state = this.channels.get(key);
-        state.ym2413Instrument = (data >> 4) & 0x0F;
-        state.volume = volume;
-        if (state.active) {
-            const expression = Math.round((this.ym2413Velocity(volume) / 100) * 127);
-            (0, event_output_1.addExpression)(this, key, expression, currentTime);
-        }
-        this.recordYM2413TimbreEvent(channel, currentTime, 'ym2413-patch');
-    }
-    // No authoritative dB/step figure was available for YM2413's 4-bit volume register
-    // (unlike YM2612's well-documented 0.75dB/step Total Level), so this uses the same
-    // simple linear mapping as SN76489's 4-bit attenuation register rather than asserting a
-    // precision this chip's level curve doesn't have.
-    ym2413Velocity(volume) {
-        return Math.max(1, Math.min(100, Math.round(100 - volume * 6.6)));
-    }
-    ym2413RhythmVelocity(index) {
-        return this.ym2413Velocity(this.ym2413RhythmVolumes[index]);
-    }
-    /** VGMの絶対sample時刻まで、両方のDMG APUフレームシーケンサを進める。 */
-    advanceGBDMGFrameSequencers(targetSamples, activeNotes) {
-        for (let instance = 0; instance < 2; instance++) {
-            while (this.gbDmgNextFrameSamples[instance] <= targetSamples) {
-                const frameTime = this.gbDmgNextFrameSamples[instance];
-                this.withChipInstance('GBDMG', instance, () => {
-                    this.clockGBDMGFrameStep(instance, frameTime, activeNotes);
-                });
-                this.gbDmgNextFrameSamples[instance] += GBDMG_FRAME_SAMPLES;
-            }
-        }
-    }
-    /** 512Hzの一段を実行し、長さ・sweep・envelopeの該当段だけをclockする。 */
-    clockGBDMGFrameStep(instance, currentTime, activeNotes) {
-        const step = this.gbDmgFrameSteps[instance];
-        if ((step & 1) === 0)
-            this.clockGBDMGLengths(currentTime, activeNotes);
-        if (step === 2 || step === 6)
-            this.clockGBDMGSweep(currentTime, activeNotes);
-        if (step === 7)
-            this.clockGBDMGEnvelopes(currentTime, activeNotes);
-        this.gbDmgFrameSteps[instance] = (step + 1) & 7;
-    }
-    /** length-enableされた発音を256Hzで減算し、ゼロになった時点でMIDI Note Offにする。 */
-    clockGBDMGLengths(currentTime, activeNotes) {
-        for (const key of ['gbdmg_0', 'gbdmg_1', 'gbdmg_2', 'gbdmg_noise_0']) {
-            const state = this.channels.get(key);
-            if (!state.gbDmgLengthEnabled || !state.gbDmgLengthCounter)
-                continue;
-            state.gbDmgLengthCounter -= 1;
-            if (state.gbDmgLengthCounter !== 0)
-                continue;
-            if (state.active)
-                state.active = false;
-            if (activeNotes.has(key))
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    /** Channel 1のNR10 sweepを128Hzで評価し、連続音程はpitch bendで表現する。 */
-    clockGBDMGSweep(currentTime, activeNotes) {
-        const state = this.channels.get('gbdmg_0');
-        if (!state.gbDmgSweepEnabled)
-            return;
-        state.gbDmgSweepTimer = (state.gbDmgSweepTimer ?? 0) - 1;
-        if ((state.gbDmgSweepTimer ?? 0) > 0)
-            return;
-        state.gbDmgSweepTimer = state.gbDmgSweepPeriod || 8;
-        const shift = state.gbDmgSweepShift ?? 0;
-        if (shift === 0)
-            return;
-        const shadow = state.gbDmgSweepShadow ?? state.frequency;
-        const delta = shadow >> shift;
-        const nextFrequency = state.gbDmgSweepNegate ? shadow - delta : shadow + delta;
-        if (nextFrequency < 0 || nextFrequency > 0x7FF) {
-            state.gbDmgSweepEnabled = false;
-            state.active = false;
-            (0, event_output_1.noteOff)(this, 'gbdmg_0', 0, currentTime, activeNotes);
-            return;
-        }
-        state.gbDmgSweepShadow = nextFrequency;
-        state.frequency = nextFrequency;
-        state.freqLSB = nextFrequency & 0xFF;
-        state.freqMSB = (nextFrequency >> 8) & 0x07;
-        if (state.active)
-            (0, event_output_1.updateNotePitch)(this, 'gbdmg_0', 0, currentTime, activeNotes);
-    }
-    /** 64HzのDMG envelopeをCC11へ変換する。 */
-    clockGBDMGEnvelopes(currentTime, activeNotes) {
-        for (const key of ['gbdmg_0', 'gbdmg_1', 'gbdmg_noise_0']) {
-            const state = this.channels.get(key);
-            const period = state.gbDmgEnvelopePeriod ?? 0;
-            if (!state.active && !activeNotes.has(key))
-                continue;
-            if (period === 0)
-                continue;
-            state.gbDmgEnvelopeTimer = (state.gbDmgEnvelopeTimer ?? period) - 1;
-            if ((state.gbDmgEnvelopeTimer ?? 0) > 0)
-                continue;
-            state.gbDmgEnvelopeTimer = period;
-            const previous = state.gbDmgEnvelopeVolume ?? 0;
-            const next = previous + (state.gbDmgEnvelopeIncrease ? 1 : -1);
-            if (next < 0 || next > 15)
-                continue;
-            state.gbDmgEnvelopeVolume = next;
-            (0, event_output_1.addExpression)(this, key, Math.round((next / 15) * 127), currentTime);
-        }
-    }
-    /** NRx2の初期音量とenvelope timerを、ハードウェアtrigger時に再初期化する。 */
-    startGBDMGEnvelope(state) {
-        state.gbDmgEnvelopeVolume = (state.volume >> 4) & 0x0F;
-        state.gbDmgEnvelopePeriod = state.volume & 0x07;
-        state.gbDmgEnvelopeTimer = state.gbDmgEnvelopePeriod || 8;
-        state.gbDmgEnvelopeIncrease = (state.volume & 0x08) !== 0;
-    }
-    /** Channel 1 trigger時にNR10 shadow/timerを初期化する。 */
-    startGBDMGSweep(state) {
-        state.gbDmgSweepShadow = state.frequency;
-        state.gbDmgSweepTimer = state.gbDmgSweepPeriod || 8;
-        state.gbDmgSweepEnabled = (state.gbDmgSweepPeriod ?? 0) !== 0 || (state.gbDmgSweepShift ?? 0) !== 0;
-    }
-    /** NRx1/NR31/NR41の長さロード値を保存する。 */
-    setGBDMGLength(key, data, maximum) {
-        const state = this.channels.get(key);
-        state.gbDmgLengthCounter = maximum - (data & (maximum - 1));
-    }
-    /** trigger時に長さ0をハードウェア最大値へ再ロードする。 */
-    reloadGBDMGLength(state, maximum) {
-        if ((state.gbDmgLengthCounter ?? 0) === 0)
-            state.gbDmgLengthCounter = maximum;
-    }
-    /** NR50/NR51から指定DMGチャンネルの左右出力を求め、CC10を送る。 */
-    updateGBDMGPan(key, channel, currentTime) {
-        const isRightRouted = (this.gbDmgStereoRouting & (1 << channel)) !== 0 && (this.gbDmgMasterVolume & 0x07) !== 0;
-        const isLeftRouted = (this.gbDmgStereoRouting & (1 << (channel + 4))) !== 0 && ((this.gbDmgMasterVolume >> 4) & 0x07) !== 0;
-        (0, event_output_1.addPan)(this, key, isLeftRouted, isRightRouted, currentTime);
-    }
-    /** NR50/NR51更新後、現在鳴っているDMG voiceだけを再panする。 */
-    refreshGBDMGPans(currentTime) {
-        for (const [key, channel] of [['gbdmg_0', 0], ['gbdmg_1', 1], ['gbdmg_2', 2], ['gbdmg_noise_0', 3]]) {
-            if (this.channels.get(key).active)
-                this.updateGBDMGPan(key, channel, currentTime);
-        }
-    }
-    // VGM register numbers equal GameBoy address minus $FF10 (see GBDMG_SQUARE_KEYS'
-    // comment above).  Wave RAM ($20-$2F) is timbre data and intentionally not converted.
-    handleGBDMGWrite(cmd, currentTime, activeNotes, cmdIndex) {
-        if (cmd.register === undefined || cmd.data === undefined)
-            return;
-        const reg = cmd.register;
-        const data = cmd.data;
-        const instance = cmd.instance ?? 0;
-        if (reg === 0x00) {
-            this.handleGBDMGSweepWrite(data);
-            return;
-        }
-        if (reg === 0x01) {
-            this.setGBDMGLength('gbdmg_0', data, 64);
-            return;
-        }
-        if (reg === 0x02) {
-            this.handleGBDMGEnvelopeWrite('gbdmg_0', data, currentTime, activeNotes);
-            return;
-        }
-        if (reg === 0x03) {
-            this.updateGBDMGFrequencyLSB('gbdmg_0', 0x03, data, currentTime, activeNotes, cmdIndex, instance);
-            return;
-        }
-        if (reg === 0x04) {
-            this.handleGBDMGTriggerWrite('gbdmg_0', 0x04, data, currentTime, activeNotes, cmdIndex, instance);
-            return;
-        }
-        if (reg === 0x06) {
-            this.setGBDMGLength('gbdmg_1', data, 64);
-            return;
-        }
-        if (reg === 0x07) {
-            this.handleGBDMGEnvelopeWrite('gbdmg_1', data, currentTime, activeNotes);
-            return;
-        }
-        if (reg === 0x08) {
-            this.updateGBDMGFrequencyLSB('gbdmg_1', 0x08, data, currentTime, activeNotes, cmdIndex, instance);
-            return;
-        }
-        if (reg === 0x09) {
-            this.handleGBDMGTriggerWrite('gbdmg_1', 0x09, data, currentTime, activeNotes, cmdIndex, instance);
-            return;
-        }
-        if (reg === 0x0A) {
-            this.handleGBDMGWaveDACWrite(data, currentTime, activeNotes);
-            return;
-        }
-        if (reg === 0x0B) {
-            this.setGBDMGLength('gbdmg_2', data, 256);
-            return;
-        }
-        if (reg === 0x0C) {
-            this.handleGBDMGWaveOutputLevelWrite(data, currentTime);
-            return;
-        }
-        if (reg === 0x0D) {
-            this.updateGBDMGFrequencyLSB('gbdmg_2', 0x0D, data, currentTime, activeNotes, cmdIndex, instance);
-            return;
-        }
-        if (reg === 0x0E) {
-            this.handleGBDMGTriggerWrite('gbdmg_2', 0x0E, data, currentTime, activeNotes, cmdIndex, instance);
-            return;
-        }
-        if (reg === 0x10) {
-            this.setGBDMGLength('gbdmg_noise_0', data, 64);
-            return;
-        }
-        if (reg === 0x11) {
-            this.handleGBDMGNoiseEnvelopeWrite(data, currentTime, activeNotes);
-            return;
-        }
-        if (reg === 0x12) {
-            this.handleGBDMGNoiseFrequencyWrite(data, currentTime, activeNotes);
-            return;
-        }
-        if (reg === 0x13) {
-            this.handleGBDMGNoiseTriggerWrite(data, currentTime, activeNotes);
-            return;
-        }
-        if (reg === 0x14) {
-            this.gbDmgMasterVolume = data;
-            this.refreshGBDMGPans(currentTime);
-            return;
-        }
-        if (reg === 0x15) {
-            this.gbDmgStereoRouting = data;
-            this.refreshGBDMGPans(currentTime);
-            return;
-        }
-        if (reg === 0x16)
-            this.handleGBDMGMasterControlWrite(data, currentTime, activeNotes);
-    }
-    /** NR10のsweep設定をChannel 1へ保存し、次のtriggerから適用する。 */
-    handleGBDMGSweepWrite(data) {
-        const state = this.channels.get('gbdmg_0');
-        state.gbDmgSweepPeriod = (data >> 4) & 0x07;
-        state.gbDmgSweepNegate = (data & 0x08) !== 0;
-        state.gbDmgSweepShift = data & 0x07;
-    }
-    // The DAC is enabled when the envelope register's upper 5 bits (initial volume + up/down
-    // direction) are not all zero — confirmed against Pan Docs. Only channels 1/2/4 (pulse
-    // and noise) read this from their envelope register; the wave channel (3) has a separate
-    // dedicated DAC-enable bit (NR30 bit7, tracked in `isEnabled` — see
-    // handleGBDMGWaveDACWrite()).
-    gbDmgEnvelopeDacEnabled(rawEnvelope) {
-        return (rawEnvelope & 0xF8) !== 0;
-    }
-    // 1-100 MIDI velocity from an envelope register's initial-volume nibble (0-15). Only the
-    // initial volume is read, at trigger time — the hardware's own automatic envelope ramp
-    // afterward is not replayed (see the "Deliberately not modeled" note above).
-    gbDmgEnvelopeVelocity(rawEnvelope) {
-        const initialVolume = (rawEnvelope >> 4) & 0x0F;
-        return Math.max(1, Math.round((initialVolume / 15) * 100));
-    }
-    // Channels 1/2 (pulse) and 4 (noise) share this envelope-register shape (NR12/NR22/NR42):
-    // bits7-4=initial volume, bit3=direction, bits2-0=sweep pace (not modeled). A transition
-    // from DAC-enabled to DAC-disabled immediately silences the channel, matching real
-    // hardware (confirmed against Pan Docs).
-    handleGBDMGEnvelopeWrite(key, data, currentTime, activeNotes) {
-        const state = this.channels.get(key);
-        const wasEnabled = this.gbDmgEnvelopeDacEnabled(state.volume);
-        state.volume = data;
-        if (!state.active)
-            this.startGBDMGEnvelope(state);
-        if (wasEnabled && !this.gbDmgEnvelopeDacEnabled(data) && state.active) {
-            state.active = false;
-            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    updateGBDMGFrequencyLSB(key, reg, data, currentTime, activeNotes, cmdIndex, instance) {
-        const state = this.channels.get(key);
-        const oldFrequency = state.frequency;
-        state.freqLSB = data;
-        state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-        const otherReg = reg + 1; // the paired NRx4 trigger/MSB register
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, 'GBDMG', 0, otherReg, instance);
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    // NRx4 (the paired trigger/frequency-MSB register for channels 1/2/3): bit7=trigger
-    // (restart the voice), bit6=length enable (not modeled), bits2-0=frequency MSB. A
-    // trigger while the channel's DAC is enabled retriggers (closing any note already
-    // sounding first, the same pattern used elsewhere in this file for hardware "always
-    // restarts on write" triggers, e.g. YM2608 rhythm and SegaPCM/C140); a trigger while the
-    // DAC is disabled produces no sound, matching real hardware.
-    handleGBDMGTriggerWrite(key, reg, data, currentTime, activeNotes, cmdIndex, instance) {
-        const state = this.channels.get(key);
-        const oldFrequency = state.frequency;
-        state.freqMSB = data & 0x07;
-        state.frequency = ((state.freqMSB ?? 0) << 8) | (state.freqLSB ?? 0);
-        const otherReg = reg - 1; // the paired NRx3 frequency-LSB register
-        const isSplitUpdate = this.isOPNMultiByteFreqUpdate(cmdIndex, 'GBDMG', 0, otherReg, instance);
-        const hadPendingUpdate = state.hasPendingFrequencyUpdate ?? false;
-        state.hasPendingFrequencyUpdate = isSplitUpdate;
-        const isTrigger = (data & 0x80) !== 0;
-        state.gbDmgLengthEnabled = (data & 0x40) !== 0;
-        const isDacEnabled = key === 'gbdmg_2' ? (state.isEnabled ?? false) : this.gbDmgEnvelopeDacEnabled(state.volume);
-        if (isTrigger) {
-            this.reloadGBDMGLength(state, key === 'gbdmg_2' ? 256 : 64);
-            if (key !== 'gbdmg_2')
-                this.startGBDMGEnvelope(state);
-            if (key === 'gbdmg_0')
-                this.startGBDMGSweep(state);
-            if (state.active) {
-                state.active = false;
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-            if (isDacEnabled) {
-                state.opnActiveVelocity = key === 'gbdmg_2'
-                    ? this.gbDmgWaveVelocity(state.volume)
-                    : this.gbDmgEnvelopeVelocity(state.volume);
-                state.active = true;
-                this.updateGBDMGPan(key, key === 'gbdmg_0' ? 0 : key === 'gbdmg_1' ? 1 : 2, currentTime);
-                (0, event_output_1.noteOn)(this, key, 0, currentTime, activeNotes);
-            }
-        }
-        else if (state.active && !isSplitUpdate && (state.frequency !== oldFrequency || hadPendingUpdate)) {
-            (0, event_output_1.updateNotePitch)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    // NR30 (wave channel DAC enable, bit7). Distinct from the pulse/noise channels' envelope-
-    // derived DAC state — the wave channel has no envelope of its own; NR32 controls its
-    // fixed output level instead (see handleGBDMGWaveOutputLevelWrite()).
-    handleGBDMGWaveDACWrite(data, currentTime, activeNotes) {
-        const key = 'gbdmg_2';
-        const state = this.channels.get(key);
-        const wasEnabled = state.isEnabled ?? false;
-        state.isEnabled = (data & 0x80) !== 0;
-        if (wasEnabled && !state.isEnabled && state.active) {
-            state.active = false;
-            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    // NR32 bits6-5: 0=mute, 1=100%, 2=50%, 3=25% output level. Stored directly in
-    // `state.volume` (a 2-bit code, not a raw envelope byte, unlike the other channels) and
-    // read back by gbDmgWaveVelocity(); reflected as expression on an already-sounding note
-    // the same way YM2608's rhythm section resends volume changes.
-    handleGBDMGWaveOutputLevelWrite(data, currentTime) {
-        const key = 'gbdmg_2';
-        const state = this.channels.get(key);
-        state.volume = (data >> 5) & 0x03;
-        if (state.active) {
-            const expression = Math.round((this.gbDmgWaveVelocity(state.volume) / 100) * 127);
-            (0, event_output_1.addExpression)(this, key, expression, currentTime);
-        }
-    }
-    gbDmgWaveVelocity(outputLevelCode) {
-        const percent = [0, 100, 50, 25][outputLevelCode] ?? 0;
-        return Math.max(1, Math.round(percent));
-    }
-    handleGBDMGNoiseEnvelopeWrite(data, currentTime, activeNotes) {
-        const key = 'gbdmg_noise_0';
-        const state = this.channels.get(key);
-        const wasEnabled = this.gbDmgEnvelopeDacEnabled(state.volume);
-        state.volume = data;
-        if (!activeNotes.has(key))
-            this.startGBDMGEnvelope(state);
-        if (wasEnabled && !this.gbDmgEnvelopeDacEnabled(data) && activeNotes.has(key)) {
-            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        }
-    }
-    // NR43: re-evaluates an already-sounding noise voice's GM drum band the same way
-    // SN76489/AY-SSG/HuC6280/YM2151 do — retriggering only if the mapped note actually
-    // changed, so a rate sweep that stays inside one band doesn't machine-gun notes.
-    handleGBDMGNoiseFrequencyWrite(data, currentTime, activeNotes) {
-        const key = 'gbdmg_noise_0';
-        const state = this.channels.get(key);
-        const oldNoisePeriod = state.noisePeriod ?? 0;
-        state.noisePeriod = data;
-        if (!activeNotes.has(key))
-            return;
-        const clockRate = this.vgmData.header.gbDmgClock;
-        const oldNote = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(oldNoisePeriod, clockRate);
-        const newNote = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(data, clockRate);
-        if (oldNote === newNote)
-            return;
-        (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        (0, event_output_1.noteOnPercussion)(this, key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, newNote);
-    }
-    // NR44: bit7=trigger, bit6=length enable (not modeled). Same retrigger-on-write pattern
-    // as the melodic channels' NRx4 registers.
-    handleGBDMGNoiseTriggerWrite(data, currentTime, activeNotes) {
-        const key = 'gbdmg_noise_0';
-        const state = this.channels.get(key);
-        state.gbDmgLengthEnabled = (data & 0x40) !== 0;
-        if ((data & 0x80) === 0)
-            return;
-        this.reloadGBDMGLength(state, 64);
-        this.startGBDMGEnvelope(state);
-        if (activeNotes.has(key))
-            (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-        if (this.gbDmgEnvelopeDacEnabled(state.volume)) {
-            const note = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(state.noisePeriod ?? 0, this.vgmData.header.gbDmgClock);
-            this.updateGBDMGPan(key, 3, currentTime);
-            (0, event_output_1.noteOnPercussion)(this, key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, note);
-        }
-    }
-    // NR52 bit7=0 powers off the entire APU, immediately silencing every channel — the same
-    // "power off" semantics used for e.g. YM2612's $2B DAC-disable elsewhere in this file.
-    // Powering back on (bit7=1) does not by itself resume sound; a channel needs a fresh
-    // trigger, matching real hardware.
-    handleGBDMGMasterControlWrite(data, currentTime, activeNotes) {
-        if ((data & 0x80) !== 0)
-            return;
-        for (const key of ['gbdmg_0', 'gbdmg_1', 'gbdmg_2']) {
-            const state = this.channels.get(key);
-            if (state.active) {
-                state.active = false;
-                (0, event_output_1.noteOff)(this, key, 0, currentTime, activeNotes);
-            }
-        }
-        const noiseKey = 'gbdmg_noise_0';
-        if (activeNotes.has(noiseKey))
-            (0, event_output_1.noteOff)(this, noiseKey, 0, currentTime, activeNotes);
-    }
+    // handleOPLWrite()から始まるOPLファミリー（YM3812/YM3526/Y8950）のレジスタ処理群は、
+    // chips/opl.tsへ移設した（上のimportを参照）。
+    // handleYM2413Write()から始まるYM2413のレジスタ処理群は、chips/ym2413.tsへ
+    // 移設した（上のimportを参照）。
+    // advanceGBDMGFrameSequencers()から始まるGame Boy DMGのフレームシーケンサと
+    // handle*Write()レジスタ処理群は、chips/gbdmg.tsへ移設した（上のimportを参照）。
     stopPCMVoice(activeVoices, channel, currentTime) {
         const voice = activeVoices[channel];
         if (!voice)
@@ -4173,85 +3107,10 @@ class MidiConverter {
         const block = range.blockId === undefined ? 'range' : range.blockId.toString(16);
         return `bank${stream.bankId.toString(16)}_block${block}_start${range.start.toString(16)}_length${range.length.toString(16)}_step${stream.stepSize}_${range.isReverse ? 'reverse' : 'forward'}`;
     }
-    syncHuC6280ToneState(key, channel, currentTime, activeNotes) {
-        const state = this.channels.get(key);
-        const shouldSound = state.isEnabled && !state.isDDA && !state.isNoise && state.volume > 0;
-        if (shouldSound && !state.active) {
-            state.active = true;
-            (0, event_output_1.noteOn)(this, key, channel, currentTime, activeNotes);
-        }
-        else if (!shouldSound && state.active) {
-            state.active = false;
-            (0, event_output_1.noteOff)(this, key, channel, currentTime, activeNotes);
-        }
-    }
-    syncHuC6280NoiseState(key, channel, currentTime, activeNotes) {
-        const state = this.channels.get(key);
-        if (this.options.suppressHardwareNoise)
-            return;
-        const instance = parseInt(key.split('_')[1]);
-        const noiseKey = `huc6280_${instance}_noise_${channel}`;
-        const shouldSound = state.isEnabled && !state.isDDA && state.isNoise && state.volume > 0;
-        if (shouldSound && !state.isNoiseActive) {
-            state.isNoiseActive = true;
-            this.noteOnHuC6280Noise(noiseKey, state, currentTime, activeNotes);
-        }
-        else if (!shouldSound && state.isNoiseActive) {
-            state.isNoiseActive = false;
-            (0, event_output_1.noteOff)(this, noiseKey, channel, currentTime, activeNotes);
-        }
-    }
-    updateHuC6280NoiseEnvelope(key, channel, oldVolume, currentTime, activeNotes) {
-        const state = this.channels.get(key);
-        if (state.volume === oldVolume)
-            return;
-        if (this.options.suppressHardwareNoise)
-            return;
-        const instance = parseInt(key.split('_')[1]);
-        const noiseKey = `huc6280_${instance}_noise_${channel}`;
-        const volumeRise = state.volume - oldVolume;
-        if (volumeRise >= HUC6280_NOISE_RETRIGGER_MIN_VOLUME_RISE) {
-            (0, event_output_1.noteOff)(this, noiseKey, channel, currentTime, activeNotes);
-            this.noteOnHuC6280Noise(noiseKey, state, currentTime, activeNotes);
-        }
-        else {
-            this.addHuC6280Expression(noiseKey, state.volume, currentTime);
-        }
-    }
-    noteOnHuC6280Noise(key, state, currentTime, activeNotes) {
-        const velocity = Math.max(1, Math.round((state.volume / 31) * 100));
-        (0, event_output_1.noteOnPercussion)(this, key, velocity, currentTime, activeNotes, this.huc6280NoiseNoteForPeriod(state.noisePeriod ?? 0));
-    }
-    // Confirmed against MAME's c6280.cpp: step = (value & 0x1F) ^ 0x1F, noise_counter =
-    // step << 6 — a larger raw register value produces a smaller step/counter, so the LFSR
-    // updates more often and the noise pitch is HIGHER. (Opposite direction from YM2151's
-    // NFRQ below.)
-    huc6280NoiseNoteForPeriod(rawValue) {
-        const normalizedRate = (rawValue & 0x1F) / 31;
-        return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
-    }
-    addHuC6280Expression(key, volume, currentTime) {
-        (0, event_output_1.addExpression)(this, key, Math.round((volume / 31) * 127), currentTime);
-    }
-    // Looks ahead through at most one 50Hz frame for the other half of a split frequency
-    // update. Some HuC6280 drivers intentionally distribute the two bytes across frames.
-    isHuC6280MultiByteFreqUpdate(cmdIndex, otherReg, instance) {
-        let skippedSamples = 0;
-        for (let k = cmdIndex + 1; k < this.vgmData.commands.length; k++) {
-            const next = this.vgmData.commands[k];
-            if (next.type === 'wait') {
-                skippedSamples += next.samples ?? 0;
-                if (skippedSamples > HUC6280_SPLIT_FREQUENCY_MAX_GAP_SAMPLES)
-                    return false;
-                continue;
-            }
-            return next.type === 'chip_write'
-                && next.chip === 'HuC6280'
-                && (next.instance ?? 0) === instance
-                && next.register === otherReg;
-        }
-        return false;
-    }
+    // syncHuC6280ToneState()/syncHuC6280NoiseState()/updateHuC6280NoiseEnvelope()/
+    // noteOnHuC6280Noise()/huc6280NoiseNoteForPeriod()/addHuC6280Expression()/
+    // isHuC6280MultiByteFreqUpdate()も、chips/huc6280.tsへ移設した
+    // （上のimportを参照）。
     isOPNMultiByteFreqUpdate(cmdIndex, chip, port, otherReg, instance = 0) {
         let skippedSamples = 0;
         for (let index = cmdIndex + 1; index < this.vgmData.commands.length; index++) {

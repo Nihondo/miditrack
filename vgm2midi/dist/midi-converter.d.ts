@@ -1,12 +1,15 @@
 import { VGMData, ConversionOptions } from './types';
 import { PCMTrackEvent, PCMDataBlockMetadata, PCMAnalysisMetadata } from './pcm-analysis';
+export declare const OPL_FM_PITCH_BEND_RANGE = 96;
 export declare const CHIP_PITCH_BEND_RANGE = 96;
 export type OPLChip = 'YM3812' | 'YM3526' | 'Y8950';
+export declare const OPL_CHIPS: readonly ["YM3812", "YM3526", "Y8950"];
 /** libvgm/emu2413.c由来のYM2413内蔵patch carrier register ($01) byte。 */
 export declare const YM2413_BUILTIN_CARRIER_REGISTER_BYTES: readonly [0, 97, 65, 1, 97, 33, 34, 97, 33, 97, 97, 1, 193, 80, 1, 65];
 /** 内蔵patch carrier registerのMultiple下位nibble（patch番号を添字にする）。 */
 export declare const YM2413_BUILTIN_CARRIER_MULTIPLES: readonly [0, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 0, 1, 1];
 export declare const GBDMG_SQUARE_KEYS: readonly ["gbdmg_0", "gbdmg_1"];
+export declare const GBDMG_FRAME_SAMPLES: number;
 interface OPNOperatorPath {
     carrier: number;
     operators: readonly number[];
@@ -124,9 +127,9 @@ export declare class MidiConverter {
     }>;
     activePCMNotes: Map<string, number>;
     generatedNoteCount: number;
-    private lastLatchedChannel;
-    private gameGearStereo;
-    private huc6280SelectedChannels;
+    lastLatchedChannel: number;
+    gameGearStereo: number;
+    huc6280SelectedChannels: number[];
     private segaPCMRegisters;
     private c140Registers;
     private segaPCMActiveVoices;
@@ -142,33 +145,33 @@ export declare class MidiConverter {
     private opnCh3UnisonStats;
     private opnCsmTimers;
     private opmCsmTimers;
-    private oplRhythmModes;
-    private oplRhythmControlBytes;
+    oplRhythmModes: Map<string, boolean>;
+    oplRhythmControlBytes: Map<string, number>;
     ym2203Prescalers: number[];
     ym2608Prescalers: number[];
     private ym2608RhythmTotalLevels;
     private ym2608RhythmInstrumentLevels;
     private ym2608ADPCMRegisters;
     private ym2608ADPCMActiveVoices;
-    private ym2413RhythmMode;
-    private ym2413RhythmControlByte;
-    private ym2413RhythmVolumes;
-    private ym2413CustomPatch;
-    private hasYM2413CustomCarrierMultiple;
+    ym2413RhythmMode: boolean;
+    ym2413RhythmControlByte: number;
+    ym2413RhythmVolumes: number[];
+    ym2413CustomPatch: Uint8Array<ArrayBuffer>;
+    hasYM2413CustomCarrierMultiple: boolean;
     private ssgNoisePeriods;
     pcmChannel10Pan?: number;
     private initialChannels;
     private streams;
-    private huc6280GlobalBalance;
+    huc6280GlobalBalance: number[];
     private secondaryChipStates;
     private activeChipInstance?;
-    private gbDmgMasterVolume;
-    private gbDmgStereoRouting;
-    private gbDmgFrameSteps;
-    private gbDmgNextFrameSamples;
+    gbDmgMasterVolume: number;
+    gbDmgStereoRouting: number;
+    gbDmgFrameSteps: number[];
+    gbDmgNextFrameSamples: number[];
     constructor(vgmData: VGMData, options?: ConversionOptions);
     /** 第二チップの可変状態を一時的に主チップのhandlerへ差し替えて隔離する。 */
-    private withChipInstance;
+    withChipInstance(chip: string, instance: number, action: () => void): void;
     private belongsToChip;
     private captureChipScalars;
     private restoreChipScalars;
@@ -179,7 +182,7 @@ export declare class MidiConverter {
     private opnCh3StateKey;
     private opnCh3Context;
     private initializeOPNCh3SpecialChannels;
-    private midiChannelForKey;
+    midiChannelForKey(key: string): number;
     /** VGM Extra Headerのチップ別volumeを、CC7に出力する0-127の値へ変換する。
      *
      * volume=0x0100（256）が100%（GM既定のCC7=100相当）。エントリが無い、
@@ -205,9 +208,9 @@ export declare class MidiConverter {
     /** MIDIの初回Program Changeと同じ時点のFM状態をsidecar用に複製する。 */
     private fmTimbreForDescriptor;
     /** 発音中のFMトラックへ、レジスタ変更後の音色スナップショットを追記する。 */
-    private recordFMTimbreEvent;
+    recordFMTimbreEvent(key: string, currentTime: number, source: FMTimbreEvent['source']): void;
     /** 発音後のYM2413音色状態をsidecarの時系列イベントへ追記する。 */
-    private recordYM2413TimbreEvent;
+    recordYM2413TimbreEvent(channel: number, currentTime: number, source: FMTimbreEvent['source']): void;
     /** OPN Ch3 Special時は親と発音中のオペレータ別トラックをまとめて更新する。 */
     private recordOPNTimbreEvents;
     /** PCMトラックの循環しない元サンプルIDとMIDIノートの対応をsidecar向けに返す。 */
@@ -237,17 +240,8 @@ export declare class MidiConverter {
     /** 選択patchのcarrier Multipleを、明確な2の累乗だけoctave補正に変換する。 */
     ym2413PitchScale(state: ChannelState): number;
     convert(): any[];
-    /** Game Gear $4F のLRルーティングをSN76489各voiceのCC10へ反映する。 */
-    private handleGameGearStereo;
     /** VGM $31 のAY/OPN SSG LR maskを各SSG voiceのCC10へ変換する。 */
     private handleAYSSGStereo;
-    private handlePSGWrite;
-    private handleSN76489NoiseControl;
-    private syncSN76489NoiseVolume;
-    private sn76489Velocity;
-    private sn76489Expression;
-    private sn76489NoiseNote;
-    private reevaluateSN76489NoiseForChannel2Frequency;
     private handleYM2612Write;
     private isOPNCh3SpecialMode;
     private handleOPNCh3ModeWrite;
@@ -307,12 +301,12 @@ export declare class MidiConverter {
     oplPitchScale(state: ChannelState): number;
     fmPitchScale(state: ChannelState, paths: readonly (readonly OPNOperatorPath[])[], silentTotalLevel: number, doubledMultiples: readonly number[]): number;
     private opnCarrierVelocity;
-    private oplCarrierVelocity;
+    oplCarrierVelocity(state: ChannelState): number;
     private fmCarrierVelocity;
-    private operatorTotalLevelVelocity;
+    operatorTotalLevelVelocity(totalLevel: number): number;
     /** Key On時のvelocityを基準に、発音中TL変化だけを相対CC11へ変換する。 */
     private opnCarrierExpression;
-    private oplCarrierExpression;
+    oplCarrierExpression(state: ChannelState): number;
     private fmCarrierExpression;
     private handleYM2612DACSeek;
     private handleYM2612DACWrite;
@@ -323,7 +317,11 @@ export declare class MidiConverter {
     private handleYM2203KeyWrite;
     private updateYM2203Frequency;
     private updateYM2203Prescaler;
-    private updateKeyBoundFMPitch;
+    updateKeyBoundFMPitch(key: string, currentTime: number, activeNotes: Map<string, {
+        note: number;
+        startTime: number;
+        startVolume: number;
+    }>, pitchBendRange: number): void;
     private handleYM2608Write;
     private handleYM2608KeyWrite;
     private updateYM2608Frequency;
@@ -352,69 +350,10 @@ export declare class MidiConverter {
     private syncYM2151ToneState;
     private syncYM2151NoiseState;
     private ym2151NoiseNoteForPeriod;
-    private handleHuC6280Write;
-    private updateHuC6280Pan;
     private handleSegaPCMWrite;
     private triggerSegaPCMVoice;
     private handleC140Write;
     private triggerC140Voice;
-    private handleOPLWrite;
-    private oplKey;
-    private oplOperatorSlot;
-    private setOPLOperatorMultiple;
-    private setOPLOperatorTotalLevel;
-    private setOPLConnection;
-    private updateOPLFrequencyLow;
-    private updateOPLKeyAndBlock;
-    private commitOPLKeyOn;
-    private handleOPLRhythmWrite;
-    private oplRhythmVelocity;
-    private handleYM2413Write;
-    private handleYM2413RhythmModeWrite;
-    private updateYM2413Frequency;
-    private handleYM2413KeyAndFrequencyWrite;
-    /** YM2413 key-onを、両方のfrequency byteとpatch carrier Multiple確定後にcommitする。 */
-    private commitYM2413KeyOn;
-    private handleYM2413VolumeWrite;
-    private ym2413Velocity;
-    private ym2413RhythmVelocity;
-    /** VGMの絶対sample時刻まで、両方のDMG APUフレームシーケンサを進める。 */
-    private advanceGBDMGFrameSequencers;
-    /** 512Hzの一段を実行し、長さ・sweep・envelopeの該当段だけをclockする。 */
-    private clockGBDMGFrameStep;
-    /** length-enableされた発音を256Hzで減算し、ゼロになった時点でMIDI Note Offにする。 */
-    private clockGBDMGLengths;
-    /** Channel 1のNR10 sweepを128Hzで評価し、連続音程はpitch bendで表現する。 */
-    private clockGBDMGSweep;
-    /** 64HzのDMG envelopeをCC11へ変換する。 */
-    private clockGBDMGEnvelopes;
-    /** NRx2の初期音量とenvelope timerを、ハードウェアtrigger時に再初期化する。 */
-    private startGBDMGEnvelope;
-    /** Channel 1 trigger時にNR10 shadow/timerを初期化する。 */
-    private startGBDMGSweep;
-    /** NRx1/NR31/NR41の長さロード値を保存する。 */
-    private setGBDMGLength;
-    /** trigger時に長さ0をハードウェア最大値へ再ロードする。 */
-    private reloadGBDMGLength;
-    /** NR50/NR51から指定DMGチャンネルの左右出力を求め、CC10を送る。 */
-    private updateGBDMGPan;
-    /** NR50/NR51更新後、現在鳴っているDMG voiceだけを再panする。 */
-    private refreshGBDMGPans;
-    private handleGBDMGWrite;
-    /** NR10のsweep設定をChannel 1へ保存し、次のtriggerから適用する。 */
-    private handleGBDMGSweepWrite;
-    private gbDmgEnvelopeDacEnabled;
-    private gbDmgEnvelopeVelocity;
-    private handleGBDMGEnvelopeWrite;
-    private updateGBDMGFrequencyLSB;
-    private handleGBDMGTriggerWrite;
-    private handleGBDMGWaveDACWrite;
-    private handleGBDMGWaveOutputLevelWrite;
-    private gbDmgWaveVelocity;
-    private handleGBDMGNoiseEnvelopeWrite;
-    private handleGBDMGNoiseFrequencyWrite;
-    private handleGBDMGNoiseTriggerWrite;
-    private handleGBDMGMasterControlWrite;
     private stopPCMVoice;
     private stopAllPCMVoices;
     /** DAC stream 0x90–0x95 を処理し、MSM6258は編集用GMトリガーとして残す。 */
@@ -435,14 +374,7 @@ export declare class MidiConverter {
     private resolveStreamRange;
     /** bank/block/start/length/step/flagを含む安定したMSM6258編集トリガーidentityを作る。 */
     private streamIdentity;
-    private syncHuC6280ToneState;
-    private syncHuC6280NoiseState;
-    private updateHuC6280NoiseEnvelope;
-    private noteOnHuC6280Noise;
-    private huc6280NoiseNoteForPeriod;
-    private addHuC6280Expression;
-    private isHuC6280MultiByteFreqUpdate;
-    private isOPNMultiByteFreqUpdate;
+    isOPNMultiByteFreqUpdate(cmdIndex: number, chip: string, port: number, otherReg: number, instance?: number): boolean;
     /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。
      *
      * Ch3 Specialの4オペレータ別トラック（Op1-3の専用トラックとOp4=通常のchannel3トラック）
