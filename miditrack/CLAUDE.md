@@ -63,8 +63,7 @@ src/miditrack/
   runtime_dependencies.py  RuntimeDependencies normalizes renderer/converter/mixer injection while
                             preserving the legacy create_app() test seams
   render_service.py        RenderService owns full/preview WAV LRUs, audio source history, monotonic
-                            render generations, player activation, and full/preview cache-retry coordination;
-                            routes retain request validation, domain rendering, and response work
+                            render generations, player activation, and full/preview cache-retry coordination
   gm.py                    the 128-name GM table + 16 families (single source of truth)
   midi.py                  track analysis, apply/save program changes and velocity-based volume
   pianoroll.py             read-only note/tempo extraction for the browser piano roll
@@ -82,13 +81,36 @@ src/miditrack/
   preferences.py           favorite-instrument shortlist (pinned/usage) and the last-selected
                             SoundFont, persisted to ~/Library/Application Support/miditrack/
                             preferences.json
-  web.py                   create_app() / run_server() (tools/pixelart_web.py shape)
+  web.py                   compatibility facade for the historical miditrack.web imports
+  web_routes.py            create_app() / run_server(), Flask hooks, route registration, and render/export
+                            workflow composition (tools/pixelart_web.py shape)
+  web_session.py           WebSession state/lifecycle plus stable session JSON and filename/source rules
+  web_session_service.py   validated track, transform, filename, and SoundFont session mutations
+  web_project_service.py   .miditrack UI validation, archive creation, staged restoration, and commit
+  web_source_service.py    MIDI/source ingestion, source selection, conversion, and generated-asset binding
   web_assets/               index.html / app.css / app.js bootstrap; i18n.mjs, api.mjs,
                             track_list.mjs, track_edits.mjs, pianoroll_math.mjs, pianoroll_loop.mjs,
                             and pianoroll_pointer.mjs isolate translation, authenticated fetch, track coordination,
                             pure piano-roll math, loop-range state, and pointer-drag state without cycles
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
+
+`miditrack.web` remains the compatibility import surface, but it contains no
+application logic. `web_routes.py` composes Flask with the session, project,
+source, and render services while preserving the existing 30-rule URL map and
+all `create_app()` injection arguments. Decorated route functions are limited
+to request validation, service/workflow calls, and Flask response construction;
+batch variation and per-track export generation are undecorated workflows in
+the route-composition module.
+
+`WebSession` owns only mutable state and cleanup/invalidation lifecycles.
+`SessionService` applies validated editing mutations, `ProjectService` owns the
+transactional archive boundary, and `SourceService` owns input ingestion and
+conversion-result binding. None of these services creates or manages rendered
+WAV cache entries. `RenderService` remains the single owner of full/preview
+LRUs, audio-source history, monotonic render IDs, and retry-on-revision-change
+coordination; the route-composition layer supplies the existing format-specific
+render callbacks to it.
 
 The root `scripts/sign_macho_bundle.sh` owns the nested-Mach-O signing walk used by
 both app assembly and release signing. It gives only the bundled Node runtime its
@@ -459,7 +481,7 @@ moved `WebSession.audio_path` on. Before this feature `get_audio()` ignored
 `?v=` entirely and always served `audio_path` — harmless when only one
 `<audio>` element ever existed, but wrong the moment a still-playing old
 element keeps issuing Range requests against its own `?v=<old id>` while a
-new id is already active. `WebSession.audio_sources` (`web.py`) is a small
+new id is already active. `WebSession.audio_sources` (`web_session.py`) is a small
 `OrderedDict[render_id, Path]`, capped at `AUDIO_SOURCE_HISTORY_LIMIT = 4`,
 populated in `ensure_render()`'s `activate_player` branch at the same point
 `render_id` itself is finalized. `get_audio()` resolves `?v=` against this
@@ -608,7 +630,7 @@ remain serial, and ffmpeg runs once after every input is complete.
 `RENDER_WORKERS` used to be a hardcoded module constant (`= 2`) shared by
 every `ThreadPoolExecutor` in the render path — no way to raise it on a
 faster machine, or lower it on a constrained one. `_render_workers()`
-(`web.py`) replaces the constant: it calls `preferences.load_preferences()`
+(`web_routes.py`) replaces the constant: it calls `preferences.load_preferences()`
 (the same lightweight per-request read every other preference-backed
 endpoint already does) and resolves `renderWorkers` through
 `preferences.resolve_render_workers()`. Every `ThreadPoolExecutor(max_workers=
@@ -1297,7 +1319,7 @@ match how a user thinks about the choice, not the three different internal
 mechanisms that can produce a `"game"`-sourced track (SPC's BRR-derived
 SoundFont, VGM/NSF hardware re-emulation, and the non-per-track chip/DAC
 stems). All three get `_orig`; only a fluidsynth render against a generic
-GM SoundFont gets `_midi`. `_track_filename_label(name, index)` (`web.py`)
+GM SoundFont gets `_midi`. `track_filename_label(name, index)` (`web_session.py`)
 is the dedicated normalizer for the track-name half of each filename — it
 deliberately does **not** reuse `sanitize_stem()`, because that function
 routes every input through `Path(...).stem`, which would truncate a track
@@ -1634,7 +1656,7 @@ equivalent to running a local CLI command as yourself" trust boundary
 goal here is "don't choke on a large or malformed ZIP a real user might
 have," not defense against a hostile adversary.
 
-`_safe_upload_basename()`/`_unique_upload_path()` (`web.py`) give loose
+`safe_upload_basename()`/`unique_upload_path()` (`web_session.py`) give loose
 (non-ZIP) uploads the same zip-slip-style safety for their `FileStorage`-
 supplied filename, which — unlike a ZIP member name — is attacker-controlled
 multipart metadata and must never be joined into a filesystem path
@@ -1875,7 +1897,7 @@ inert (confirmed by tracing `_plan_render_jobs()`, which drops
 Per-track volume for these tracks was added by mixing in a linear gain at
 the WAV level instead — the same place `mix.mix_wav()` already lets any
 number of inputs be summed with independent gains. `_render_chip_hardware()`
-(`web.py`) splits the selected `"game"` indices into two groups: those still
+(`web_routes.py`) splits the selected `"game"` indices into two groups: those still
 at the default 100% volume are rendered together in **one** `libvgm`/
 `nsf2midi --chip-render` call (unchanged behavior, `mix.STEM_GAIN` as
 before), and each channel whose volume was actually changed is rendered
@@ -1992,7 +2014,7 @@ guessing. This is a `vgm2midi`-side limitation being surfaced, not a
 The initial implementation only accepted a SoundFont via `--soundfont FILE`
 at CLI startup, fixed for the whole session — the only way to try a
 different bank was to quit and relaunch. `GET /api/soundfonts` and
-`POST /api/soundfont` (both in `web.py`) let the browser list and switch
+`POST /api/soundfont` (composed in `web_routes.py`) let the browser list and switch
 the active SoundFont at runtime, without touching `midi2wav.sh` itself.
 
 `render.list_soundfonts()` and `render.default_soundfont_dirs()`
@@ -2104,7 +2126,7 @@ PCM sample bytes but performs no semantic drum classification — see
 sections for exactly what each does and does not cover.
 
 **Why the stem paths are fixed siblings of the converted `.mid`, and why
-`convert_to_midi()` unlinks both before every run**: `web.py` always converts
+`convert_to_midi()` unlinks both before every run**: `web_source_service.py` always converts
 into the same fixed `converted.mid` inside the session's temp root, so
 `convert.chip_stem_path_for()`/`convert.dac_stem_path_for()` derive equally
 fixed `converted.chip.wav`/`converted.dac.wav` (different suffixes so the
@@ -2125,7 +2147,7 @@ than leaving it implicit in the code.
 newly-converted tracks, and `load_midi()` goes through
 `reset_midi_state()` — the same reset every MIDI replacement goes through,
 including a plain `.mid` re-upload. `reset_midi_state()` sets both fields
-back to `None` (see each field's own doc comment in `web.py`) precisely so
+back to `None` (see `WebSession.reset_midi_state()` in `web_session.py`) precisely so
 that uploading a plain `.mid` — which never carries a chip stem — can't
 inherit a stale one from whatever was loaded before it. That means
 `convert_source()` must assign both `web_session.chip_stem_path` and
@@ -2406,7 +2428,7 @@ deliberate part of the unification, not an implementation detail: it means
 across all three formats, and a frontend that only ever sees `"game"`/
 `"soundfont"` doesn't need to know which of the three underlying
 mechanisms produced a given track's `"game"` option. `CHIP_HARDWARE_SOURCE_FORMATS
-= ("vgm", "nsf")` (`web.py`) is the one place that still has to
+= ("vgm", "nsf")` (`web_routes.py`) is the one place that still has to
 distinguish "`game` means physical-channel hardware rendering" (VGM/NSF,
 stripped from the FluidSynth MIDI and rendered by a separate process) from
 "`game` means a SoundFont bank swap" (SPC, stays in the FluidSynth MIDI,
@@ -5107,7 +5129,7 @@ consumed by that layer.
 `WebSession` or a global.** `midi.py`, `convert.py`, `project.py`, and
 `preferences.py` don't import Flask and must not start doing so just to call
 `t()`. A `ContextVar` is stdlib, thread-and-async-safe, and lets
-`web.py`'s `before_request` be the single place that resolves and sets the
+`web_routes.py`'s `before_request` be the single place that resolves and sets the
 language per request (`i18n.resolve_language(stored_appLanguage,
 request.headers.get("Accept-Language"))`) without any of those modules
 depending on Flask or on each other. `WebSession` was rejected the same way
@@ -5124,7 +5146,7 @@ Translating static text in JS would mean an English user's first paint shows
 Japanese, then flips to English a beat later. Instead, `index.html`'s
 translatable nodes carry a `data-i18n` (element's own text is the msgid) or
 `data-i18n-attr="aria-label placeholder ..."` (named attributes' current
-values are the msgids) marker, and `web.py`'s `index()` — which already does
+values are the msgids) marker, and `web_routes.py`'s `index()` — which already does
 one `str.replace()` for `__MIDITRACK_TOKEN_REQUIRED__` — runs
 `i18n.localize_html(html, language)` right after. That function is a
 `html.parser.HTMLParser` subclass that rewrites only marked nodes/attributes
