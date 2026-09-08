@@ -11,7 +11,7 @@ YM2203 (OPN), YM2608 (OPNA), YM2413 (OPLL), YM3526/YM3812/Y8950 (OPL),
 and Game Boy DMG (LR35902 APU)
 conversion added, plus OPN channel 3 special mode, YM2612 DAC, and
 SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
-`CLAUDE.md` for what changed and why.
+`CLAUDE.md` for current support and maintainer contracts.
 
 ## Features
 

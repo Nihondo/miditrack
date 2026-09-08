@@ -1,779 +1,127 @@
 # CLAUDE.md
 
-Guidance for AI agents and developers working on this repository.
+Current engineering contracts for `nsf2midi`. Keep this file limited to
+durable architecture, compatibility, safety, and verification rules. Put
+historical investigations and one-off measurements in `handoff.md`.
 
-## What this project is
+## Scope and compatibility
 
-A macOS (arm64) command-line reimplementation of `nsf2midi.exe` 0.14, a
-Windows GUI tool that converts NES Sound Format (`.nsf`) files to Standard
-MIDI Files. The original binary was a 32-bit Windows GUI executable with no
-available source code and no CLI — it cannot be run on Apple Silicon macOS
-(no 32-bit Wine support) and is a GUI app regardless, so it was reimplemented
-from scratch rather than ported/wrapped. (The original `nsf2midi.exe`,
-`gnsf.ini`, and `readme.txt` were kept briefly as a compatibility reference
-during that reimplementation; their content is now fully captured in this
-file and in `default.mdf` below, so they were removed from the repository.)
+`nsf2midi` is an arm64 macOS CLI reimplementation of the behavior exposed by
+the Windows `nsf2midi.exe` 0.14 tool. It converts NSF/NSFE playback state into
+Standard MIDI files; it is not a live MIDI player or a general audio renderer.
 
-`default.mdf` (repo root) **is kept and is not just historical**: it is the
-frozen 0.14-compatibility `.mdf` this port parses identically to the
-original tool, still loadable at runtime via `-m default.mdf` (see "Added:
-reproduction-fidelity pass" below for why it's no longer the *default*
-`.mdf`, but it remains fully functional). Do not modify it.
+- `README.md` and `README_ja.md` are aligned user manuals.
+- `default.mdf` is the frozen original-tool compatibility preset. Do not
+  modify it.
+- `gm.mdf`, found next to the executable, is the default richer preset.
+  `-m default.mdf` remains the explicit compatibility path.
+- Keep this file in English and current; do not add design chronology here.
 
 ## Architecture
 
-```
-third_party/NotSoFatso/   Vendored NSF playback core (GPL-2+, see its README.md)
-src/
-  mdf.{h,cpp}             .mdf (INI-style) parser -> ChannelConfig per slot
-  channel_map.{h,cpp}     .mdf slot <-> NotSoFatso CHANNEL_* constant, based on
-                          the NSF's detected expansion chip (nChipExtensions)
-  pitch.{h,cpp}           STATE_PERIOD register value -> real frequency -> MIDI
-                          note + cents offset, per chip type
-  detector.{h,cpp}        Per-channel note-on/off state machine (the core
-                          reimplementation of readme.txt §6's algorithm)
-  smf.{h,cpp}             Minimal Standard MIDI File (format 1) writer
-  main.cpp                CLI argument parsing + orchestration (frame loop)
-```
-
-Data flow: `main.cpp` drives `CNSFCore::RunOneFrame()` once per NSF frame,
-reads `CNSFCore::GetState(channel, STATE_VOLUME/STATE_PERIOD, sub)` for every
-active channel, converts to a SMF tick via a running frame-rate accumulator,
-and feeds `{tick, volume, period}` into that channel's
-`PitchedChannelDetector` or `RhythmChannelDetector` (`detector.h`), which
-decides whether to emit note on/off/pitch-bend/CC events into that channel's
-`MidiTrack` (`smf.h`).
-
-## Why NotSoFatso
-
-FamiStudio (github.com/BleuBleu/FamiStudio) vendors "NotSoFatso", a
-Disch-authored NSF playback core (6502 CPU + APU + VRC6/VRC7/FDS/MMC5/N163/
-FME-7/EPSM emulation) with a frame-stepped API perfectly suited to this
-project:
-
-- `CNSFFile::LoadFile()` parses NESM/NSFE headers (title, chip extensions,
-  PAL/NTSC, track times).
-- `CNSFCore::RunOneFrame()` executes exactly one PLAY-routine call.
-- `CNSFCore::GetState(channel, state, sub)` reads a channel's volume/period
-  *after* that frame — the exact data readme.txt §6 says the original tool
-  uses for note-on detection (frequency-change detection, level-change
-  detection, minimum-level threshold).
-
-Only the emulation core files are vendored (see
-`third_party/NotSoFatso/README.md` for the exact list and what was dropped).
-It is built directly into the `nsf2midi` binary (no dylib/FFI) as C++14
-(the vendored code uses the pre-C++17 `register` keyword) alongside our own
-C++17 sources (see Makefile's `NSF_CXXSTD` vs `APP_CXXSTD`).
-
-## Design notes / where behavior is inferred rather than known
-
-The original `nsf2midi.exe` binary's internal algorithms are not
-recoverable (no source, and reverse-engineering a stripped/UPX-packed 32-bit
-GUI binary was judged not worth the effort vs. treating `readme.txt` §6 and
-`default.mdf`'s parameter names as the spec). Where the spec is silent, this
-port makes a documented, defensible choice rather than guessing silently:
-
-- **Frequency-to-note formulas** (`pitch.cpp`): standard NESdev-documented
-  divisors. The APU pulse/triangle divisor (`clk / (16*(P+1))` and
-  `clk / (32*(P+1))`) was cross-checked against
-  `third_party/NotSoFatso/Wave_Square.h`'s `ClockMajor()` (uses
-  `nFreqTimer.W + 1` as the period count). FDS/N163/S5B formulas are the
-  well-known NESdev wiki equations; VRC6 pulse/saw are the corresponding
-  4-bit/6-bit envelope duty analogues.
-- **Playback rate**: this vendored NotSoFatso build always uses the
-  standard NTSC (60.098814 Hz) or PAL (50.006982 Hz) NMI rate
-  (`SetPlaybackSpeed(0)` -> `fNSFPlaybackSpeed`), not a custom per-NSF
-  speed byte — see `NSF_Core.cpp` around `SetPlaybackSpeed()`. This is
-  simpler and matches how FamiStudio itself plays these files.
-- **Noise/PCM as GM rhythm channels**: readme.txt §6 says "ノイズとPCMは
-  リズム音色" (Noise and PCM use rhythm timbres). This port fixes them to
-  MIDI channel 10 (GM drum channel) and uses `.mdf`'s `Instrument` value
-  directly as the GM drum note number, rather than modulating pitch (GM
-  channel 10 has no meaningful pitch bend across a drum kit).
-- **DPCM triggering**: `STATE_DPCMSAMPLELENGTH` returns a nonzero value only
-  on the frame a sample starts (the flag is consumed on read — see
-  `NsfCoreFile::GetState` in the vendored `NSF_Core.cpp`). This port treats
-  that edge as the note-on trigger directly, rather than running it through
-  the generic amplitude-threshold detector used by pitched channels.
-- **Unsupported expansion chips**: the original 0.14 only supports APU +
-  VRC6 + FDS + FME-7 + N106 (see `readme.txt` §2). VRC7/MMC5/EPSM are
-  detected (`channel_map.cpp: UnsupportedChipName`) and warned about, but
-  not converted — matching the original's feature scope rather than
-  silently degrading.
-
-If you need to change note-on detection behavior, read `readme.txt` §6
-first and keep `detector.cpp`'s comments (which quote the relevant readme
-passage) in sync with the code.
-
-## Build
-
-```
-make clean && make        # -> ./nsf2midi (arm64 Mach-O, no external deps)
+```text
+third_party/NotSoFatso/   Vendored NSF CPU/APU and expansion-chip playback core.
+src/main.cpp              CLI parsing, source orchestration, frame loop, output modes.
+src/mdf.*                 INI-like instrument-definition parsing.
+src/channel_map.*         MDF slot to emulated channel mapping and chip detection.
+src/pitch.*               Emulated period to MIDI note/cents conversion.
+src/detector.*            Per-channel note, note-off, bend, expression detection.
+src/smf.*                 Minimal format-1 Standard MIDI writer.
+src/timbre*.              First-sounding timbre snapshots and GM candidates.
+src/track_metadata.*      MIDI-track to NES-channel JSON sidecar.
+src/chip_render.*         Selected-chip audio render through a second playback core.
+src/wav_writer.*          Streaming stereo WAV writer.
 ```
 
-Two C++ standards are used in the same link: `NSF_CXXSTD = c++14` for
-`third_party/NotSoFatso` (needs `register`), `APP_CXXSTD = c++17` for
-`src/` (uses `std::optional`). See `Makefile` comments if this ever needs to
-change.
+`main.cpp` advances `CNSFCore` one frame at a time, reads each enabled
+channel's state, converts frame time to SMF ticks, and feeds it into a
+pitched or rhythm detector. Keep playback, detection, MIDI writing, metadata,
+and audio rendering separate; do not duplicate a detector decision in CLI
+or sidecar code.
 
-## Testing
+## Playback and detector invariants
 
-`make test` builds and runs `tests/test_detector.cpp` — a small assert-based
-unit test binary covering `PitchedChannelDetector`/`RhythmChannelDetector`
-directly (no CI wired up yet, but this is no longer purely manual). It drives
-each detector with a sequence of `FrameState` values and writes a real `.mid`
-via `SmfWriter::Save()` to a temp file, then inspects the raw output bytes
-(`MidiTrack`'s event list is private, `friend`ed only to `SmfWriter` — going
-through an actual file keeps the test aligned with what a real conversion
-produces, rather than needing a new test-only accessor). It links only
-`mdf.cpp`/`pitch.cpp`/`detector.cpp`/`smf.cpp`/`wav_writer.cpp` — no
-`third_party/NotSoFatso` dependency, since tests build `FrameState` directly
-instead of running a real NSF through the emulation core (this is also why
-`chip_render.cpp`, which does depend on `NSF_Core.h`, has no unit test of its
-own and is instead covered by the manual `--chip-wav` verification below).
-See "Added: reproduction-fidelity pass" below for what it covers (noise
-frequency retrigger/drum mapping, DPCM sample identity, duty-based Program
-Change, Triangle defaults, and default-config backward compatibility). It
-additionally covers `WavWriter` directly: header field correctness (PCM
-format tag, channel count, sample rate, block align, byte rate, bits per
-sample), that `Close()` correctly patches the RIFF and `data` chunk sizes
-after streaming writes, that `WriteMono()` duplicates each sample to both
-stereo channels, and that a zero-sample stream still produces a valid
-44-byte header (the boundary `miditrack`'s own `size <= 44` failure check
-relies on).
+- NotSoFatso is vendored and built into the executable; do not introduce a
+  runtime dylib/FFI dependency. Its C++14 sources and this application's C++17
+  sources intentionally compile under separate Makefile standards.
+- Run detection from state observed after each PLAY frame. Use `readme.txt`
+  and the current source comments as the compatibility reference when changing
+  thresholds or note boundaries.
+- Pitched channels emit matched note-on/note-off pairs, reset pitch bend for
+  each new note, and use expression/bend for active-note changes when enabled.
+  Rhythm channels use GM channel 10 and their configured drum note.
+- Noise and DPCM triggering are channel-specific; do not route them through a
+  pitched detector. Do not silently treat an unsupported expansion as APU.
+- Supported conversion families are APU, VRC6, FDS, N163, and S5B/FME-7.
+  VRC7, MMC5, and EPSM are detected and warned about rather than converted.
+- Frequency conversion must match the vendored core's state representation,
+  including PAL/NTSC timing and expansion-chip-specific period formulas.
 
-For anything that needs a real NSF file (or to spot-check detector changes
-against actual game music), verify manually:
+## MDF, sidecars, and chip audio
 
+`.mdf` parsing remains compatible with the original 0.14 field set. Newer
+fields are optional and must retain safe defaults so existing `default.mdf`
+files continue to work. An invalid boolean fails closed rather than enabling a
+feature unexpectedly.
+
+`--track-metadata` writes the JSON mapping consumed by `miditrack`. Track
+indices, NES channel labels, render groups, sample count, and optional timbre
+snapshots must agree with the MIDI produced in the same run. Do not report a
+hardware-selectable source without a valid channel mapping.
+
+`--chip-render` renders only metadata-labelled channels for a requested track
+and sample count. `--chip-wav` is the fixed Noise+DPCM convenience stem.
+Both use a separate playback core from MIDI detection, output stereo WAV, and
+must not alter normal MIDI behavior. With `--chip-wav`, omit Noise/DPCM GM MIDI
+by default to avoid a double-triggered mix; `--keep-chip-midi` is the explicit
+override and is invalid without `--chip-wav`.
+
+Timbre snapshots provide GM candidates for selected FDS, N163, S5B, and VRC6
+channels. They are advisory metadata, not a claim to reconstruct original
+waveforms, envelopes, or effects.
+
+## Build and verification
+
+```bash
+cd nsf2midi
+make clean && make
+make test
+./nsf2midi --help
 ```
-./nsf2midi -l some.nsf                                  # sanity-check track list/metadata
-./nsf2midi -m default.mdf -t 0 -d 30 some.nsf out.mid -v # convert + watch triggers on stderr
-./nsf2midi --chip-wav out.chip.wav -t 0 -d 30 some.nsf out.mid  # Noise/DPCM as real chip audio
-```
 
-Then inspect `out.mid` with `mido` (Python) — e.g. confirm `note_on`/`note_off`
-counts match per track (no hanging notes), track length matches `-d`, and
-`.mdf` parameter changes (`ChannelEnabled`, `Instrument`, `PitchBendEnabled`,
-`AbsoluteDividedPoint`, `LevelChangeEnabled`, `MonoEnabled`) produce the
-expected effect on the output. See the plan file's verification section
-(`~/.claude/plans/nsf2midi-exe-mac-cli-purring-forest.md`, if still present)
-for the exact commands used during initial development — in particular, when
-testing threshold parameters against a specific song, verify with an
-extreme value first (e.g. `AbsoluteDividedPoint=200`, above any possible
-channel volume) to confirm the logic path is reachable at all, since a
-mid-range value may coincidentally not cross any note's actual volume in a
-short test clip.
+Use a clean build after changing headers, vendored sources, or compiler flags;
+the Makefile does not replace a complete dependency-aware build system. For a
+manual source check, use `-l`, convert a bounded track with `-d`, and inspect
+the MIDI/metadata output. Test hardware-render changes with `--chip-render`
+or `--chip-wav`, checking that the WAV is nonempty and the selected channels
+match the sidecar.
 
-A real regression was caught this way during development: `MonoEnabled=1`
-originally emitted a `NoteOn` before conditionally skipping the paired
-`NoteOff` when the retriggered note had the same pitch as before, producing
-stacked `NoteOn` events with no matching `NoteOff` (readme.txt §6's "レベル
-変化時検出" is explicitly for redetecting a same-pitch reattack, so retrigger
-must always close the old note first). Fixed in `detector.cpp`'s mono/
-portamento branch of `PitchedChannelDetector::ProcessFrame`.
+The final executable may link only macOS system libraries. Preserve the
+standalone arm64 build and do not add Homebrew runtime dependencies.
 
-A later post-implementation review (no real `.nsf` source file was available
-to reproduce end-to-end, so these were reasoned through and confirmed against
-the code paths directly) found two further issues, both fixed:
+## Hash-pinned real-corpus regression
 
-- **Pitch bend was never reset to center on a new note.** `ProcessFrame()`
-  only ever sends `PitchBend` from the `pitch_bend_enabled && note_active_`
-  branch — neither `StartNote()` nor the mono/portamento legato branch reset
-  it first. A note that held a bend when it ended could leave the next
-  `NoteOn` (on the same MIDI channel) sounding at the stale bent pitch until
-  the next non-triggering frame sent a fresh bend. Both `StartNote()` and the
-  legato retrigger branch in `ProcessFrame()` now send `PitchBend(tick,
-  midi_channel_, kPitchBendCenter)` immediately before their `NoteOn`, the
-  same way `vgm2midi`'s `noteOn()` resets bend before every new note.
-- **`PortamentEnabled` sent CC5 (Portamento Time) but never CC65 (Portamento
-  On/Off)**, without which most GM synths never apply portamento to begin
-  with — `WriteHeader()` now sends `ControlChange(..., 65, 127)` alongside
-  CC5 when `cfg_.portament_enabled` is set.
+The repository-level `tests/real_corpus_cases.json` pins selected user-owned
+NSF ZIP members by SHA-256. Their extracted copies live only in the
+git-ignored `testdata/real-corpus/` directory. Populate and verify from the
+repository root:
 
-Also hardened `mdf.cpp`'s `ToBool()`: it previously treated anything other
-than the literal string `"0"` as true, so an empty or malformed `.mdf` value
-(a stray edit, e.g. `PitchBendEnabled=`) would silently enable a boolean
-feature instead of failing safe. It now requires the literal `"1"` to return
-true and falls back to `false` for everything else, including `"0"` and
-unrecognized text. `default.mdf` is unaffected since it only ever writes
-explicit `0`/`1`.
-
-## Added: reproduction-fidelity pass — noise/DPCM/duty GM mapping, and `gm.mdf`
-
-A follow-up pass ported vgm2midi's reproduction-fidelity work (see its own
-`CLAUDE.md`) to nsf2midi: three new opt-in `.mdf` keys, a new `gm.mdf`
-preset that turns them on, and one always-on bug fix. `default.mdf` (the
-frozen 0.14-compatibility reference) is never edited — new behavior is
-either gated behind the new keys (all default `0`, so an unmodified
-`default.mdf` run is unaffected) or, in the one case below where the
-existing behavior was judged an outright bug, applied as a new *default
-value* rather than a hardcoded override, so an explicit `.mdf` key still
-wins.
-
-- **`NoiseDrumMapEnabled` (Noise) — periodic + LFSR-mode GM drum mapping.**
-  `NoiseDrumNote(period_index, short_mode)` (`detector.cpp`, next to
-  `MaxVolumeOf()`) maps `STATE_PERIOD` (0-15, smaller = faster/higher) and
-  the short-LFSR-mode flag (`STATE_DUTYCYCLE` on `CHANNEL_NOISE`) to GM
-  notes 42/38/45/37, matching vgm2midi's `noiseDrumNote()` note vocabulary so
-  the two tools' rhythm parts sound alike. `RhythmChannelDetector` gained a
-  `current_note_` member so `NoteOff` always targets whatever note is
-  actually sounding — previously it recomputed a fixed `cfg_.instrument`
-  note on every `NoteOff`, which only worked because the note never changed
-  before this feature existed.
-- **Always-on fix: `FrequencyChangeEnabled` (Noise) was parsed but never
-  read.** `default.mdf`'s `NOISE-CHANNEL` section sets it to `1`, but
-  `RhythmChannelDetector::ProcessFrame()` only ever checked
-  `level_change_enabled` for its noise retrigger condition — a game
-  alternating between two different noise periods at constant volume (e.g.
-  hi-hat/snare pattern) collapsed into one sustained note instead of
-  separate hits. This is a straightforward bug fix, not a new feature, so it
-  applies with `default.mdf` too — the one intentional exception to "new
-  behavior needs an explicit key" in this pass. `prev_noise_period_`/
-  `prev_noise_short_mode_` track the previous frame's rate; a change in
-  either now retriggers when `frequency_change_enabled` is set, independent
-  of whether `NoiseDrumMapEnabled` changes what note that retrigger uses.
-- **`PcmSampleMapEnabled` (PCM) — per-sample GM drum notes.**
-  `DpcmNoteForSample(addr, length)` assigns GM notes 35-81 round-robin by
-  first-seen `(STATE_DPCMSAMPLEADDR, STATE_DPCMSAMPLELENGTH)` pair, porting
-  vgm2midi's `pcmNoteForSample()` scheme. The identity key is the *pair*, not
-  just the address — two samples can start at the same DMA address but have
-  different lengths (the previous code discarded length entirely, reducing
-  `STATE_DPCMSAMPLELENGTH` to a boolean trigger flag), and using only the
-  address would wrongly collapse those into one identity.
-  `STATE_DPCMSAMPLELENGTH` still must be read exactly once per frame (reading
-  it consumes the trigger flag — see `NSF_Core.cpp`'s `GetState()`), so
-  `main.cpp`'s frame loop reads it into `FrameState::dpcm_sample_length` and
-  derives the boolean trigger (`length > 0`) from that stored value instead
-  of re-reading the core.
-- **`DutyProgramChangeEnabled` (Square/Vrc6Pulse only) — duty-cycle GM
-  Program Change.** `ProgramForDuty(kind, duty)` maps APU `STATE_DUTYCYCLE`
-  (0-3 index: 12.5/25/50/75%) or VRC6's raw 0-7 duty register to GM Program
-  84/81/80 (thin/bright/full). Deliberately **not** exposed on the
-  `EXTENDED-CHANNEL*` slots generically — those slots are reused for
-  FDS/S5B/N163/VRC6-Saw depending on the NSF's expansion chip
-  (`channel_map.cpp`), none of which have a duty concept, so
-  `MaybeSendDutyProgramChange()` gates on `info_.kind` (not just the config
-  flag) to guarantee it's a no-op there — including VRC6-Saw, so
-  `gm.mdf`'s `EXTENDED-CHANNEL3` (VRC6-Saw's slot) can safely enable the key
-  without risking a spurious Program Change overwriting its Saw-specific
-  `Instrument=81`. Program Change is resent only at Note On (mid-note duty
-  flicker is a timbre effect, not re-sent, to avoid PC spam) and only when
-  the target program actually changed since the last send
-  (`last_program_sent_`, initialized from `cfg_.instrument` in
-  `WriteHeader()` so the very first Note On doesn't redundantly resend the
-  header's own Program Change).
-- **Triangle's `STATE_VOLUME` is a linear counter, not amplitude — fixed via
-  a changed *default*, not a hardcoded override.** `MdfFile`'s constructor
-  now sets the Triangle slot's `level_change_enabled`/`attack_enabled`/
-  `decay_enabled`/`velocity` to `false` before `Load()` runs. `default.mdf`'s
-  `TRIANGELE-CHANNEL` section never wrote these keys, so the struct's
-  general-purpose defaults (`true`) applied — meaning every reload of the
-  7-bit linear counter (which counts down while the note sounds and jumps
-  back up on reload, not the note's actual amplitude) both spuriously
-  retriggered the note (crossing `RelativeDividedPoint`) and sent an
-  unnatural CC11 (Expression) wobble. Implementing this as a changed
-  constructor default rather than a forced override means an `.mdf` that
-  explicitly sets e.g. `LevelChangeEnabled=1` on Triangle still gets it —
-  `ApplyKey()` always overwrites whatever the constructor set.
-- **`gm.mdf`** (new file, project root) turns all three opt-in keys on plus
-  `Velocity=1` on the pitched channels (previously `0` in `default.mdf`,
-  flattening all dynamics to a constant velocity) and picks GM instruments
-  that fit each tone generator better than the uniform square lead:
-  Triangle → GM 39 "Synth Bass 1" (`Instrument=38`), VRC6-Saw slot
-  (`EXTENDED-CHANNEL3`) → GM 82 "Lead 2 (sawtooth)" (`Instrument=81`).
-  `PCM-CHANNEL`'s `Velocity` key is deliberately left unset — DPCM triggers
-  always call `ComputeVelocity(127)` with a hardcoded `127`
-  (`RhythmChannelDetector::ProcessFrame()`), so setting `Velocity=1` there
-  would have no effect; see the comment in `gm.mdf` itself.
-- **`gm.mdf` is now the default `.mdf` when `-m`/`--mdf` is omitted**
-  (`DefaultMdfPathNextToExecutable()` in `main.cpp`, despite its name no
-  longer being fully accurate — it derives *a* default path next to the
-  executable, not literally `default.mdf` — kept as-is rather than renamed,
-  since it's a small, self-contained helper and the comment above it now
-  states the actual behavior). `default.mdf` (the frozen 0.14-compatibility
-  reference, still never edited) remains available via an explicit
-  `-m default.mdf`. This means a bare `nsf2midi song.nsf` now produces the
-  reproduction-fidelity output described above, not literal 0.14-parity
-  output — a deliberate default change once this pass was judged to produce
-  a strictly better default listening experience than the original tool's
-  fixed-square-lead, flat-velocity output.
-- **`DefaultMdfPathNextToExecutable()` no longer trusts `argv0` to locate
-  the executable — it asks the OS directly via `_NSGetExecutablePath()`
-  (macOS-only, `<mach-o/dyld.h>`).** Making `gm.mdf` the default (previous
-  bullet) turned a pre-existing, previously-cosmetic gap into an actual
-  regression, and the first fix attempted here (canonicalizing `argv0`
-  with `std::filesystem::canonical()` to resolve a PATH symlink like
-  `/opt/homebrew/bin/nsf2midi -> .../nsf2midi/nsf2midi`) turned out to be
-  insufficient and was replaced. The real root cause is more fundamental
-  than symlinks: when a program is located via `PATH` (the normal case for
-  an installed CLI tool), the shell that `execve()`s it is not required to
-  — and zsh/bash in practice do not — pass the resolved path as `argv0`.
-  They pass back whatever the user typed (here, plain `nsf2midi`), which
-  `canonical()` cannot resolve unless that exact string also happens to be
-  a valid path relative to the current directory; confirmed concretely by
-  reproducing the failure under `zsh` with the binary on `PATH` (not just
-  invoked through a symlink by absolute/relative path, which — misleadingly
-  — *does* pass a resolvable `argv0` and made the first fix look correct
-  under that narrower test). Canonicalizing `argv0` in that PATH case
-  produced `./gm.mdf` (the current-directory fallback), silently fell back
-  to `warning: could not read mdf file ...; using built-in defaults`, and
-  every run via `PATH` got none of this pass's reproduction-fidelity
-  improvements. `ExecutablePath()` now calls `_NSGetExecutablePath()` first
-  — this is independent of `argv0` and how the process was launched, and is
-  the standard macOS way to solve this — and `DefaultMdfPathNextToExecutable()`
-  still symlink-resolves whatever path it ends up with via
-  `std::filesystem::canonical()` (falling back through `argv0` unresolved
-  only if every other option fails). Reproduced and confirmed fixed against
-  a real NSF run via a `PATH`-only invocation under `zsh`, matching how the
-  binary is actually installed and used. The general version of this
-  failure mode (a `nsf2midi` PATH symlink breaking a same-directory
-  sibling-file lookup) was previously known and documented only in
-  `spc2midi/CLAUDE.md`'s "why a PATH symlink is safe there but not here"
-  comparison; that comment has been updated to note this is now fixed.
-  `spc2midi` itself needed no change — it has no sibling data files to look
-  up in the first place, so this class of bug never applied to it.
-
-## Added: `--chip-wav` — render Noise/DPCM as real chip audio instead of GM drums
-
-GM drum notes are a rough stand-in for the Noise and DPCM channels — a
-SoundFont snare/hi-hat sounds nothing like real NES percussion. `--chip-wav
-<file>` renders those two channels through the emulation core itself, at
-their real chip sound, to a 16-bit/44100Hz stereo WAV. This exists so a
-downstream mixdown step (currently `miditrack`, via its `chipNoise` convert
-option — see its own `CLAUDE.md`) can substitute the true chip sound for
-the GM-drum approximation.
-
-- **New files**: `src/wav_writer.{h,cpp}` (a NotSoFatso-independent RIFF/WAVE
-  writer; `WriteMono()` duplicates each sample to L/R so the output is
-  always stereo, matching what a downstream mixer expects regardless of
-  format) and `src/chip_render.{h,cpp}` (`RenderChipWav()`, the actual
-  rendering logic).
-- **A second, dedicated `CNSFCore` instance.** `RenderChipWav()` never calls
-  `RunOneFrame()` on this instance — `GetSamples()` leaves the protected
-  `pOutput` pointer dangling on return (it nulls only `pVRC7Buffer`, not
-  `pOutput` — see `NSF_Core.cpp`'s end of `GetSamples()`), so interleaving
-  `GetSamples()` and `RunOneFrame()` on the same core would write past the
-  previous call's buffer. Mixer flags (`SetChannelOptions()`) don't affect
-  6502/DMA/frame-sequencer execution, so this second core plays back an
-  identical register stream to the MIDI-detection core; it is kept separate
-  anyway so its `SetAdvancedOptions()` call (below) can't affect the MIDI
-  path, and so the whole feature has no ordering dependency on whether MIDI
-  conversion ran first.
-- **All 29 mixer channels are muted except `CHANNEL_NOISE` (3) and
-  `CHANNEL_DPCM` (4)**, rendered together in one pass — never as two
-  separate renders added together. Noise and DPCM share one non-linear
-  mixing table (`Wave_TND.h`), so summing two independently-rendered stems
-  would not reproduce the real combined output; a single pass with both
-  channels un-muted is the only correct way to isolate this pair.
-- **DC offset / pop mitigation.** `nDMCOutput` is a 7-bit DC level, and by
-  default `bHighPassEnabled`/`bDMCPopReducer` are both off
-  (`CNSFCore`'s constructor). A DPCM-only stem without filtering carries a
-  large DC step plus audible pops on every `$4011` write. The chip-render
-  core enables `bHighPassEnabled` (at the same `nHighPassBase = 150` the
-  constructor already uses elsewhere) and `bDMCPopReducer`, applied *only*
-  to this second core — `bDMCPopReducer` measurably changes emulation
-  (`NSF_Core.cpp`'s DMC output path), so this is a deliberate, scoped
-  deviation from being bit-identical to the MIDI-detection core.
-- **Sample count**: `round(total_frames * 44100 / frame_rate)`, using the
-  exact `total_frames`/`frame_rate` `main()` already computed for the MIDI's
-  own tick timeline — this vendored core hardcodes the play rate to
-  `NTSC_NMIRATE`/`PAL_NMIRATE` regardless of the NSF header's own speed byte
-  (see the "Playback rate" note above), so the WAV's real-world duration and
-  the MIDI's real-world duration cannot drift apart. `GetSamples()`'s
-  6502 emulation can overshoot the requested cycle count by up to one
-  instruction (~7 cycles, against `fTicksPerSample ≈ 40.58`), producing one
-  extra sample; the render buffer always has slack beyond the requested
-  byte count, and the loop is driven off `GetSamples()`'s actual return
-  value (padding with silence on a short read) rather than assuming it
-  always returns exactly what was asked for.
-- **`--chip-wav` also removes Noise/DPCM from the `.mid` by default** — the
-  channel-enable check at `main()`'s track-building loop now works on a
-  **value copy** of the `.mdf`'s `ChannelConfig` (not the const reference it
-  used before), overridden to `channel_enabled = false` for
-  `ChannelKind::Noise`/`ChannelKind::Dpcm` when `--chip-wav` is present and
-  `--keep-chip-midi` is not. This is the default, not an opt-in, because the
-  alternative — always keeping both — makes "the real chip stem plus a GM
-  drum hit" the default outcome of turning this feature on, which is an
-  obviously-wrong double-trigger for any downstream mixdown. `--keep-chip-midi`
-  is the escape hatch for CLI users who want both (e.g. A/B comparison), and
-  is a parse-time error without `--chip-wav`.
-- Verified end-to-end with a synthetic hand-built NSF (SQ1 tone + Noise,
-  generated the same way this project's other synthetic-fixture testing
-  does): `--chip-wav` produced a non-silent, correctly-sized stereo WAV
-  (`afinfo`-valid), the Noise/DPCM channels were absent from the `.mid`
-  without `--keep-chip-midi` and present with it, and the
-  `--keep-chip-midi`-requires-`--chip-wav` check raised the expected
-  parse-time error.
-
-## Added: `--track-metadata`/`--chip-render` — per-channel hardware selection, matching vgm2midi's sidecar design
-
-`--chip-wav` (above) is fixed to a hardcoded Noise+DPCM stem, with no way to
-pick a different channel or channel combination. This addition generalizes
-the same underlying capability — `RenderChipWav()` already muted all but a
-chosen set of NotSoFatso channels — into two pieces that together let
-`miditrack` offer a per-track "原曲の音源" (hardware chip render) selector
-for every NES channel, the same way it already does for VGM via
-`vgm2midi --track-metadata` + the pinned libvgm native helper (see
-`vgm2midi/CLAUDE.md`'s "Added: per-track libvgm routing").
-
-- **`RenderChipWav()` (`src/chip_render.{h,cpp}`) now takes an arbitrary
-  channel set and a raw sample count**, not a hardcoded Noise/DPCM pair and
-  a `total_frames`/`frame_rate` pair to derive one from. `--chip-wav`'s own
-  call site now passes `{CHANNEL_NOISE, CHANNEL_DPCM}` explicitly — the
-  legacy behavior is unchanged, just expressed through the general
-  mechanism instead of being hardcoded inside the render function itself.
-  The DC-offset/pop mitigation (`bHighPassEnabled`/`bDMCPopReducer`) stays
-  unconditionally on regardless of which channels are selected — it was
-  already scoped to this dedicated render-only `CNSFCore`, and there's no
-  reason a Triangle/Square-only render would need it disabled.
-- **Why a single combined render pass, not one WAV per channel summed by
-  ffmpeg**: `chip_render.cpp`'s existing comment already noted that
-  Noise+DPCM share the non-linear TND mix table
-  (`third_party/NotSoFatso/Wave_TND.h`), so rendering them separately and
-  summing overshoots the real hardware level — Triangle shares that same
-  table, and Square1/Square2 share their own non-linear table
-  (`Wave_Square.h`). Rendering an arbitrary selected subset always as one
-  pass with everything else muted (rather than N independent per-channel
-  stems added together) sidesteps having to model any of those curves
-  explicitly — this is the exact same reason vgm2midi's native helper
-  renders a `--selection` as one combined pass instead of one stem per
-  device.
-- **`--track-metadata <file>`** writes a `version: 1` JSON sidecar right
-  after `smf.Save()` succeeds, one entry per MIDI track in the same order
-  `active` channels were added to `smf` (`src/track_metadata.{h,cpp}`,
-  a from-scratch C++ writer — this project has no JSON library dependency,
-  so it hand-escapes strings the same way
-  `vgm2midi/native/render_stems.cpp`'s `escapeJsonString()` does):
-  ```json
-  { "version": 1, "sampleRate": 44100, "sampleCount": 220137,
-    "tracks": [
-      { "trackIndex": 1, "channel": "SQ1",
-        "chipRender": { "channel": "SQ1", "groupId": "SQ1",
-                         "suggestedForHardwareMix": true } },
-      ...
-    ] }
-  ```
-  `sampleCount` uses the exact same `round(total_frames * 44100 / frame_rate)`
-  formula `chip_render.cpp` already used internally for `--chip-wav`, so a
-  later `--chip-render` call given that same number reproduces an
-  identical-length WAV. Unlike vgm2midi's sidecar (where an ambiguous
-  shared physical channel — AY/SSG tone+noise, HuC6280, YM2151 noise — can
-  leave `libvgm` absent for some tracks, or force several MIDI tracks to
-  share one `groupId`), **every NES channel maps to exactly one MIDI
-  track with no sharing**: NotSoFatso has no channel that mixes two
-  logically-independent MIDI tracks into one physical output the way
-  OPN/AY hardware does. `chipRender` is therefore present on every entry,
-  `groupId` always equals the channel's own label (so `group_indices()` on
-  the Python side is always a singleton — the group-expansion machinery
-  is inherited from `libvgm.py` unchanged but is a no-op for NSF), and
-  `suggestedForHardwareMix` is always `true`.
-- **`--chip-render <channels> --track <n> --sample-count <n> <input.nsf>
-  <output.wav>`** is a new, independent early-exit mode (parsed the same
-  way `-l/--list` is) that skips `.mdf` loading, `BuildChannelList()`'s
-  detector setup, and the whole MIDI-writing pipeline entirely — it loads
-  the NSF, resolves `<channels>` (a comma-separated list of the same
-  channel labels `--track-metadata`/MIDI track names use, e.g.
-  `NOISE,PCM,TRI`) against `BuildChannelList()`'s `ChannelInfo.label` to
-  get NotSoFatso channel IDs, and calls the now-generalized
-  `RenderChipWav()` once. This is deliberately *not* a separate helper
-  binary the way `vgm2midi_stems` is: NotSoFatso is already statically
-  linked into `nsf2midi` itself (no external emulator dependency to keep
-  isolated), so there's no reason to ship a second executable just to
-  reach the same in-process rendering code from a lighter entry point.
-  `miditrack` calls this mode fresh every time the current per-track
-  hardware selection changes (see its own `nsf_chip.py`), always against
-  the *original* `.nsf` file and the *same* `-t/--track` (song index) used
-  at the initial conversion — unlike a VGM file, an NSF can have multiple
-  tracks/songs, so the song index has to be threaded through and reissued
-  explicitly (`miditrack`'s `WebSession.source_song_index`), whereas
-  vgm2midi's `--selection` mode needs no equivalent because a `.vgm`/`.vgz`
-  file is always exactly one song.
-- **`--chip-wav`/`--keep-chip-midi` remain unchanged for CLI
-  back-compat** — a user driving `nsf2midi` directly from the command line
-  still gets the same fixed Noise+DPCM stem with the same flags. `miditrack`
-  itself no longer requests `--chip-wav` at all (see its own `CLAUDE.md`);
-  it always requests `--track-metadata` and, when a per-track hardware
-  selection is active, calls `--chip-render` at render time instead.
-- Verified manually end-to-end against a real synthetic multi-track NSF:
-  `--track-metadata` produced a JSON sidecar with one correctly-ordered
-  entry per channel (`SQ1`/`SQ2`/`TRI`/`NOISE`/`PCM`, `trackIndex` 1-5
-  matching the conductor-track-is-0 convention), `--chip-render
-  NOISE,PCM,TRI` and `--chip-render SQ1,SQ2` both produced correctly-sized
-  WAVs at the sidecar's own `sampleCount`, the legacy `--chip-wav` path
-  (now routed through the same generalized `RenderChipWav()`) still
-  produced byte-identical-shaped output, and unknown-channel/missing-flag
-  argument errors were confirmed at both the CLI level and through a live,
-  fully non-mocked `miditrack` `create_app()` round trip (real `nsf2midi`,
-  real `fluidsynth`) — including switching one track back to `soundfont`
-  mid-session and re-rendering, which correctly re-enabled that track's
-  volume slider while the remaining hardware-selected tracks stayed
-  disabled.
-
-## Fixed: `--chip-render` selecting FDS (or MMC5/N163/S5B) rendered silence
-
-`RenderChipWav()` mutes all 29 NotSoFatso mixer channels and unmutes only
-the selected ones via `CNSFCore::SetChannelOptions(chan, mix, ...)`
-(`third_party/NotSoFatso/NSF_Core.cpp`). That function's `mix` branch used
-to compute the internal mixer-flag array index as a flat `chan - 5` for
-every channel above the 5 "main" ones (`SQUARE1/2`, `TRIANGLE`, `NOISE`,
-`DPCM`). This is wrong: `bChannelMix[24]` is packed in the order
-`EmulateAPU()`'s own mixing calls actually read it in — VRC6 (3), MMC5 (3),
-N106 (8), FME-7/S5B (3), FDS (1) — while the public `CHANNEL_*` constants
-(`NSF_Core.h`) are ordered VRC6 (3), VRC7FM (6), FDS (1), MMC5 (3), N163
-(8), S5B (3). Only VRC6 happens to have the same starting offset in both
-orderings, so `chan - 5` silently wrote to the wrong element (or, for
-`CHANNEL_FDS = 14`, to `bChannelMix[9]` — the slot N163's 4th channel
-actually reads) for every other expansion chip. Concretely: unmuting FDS
-via `SetChannelOptions(CHANNEL_FDS, 1, ...)` never touched
-`bChannelMix[23]` (the index `mWave_FDS.DoTicks()` actually checks), so FDS
-stayed muted from the initial all-mute loop and rendered pure silence —
-this is what a user reported as "FDS sounds missing from the original
-hardware audio render" (`miditrack`'s "原曲の音源" track source, which
-calls this same `--chip-render` path via `nsf_chip.py`). N163/S5B/MMC5 had
-the same class of bug, just landing on different wrong indices.
-
-Fixed by replacing the flat `default: bChannelMix[chan - 5]` with explicit
-`case` ranges that map each public `CHANNEL_*`/`N163_WAVE*`/`S5B_SQUARE*`
-value to the *actual* index used elsewhere in `EmulateAPU()`
-(`SetChannelOptions()`'s switch statement now documents this packing order
-inline). `CHANNEL_VRC7FM1-6` (8-13) is left as a no-op: VRC7 output never
-goes through `bChannelMix` at all — it's mixed separately via
-`VRC7_Mix()` — so this API could never mute it either before or after this
-fix (`nsf2midi` doesn't expose VRC7 as a selectable channel anyway; see
-`channel_map.cpp`'s `UnsupportedChipName()`). EPSM channels (`chan >= 29`)
-were already rejected by this function's own early `if(chan >= 29) return;`
-guard and remain so — also consistent with EPSM being unsupported here.
-
-This is the one deliberate exception to treating `third_party/NotSoFatso`
-as a frozen vendored drop: it's a straightforward upstream indexing bug in
-a mixer-mute helper the original Winamp-plugin/DLL-wrapper callers
-(dropped from this vendoring, see `third_party/NotSoFatso/README.md`)
-apparently never exercised for anything but VRC6, so it went unnoticed
-until this project's `--chip-render`/`--chip-wav` selective-mute usage hit
-it. The ordinary MIDI-conversion path (`main.cpp`'s ~line 378) also calls
-`SetChannelOptions()`, but only ever to unmute *every* channel
-(`mix=1` for `i` in `0..28`), which this bug never affected — the flat-vs-
-packed index mismatch only matters when muting/unmuting a *subset*.
-
-Verified with a hand-built minimal NSF (`NESM` header, `nExtraChip =
-EXTSOUND_FDS`, an init routine that writes a 64-byte ramp into the FDS
-wave table via `$4089`/`$4040-$407F` and sets a fixed volume-envelope gain
-and nonzero frequency via `$4080`/`$4082`/`$4083`, silent play routine):
-`--chip-render FDS --track 0 --sample-count 44100` against the pre-fix
-binary produced a WAV with peak amplitude 0 (silence, reproducing the bug
-exactly); the identical command against the post-fix binary produced peak
-amplitude 7812 (audible FDS output). `make test` (the existing
-`tests/test_detector.cpp` suite) still passes — it never exercises
-`SetChannelOptions()`.
-
-## Fixed: FDS notes came out two octaves too high
-
-`pitch.cpp`'s `FrequencyOf(ChannelKind::Fds, ...)` computed
-`period * clk / 1048576.0` (2^20), sourced from a NESdev-wiki-style
-formula per this file's own "Design notes" section above. That divisor is
-wrong for what this vendored core's emulation actually does — derived from
-`third_party/NotSoFatso/Wave_FDS.h`'s `DoTicks()` (the ground truth, since
-`detector.cpp` reconstructs notes from *this* emulation's register/state
-values, not from an independently-correct physical formula): the wave
-accumulator advances one of its 64 wavetable steps every
-`65536.0f / nFreq.W` CPU cycles (`freq = 65536.0f / (subfreq + nFreq.W)`,
-`Wave_FDS.h`'s `DoTicks()`), so one full 64-step waveform cycle takes
-`64 * 65536 / period = 4194304 / period` CPU cycles — making the real
-output frequency `period * clk / 4194304` (2^22), not `/ 1048576` (2^20).
-The old formula was off by a factor of exactly 4 (two octaves, 24
-semitones) high for every FDS note. Fixed by changing the divisor to
-`4194304.0` and documenting the derivation inline.
-
-Verified with the same hand-built FDS test NSF used for the
-`--chip-render` fix above (`$4082/$4083` frequency register set to
-`0x0800` = 2048): `nsf2midi -m default.mdf -t 0 -d 2 ... -v` emitted
-`note_on note=105` against the pre-fix binary and `note_on note=81`
-against the post-fix binary — exactly 24 semitones apart, confirming both
-the bug and the fix. `make test` still passes (no existing test exercises
-FDS pitch conversion).
-
-Also confirmed against a real game rip (`zelda.nsf`, "Zelda no Densetsu"):
-`GetState(CHANNEL_FDS, STATE_PERIOD, 0)` returned `1092` for the FDS lead
-in track 0, and `-v` now emits `note=70` for it (was `note=94` before this
-fix — the same 24-semitone gap). Directly instrumenting
-`Wave_FDS.h`'s `DoTicks()` (temporary `-DFDS_DEBUG_FREQ` build, since
-removed) confirmed the emulator's own wavetable-index wraps 3841 CPU
-cycles apart for `period=1092`, matching `4194304/1092 ≈ 3841.5` — i.e.
-the divisor fix is exactly what the vendored emulation core itself does,
-not just a NESdev-wiki formula taken on faith. User-confirmed by ear
-against the real game audio: the post-fix build no longer sounds "too
-high."
-
-**Build-cache pitfall hit while debugging this**: right after landing the
-divisor fix, a plain `make` (no `make clean`) linked a binary that still
-computed the *old* (2^20) frequency — confirmed by disassembling
-`build/app_pitch.o` and decoding the embedded FP constant
-(`objdump -d` + manually decoding the `movk`-constructed immediate as an
-IEEE-754 double). `app_pitch.o`'s own mtime matched `src/pitch.cpp`'s to
-the second and *looked* like a correct incremental rebuild, but the
-constant baked into it was stale. Root cause unconfirmed (most likely
-mtime-second-granularity collision from rapid-fire `git stash`/`make`
-cycles run less than a second apart while narrowing down the `--chip-render`
-fix earlier in the same session), but the practical lesson: **after any
-`git stash pop` (or any edit landing within the same second as a prior
-build), do `make clean && make` before trusting the result** — this
-codebase's `Makefile` has no header-dependency tracking either (only
-`.cpp` sources are prerequisites), so a header-only change (e.g. to
-`third_party/NotSoFatso/Wave_FDS.h`) silently no-ops on a plain `make`
-regardless.
-
-## Added: `timbre` sidecar block — FDS/N163/S5B/VRC6 GM candidate metadata
-
-Ports `docs/chip-support.md`'s "対応中チップの制限解除" plan item for
-"NSF の FDS、N163、S5B、VRC6" (波形RAM/デューティ比/ノイズ混合/エンベロープ
-を調べ、GM音色候補とチップレンダーの選択へ反映する) — the same
-metadata-only-candidate pattern `vgm2midi` already applies to OPN/OPM/OPL/
-YM2413 (see its own `CLAUDE.md`), adapted to the four NSF expansion-chip
-channel kinds that have no `duty` concept beyond what `DutyProgramChangeEnabled`
-already covers for Square/VRC6-pulse.
-
-- **New files, split the same way `pitch.{h,cpp}` and `chip_render.{h,cpp}`
-  already are**: `src/timbre.{h,cpp}` holds pure, `third_party/NotSoFatso`-
-  independent logic (`TimbreSnapshot` struct + `GmProgramCandidateFor()` +
-  `ProgramForDuty()`) and is linked into both the app binary and
-  `tests/test_detector.cpp` (like `pitch.cpp`); `src/timbre_capture.{h,cpp}`
-  holds the `CNSFCore::GetState()` calls that fill a `TimbreSnapshot` from a
-  live channel (like `chip_render.cpp`) and is **not** linked into the test
-  binary — there is no lightweight way to exercise real chip register state
-  without the emulation core, so this half is verified manually the same
-  way the FDS `--chip-render`/pitch-divisor bugs above were (hand-built
-  synthetic NSFs; see "Verified" below).
-- **`ProgramForDuty()` moved out of `detector.cpp`'s anonymous namespace
-  into `timbre.h`/`timbre.cpp`**, unchanged in behavior. `detector.cpp`'s
-  `MaybeSendDutyProgramChange()` now calls the shared implementation instead
-  of a private copy, so the VRC6 `timbre.duty` candidate and the actual
-  Program Change `DutyProgramChangeEnabled` sends can never drift apart —
-  `TestTimbreVrc6MatchesProgramForDuty` (`tests/test_detector.cpp`) asserts
-  this equality directly across all 8 duty values.
-- **Capture timing: the first frame a channel's note actually sounds, not
-  every frame.** `PitchedChannelDetector` gained a trivial
-  `IsNoteActive() const` getter; `main.cpp`'s frame loop calls
-  `CaptureTimbreSnapshot(core, ac.info)` right after `ProcessFrame()` only
-  when `!ac.timbre_captured && is_timbre_eligible(ac.info.kind) &&
-  ac.pitched->IsNoteActive()`, then latches `ac.timbre_captured = true` so
-  it never re-reads for that channel again. This mirrors vgm2midi's `fm`
-  field ("first sounding" snapshot, not a time series — `fmEvents` is the
-  separate, later-added time series for OPN/OPM/OPL/YM2413) rather than
-  attempting a `timbreEvents` equivalent, since NSF channels retrigger far
-  more often per second than VGM FM channels change algorithm/patch, and a
-  channel that never sounds within `-d <duration>` has nothing to report
-  anyway (`has_timbre` stays `false`, the `"timbre"` key is omitted
-  entirely — not `null` — from that track's JSON object).
-- **Why these four `ChannelKind`s and not Square/Triangle/Noise/Dpcm/
-  Vrc6Saw**: Square and Vrc6Pulse already get a GM-candidate-equivalent via
-  `DutyProgramChangeEnabled`'s actual Program Change; Triangle/Noise/Dpcm
-  have no duty/waveform/envelope concept this metadata scheme models.
-  Vrc6Saw (`CHANNEL_VRC6SAW`) has no duty register either (`nAccumRate` is
-  its only per-instance state, already used directly as `STATE_VOLUME`) —
-  extending `TimbreSnapshot` to a fifth kind for a single accumulator-rate
-  scalar was judged not worth a new candidate-selection heuristic; `gm.mdf`
-  already hardcodes `Instrument=81` (Lead 2 sawtooth) for it (see the
-  "reproduction-fidelity pass" section above).
-- **Heuristics are deliberately simple and documented as approximations,
-  not attempts to reproduce the real timbre** (same posture
-  `docs/chip-support.md` takes for OPN algorithm→GM and PCM
-  quiet/tonal/noise-like labels):
-  - **FDS**: mean absolute difference between adjacent wave-table steps
-    (wrapping across the 64-step loop) as a roughness proxy — `<4` (smooth,
-    e.g. a near-sine or near-flat table) → GM 89 Pad 2 (warm), `<12`
-    (moderate slope) → GM 81 Lead 2 (sawtooth), else (sharp/noisy) → GM 87
-    Lead 8 (bass+lead). Verified against a hand-built ramp (0..63 linear,
-    roughness ≈2 from the small per-step deltas plus one large 63→0
-    wraparound jump averaged over 64 steps) landing in the smooth bucket,
-    and an alternating 0/63 "square" table (roughness 63) landing in the
-    harsh bucket.
-  - **N163**: bucketed by `n163_active_channels` alone (≤2 → GM 80 Lead 1
-    square, 3-5 → GM 91 Pad 4 choir, 6-8 → GM 90 Pad 3 polysynth) — real
-    N163 hardware divides its output sample rate among active channels
-    (`fFrequencyLookupTable[nActiveChannels]`,
-    `third_party/NotSoFatso/Wave_N106.h`), which is widely documented
-    (NESdev wiki, FamiTracker docs) to make more-simultaneous-channel N163
-    music sound more detuned/vocal/chorus-like — this candidate leans on
-    that known relationship rather than inspecting waveform shape at all.
-  - **S5B**: `s5b_envelope_enabled` (this channel's `STATE_S5BENVENABLED`)
-    → GM 16 Drawbar Organ (continuous hardware-envelope tone, the AY
-    feature with no equivalent on the other PSG-family chips this project
-    handles); else tone+noise both mixed in → GM 81 Lead 2 (sawtooth, buzz
-    approximation); else plain tone → GM 80 Lead 1 (square), matching the
-    default APU/PSG-family candidate used elsewhere. `s5b_tone_enabled`/
-    `s5b_noise_enabled` are decoded from `STATE_S5BMIXER`'s per-channel
-    `bChannelMixer` value as **disable** bits (bit0=tone disabled,
-    bit3=noise disabled — the real AY-3-8910 R7 polarity, confirmed by
-    reading how `NSF_Core.cpp`'s `$07` write handler packs the shared
-    3-channel register into each channel's own 2-bit view and how
-    `bChannelEnabled`'s `!= 0x9` check treats "both bits set" as fully
-    muted).
-  - **VRC6-pulse**: reuses `ProgramForDuty()` directly (no separate
-    heuristic) — see above.
-- **N163 wave capture reads raw `nRAM[]` bytes (0-15, one already-unpacked
-  4-bit sample per byte — confirmed via `WriteMemory_N106()`'s `$4800`
-  handler, which splits each incoming byte into two separate `nRAM[]`
-  entries), not the packed 2-samples-per-byte register format** a real
-  cartridge's ROM would use. This matches what `DoTicks()` itself reads
-  (`nRAM[nWavePos[i]]`) — i.e. the sidecar's `n163.waveform` values are
-  exactly what the emulation core plays back, not a re-derivation of the
-  original packed data.
-- **FDS wave capture reads all 64 `nWaveTable[]` slots unconditionally**
-  (`STATE_FDSWAVETABLE` sub 0-63) rather than only the slots covered by
-  `nWaveSize`-equivalent bookkeeping — FDS, unlike N163, has no partial-
-  table-length concept; the full 64-entry table is always meaningful.
-- Verified with hand-built minimal NSFs, one per chip kind (same technique
-  as the FDS `--chip-render`/pitch-divisor fixes above: a NESM header
-  declaring the target `nChipExtensions` bit, an INIT routine that writes
-  the chip's registers directly, and a silent PLAY routine placed far
-  enough past INIT in PRG-ROM to not be clobbered by INIT's own byte
-  stream — an early draft placed PLAY only 16 bytes after INIT and had
-  every frame's PLAY call re-execute a misaligned slice of INIT's own
-  opcode bytes as if it were code, corrupting chip state between the
-  note-on frame and the point this feature reads it back; moving PLAY to a
-  separate, generously-sized region fixed it). Confirmed via
-  `--track-metadata`'s JSON output: **FDS** — a linear 0..63 ramp written
-  through `$4089`/`$4040-$407F` came back as an exact 64-element
-  `waveform` array with `gmProgramCandidate: 89`; **N163** — 16 nibble
-  writes through `$F800`/`$4800` (channel 7 / public "N163-1") came back
-  as the expected 16-element `waveform` (with the every-other-byte-zero
-  pattern this write path's 2-bytes-per-write unpacking produces from
-  single-nibble source values — expected, not a bug, per the N163 capture
-  note above) with `activeChannels: 1`, `gmProgramCandidate: 80`; **S5B**
-  — channel 0's mixer/volume registers (`$C000`/`$E000`, reg `$07`=`0x08`
-  tone-on/noise-off, reg `$08`=`0x0F` volume/no-envelope) came back as
-  `toneEnabled: true, noiseEnabled: false, envelope.enabled: false,
-  gmProgramCandidate: 80`; **VRC6** — `$9000`=`0x5F` (duty 5, volume 15)
-  came back as `duty: 5, gmProgramCandidate: 81`, matching
-  `ProgramForDuty(Vrc6Pulse, 5)` exactly. All four channels' `NoteOn`
-  events (`-v` output) were unaffected by this feature being present.
-  `make test` (5 new test functions covering FDS roughness buckets, N163
-  channel-count buckets, S5B mixer/envelope combos, and an 8-way VRC6/
-  `ProgramForDuty` equality check, alongside the existing suite) passes in
-  full.
-
-## Shared hash-pinned real-corpus regression
-
-The repository root has an opt-in end-to-end acceptance check for real source
-material. `tests/real_corpus_cases.json` pins the selected NSF ZIP members by
-SHA-256 and `testdata/real-corpus/` holds only local, git-ignored extracted
-copies. Populate it from a user-owned collection, then run:
-
-```
+```bash
 python3 scripts/sync_real_corpus.py --source /path/to/source-collection
 python3 scripts/verify_real_corpus.py
 ```
 
-The NSF portion converts track 0 for ten seconds, rejects header-only MIDI,
-and checks the metadata channel labels requested by the manifest. Its current
-cases cover a base APU NSF and an FDS NSF. This is intentionally separate from
-`make test`: no copyrighted music is committed or required for normal builds.
+The NSF acceptance path converts track 0 for ten seconds, rejects header-only
+MIDI, and verifies requested metadata labels. Current cases cover base APU and
+FDS. It complements `make test`; music data is never committed or required by
+CI.
 
-## Out of scope (by user decision)
+## Out of scope
 
-- CoreMIDI live playback (the original could play through a MIDI device;
-  this port only writes `.mid` files).
-- m3u/pls playlist batch conversion (readme.txt §4's `nsf::mdf,...`
-  extended playlist syntax).
-- XG/GS MIDI dialect switching (`gnsf.ini`'s `STANDARD` key). Output is GM
-  only.
+- CoreMIDI live playback.
+- Extended m3u/pls batch conversion syntax.
+- XG/GS output; emitted MIDI is General MIDI.
+- Conversion of VRC7, MMC5, or EPSM audio channels until supported explicitly.
+
+Run `git diff --check` before handoff. Update this file only for a changed
+current contract; record historical rationale in `handoff.md`.

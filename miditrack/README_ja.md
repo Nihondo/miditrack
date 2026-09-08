@@ -112,6 +112,20 @@ miditrack/
 miditrack/.venv/bin/python -m pytest -q miditrack/tests
 ```
 
+リポジトリ内でGit管理されない`../testdata/real-corpus/`が存在する場合、テスト
+スイートは追加で`tests/test_real_corpus.py`を実行します。このテストは、ハッシュで
+固定したVGM/VGZ、NSF、SPCの各ケースをFlask API経由でアップロードし、形式検出、
+コンバーター起動、MIDI解析、VGM/NSF sidecarまたはSPC SoundFontへの受け渡しまで
+検証します。ローカルコーパスがない通常のクローンやCIではスキップされます。次の
+コマンドで同期してから、必要に応じてこの受入テストだけを実行してください。
+
+```bash
+python3 scripts/sync_real_corpus.py --source /path/to/source
+cd miditrack
+MIDITRACK_REAL_CORPUS_ROOT=../testdata/real-corpus \
+  PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p test_real_corpus.py -v
+```
+
 レンダラーまたはラッパーを変更した場合は、追加で確認します。
 
 ```bash
@@ -133,7 +147,7 @@ npm test                   # vgm2midi/ 内で実行
 
 ## 実装時の参照先
 
-- [CLAUDE.md](CLAUDE.md): 詳細な設計履歴と実装上の不変条件。
+- [CLAUDE.md](CLAUDE.md): 現在の設計契約と実装上の不変条件。
 - [../README_ja.md](../README_ja.md): 利用者向けワークフローとトラブルシューティング。
 - [../nsf2midi/README.md](../nsf2midi/README.md)、[../spc2midi/README.md](../spc2midi/README.md)、[../vgm2midi/README.md](../vgm2midi/README.md): コンバーター固有のマニュアル。
 

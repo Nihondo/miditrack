@@ -133,6 +133,21 @@ Run the Python suite from the repository root:
 cd miditrack && PYTHONPATH=src .venv/bin/python -m unittest discover -s tests
 ```
 
+When the repository-local, git-ignored `../testdata/real-corpus/` is present,
+the suite additionally runs `tests/test_real_corpus.py`. It uploads every
+hash-pinned VGM/VGZ, NSF, and SPC case through the Flask API and verifies
+format detection, converter invocation, MIDI analysis, and the VGM/NSF
+sidecar or SPC SoundFont handoff. The test is skipped when that local corpus
+is absent, so normal clones and CI never need game-music files. Populate it
+with `python3 ../scripts/sync_real_corpus.py --source /path/to/source`, then
+run only this acceptance test when needed:
+
+```bash
+cd miditrack
+MIDITRACK_REAL_CORPUS_ROOT=../testdata/real-corpus \
+  PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p test_real_corpus.py -v
+```
+
 Before submitting a renderer or wrapper change, also check:
 
 ```bash
@@ -157,7 +172,7 @@ Run `git diff --check` before handoff. When changing user-visible behaviour, upd
 
 ## Useful implementation references
 
-- [CLAUDE.md](CLAUDE.md): detailed design history and implementation invariants.
+- [CLAUDE.md](CLAUDE.md): current architecture contracts and implementation invariants.
 - [../README.md](../README.md): user-facing workflow and troubleshooting.
 - [../nsf2midi/README.md](../nsf2midi/README.md), [../spc2midi/README.md](../spc2midi/README.md), and [../vgm2midi/README.md](../vgm2midi/README.md): converter-specific manuals.
 

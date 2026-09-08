@@ -2,7 +2,7 @@
 
 VGM/VGZ（ビデオゲームミュージックのコマンドログ）ファイルを、記録されているサウンドチップへのレジスタ書き込みを再生してノートオン/オフ・ピッチ・ベロシティを推定することでStandard MIDI Fileに変換する、Node.js/TypeScript製のコマンドラインツールです。macOS、Linux、Windowsで動作します。
 
-これは[jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi)をベースに、HuC6280（PCエンジン/TurboGrafx-16のPSG）変換、実際に動作するYM2151（アーケードFM音源）変換、YM2203（OPN）変換、YM2608（OPNA）変換、YM2413（OPLL）変換、YM3526/YM3812/Y8950（OPL）変換、Game Boy DMG（LR35902 APU）変換を追加し、さらにOPNチャンネル3特殊モード、YM2612 DAC、SegaPCM/C140のサンプルトリガー抽出を追加したローカルフォークです。由来については`NOTICE.md`、変更内容と理由については`CLAUDE.md`を参照してください。
+これは[jkarenko/vgm2midi](https://github.com/jkarenko/vgm2midi)をベースに、HuC6280（PCエンジン/TurboGrafx-16のPSG）変換、実際に動作するYM2151（アーケードFM音源）変換、YM2203（OPN）変換、YM2608（OPNA）変換、YM2413（OPLL）変換、YM3526/YM3812/Y8950（OPL）変換、Game Boy DMG（LR35902 APU）変換を追加し、さらにOPNチャンネル3特殊モード、YM2612 DAC、SegaPCM/C140のサンプルトリガー抽出を追加したローカルフォークです。由来については`NOTICE.md`、現在の対応範囲と保守契約については`CLAUDE.md`を参照してください。
 
 ## 機能
 
