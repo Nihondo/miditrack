@@ -35,7 +35,6 @@ export declare class MidiConverter {
     private ym2612DirectDACLastWriteTime?;
     private opnCh3SpecialModes;
     private opnCh3PercussionActiveKeys;
-    private opnCh3SpecialEverActive;
     private opnCh3UnisonStats;
     private opnCsmTimers;
     private opmCsmTimers;
@@ -407,15 +406,17 @@ export declare class MidiConverter {
     private noteOff;
     private updateNotePitch;
     private addPitchBend;
-    /** OPN channel-3の親トラック（Ch3 Special時のOp4）をlibvgmの選択対象から除外すべきか。
+    /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。
      *
-     * Ch3 Specialモードが一度でも有効になったチップインスタンスでは、Op1-3専用トラックは
-     * （安全な一対一のミュート対象がないため）そもそもlibvgmターゲットを持たない。親トラック
-     * （通常のFM ch3、Op4）だけを除外しないと、それを「原曲」に切り替えたときlibvgmが物理
-     * channel3全体（Op1-4の複合音）をレンダリングする一方でOp1-3のMIDIトラックはSoundFontで
-     * 鳴り続け、実機の複合音とSoundFontの音が二重に鳴ってしまう。 */
-    private isOPNCh3ParentChannelExcludedFromLibvgm;
-    /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。 */
+     * Ch3 Specialの4オペレータ別トラック（Op1-3の専用トラックとOp4=通常のchannel3トラック）
+     * および複合ドラム化トラック（--ch3-special-percussion時）は、全部が同じ物理channel3の
+     * レジスタ操作を見ているだけの別視点に過ぎない。安全な一対一のミュート対象は無いため
+     * 個別のlibvgm選択は提供できないが、4トラック全部をchannel3のmainMaskへ束ねることで、
+     * まとめて「原曲」へ切り替えたときだけ物理channel3全体（Special/Normal両モードの composite
+     * 音を含む）を実機音源としてレンダリングできる。一部だけ「原曲」に切り替えると、
+     * レンダリング後もSoundFontを選んだ残りのトラックはミュートされる（一切鳴らない）ため、
+     * 二重発音は起きない——同じgroupIdの範囲は必ず一括で切り替わる
+     * （validate_sources()のgroup_indices()展開を参照）。 */
     private libvgmTargetForDescriptor;
     /** MIDIファイルを書き出し、音符が生成されなかった場合は空ファイルを作らず失敗させる。 */
     exportToFile(outputPath: string): void;
