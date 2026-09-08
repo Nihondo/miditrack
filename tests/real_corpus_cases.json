@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "vgm-ym2203",
+      "format": "vgm",
+      "destination": "vgm/eve-dailyopening.vgz",
+      "source": {"archive": "EVE_burst_error_(NEC_PC-9801).zip", "member": "01 Dailyopening.vgz"},
+      "sha256": "8c255a78fceeefd8514e80158175411f86d6a58dd45eb8ad2a0911cdb4e1718a",
+      "requiredChips": {"YM2203": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-ym2608",
+      "format": "vgm",
+      "destination": "vgm/hydlide3-space-memories.vgz",
+      "source": {"archive": "Hydlide_3_-_The_Space_Memories_(NEC_PC-8801).zip", "member": "01 The Space Memories (Main Theme).vgz"},
+      "sha256": "5ec13ee82313a1e08b9dceab99cd7f4079e4cc8add655f641b3003290e6b1527",
+      "requiredChips": {"YM2608": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-ym2151-c140",
+      "format": "vgm",
+      "destination": "vgm/dragon-saber-namco-system-2.vgz",
+      "source": {"archive": "Dragon_Saber_-_After_Story_of_Dragon_Spirit_(Namco_System_2).zip", "member": "01 Story of Dragon Saber (Opening 1).vgz"},
+      "sha256": "9bf4259c532a52834b098e22da0678022fa6f3f69685b4c939d7a9d98040f274",
+      "requiredChips": {"YM2151": "full", "C140": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-huc6280",
+      "format": "vgm",
+      "destination": "vgm/dragon-saber-tg16.vgz",
+      "source": {"archive": "Dragon_Saber_-_After_Story_of_Dragon_Spirit_(TG-16).zip", "member": "01 Opening Visual (Opening 2).vgz"},
+      "sha256": "71d4e64d6747d966762f20077ca7dbe57ff7079a573bb1c816c02ed04ec2aa50",
+      "requiredChips": {"HuC6280": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-gbdmg",
+      "format": "vgm",
+      "destination": "vgm/nemesis-game-boy.vgz",
+      "source": {"archive": "Nemesis_(Game_Boy).zip", "member": "01 Options.vgz"},
+      "sha256": "1d4a9e92184d158bc644ecc611519b0fa2982b5ad9d8ddfca35dde42f3d45493",
+      "requiredChips": {"GBDMG": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-msm6258",
+      "format": "vgm",
+      "destination": "vgm/dragon-spirit-x68000.vgz",
+      "source": {"archive": "Dragon_Spirit_(Sharp_X68000).zip", "member": "01 Credit.vgz"},
+      "sha256": "3183d46d3b4da4df977841f05e47ce1574adf42e8322492644b035be2a8b990f",
+      "requiredChips": {"MSM6258": "none"},
+      "expectedOmittedContent": true,
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-sn76489-ym2612",
+      "format": "vgm",
+      "destination": "vgm/outrun-mega-drive.vgz",
+      "source": {"archive": "OutRun (Mega Drive, Genesis).zip", "member": "01 - Magical Sound Shower.vgz"},
+      "sha256": "c740914de734bd50665be36f11543e016378209658ee591e1845fbea6886b5ff",
+      "requiredChips": {"SN76489": "full", "YM2612": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-ym2413",
+      "format": "vgm",
+      "destination": "vgm/lagrange-point.vgz",
+      "source": {"archive": "Lagrange_Point_(Family_Computer).zip", "member": "01 Theme of Isis.vgz"},
+      "sha256": "95435fd69cf11bf1a541c4a14108cfd0d4bbb94a29c237616bd5742862012fb6",
+      "requiredChips": {"YM2413": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "vgm-segapcm",
+      "format": "vgm",
+      "destination": "vgm/space-harrier-hang-on.vgz",
+      "source": {"archive": "Space_Harrier_(Hang-On).zip", "member": "02 Theme.vgz"},
+      "sha256": "21b61144bf36ccc18cc282a0b7fd9cf4c2ff163b99d1339274eca37c6639e811",
+      "requiredChips": {"SegaPCM": "full"},
+      "minimumNoteOns": 1
+    },
+    {
+      "id": "nsf-fds",
+      "format": "nsf",
+      "destination": "nsf/zelda-fds.nsf",
+      "source": {"archive": "Zelda no Densetsu - The Hyrule Fantasy (EMU).zophar.zip", "member": "Zelda no Densetsu - The Hyrule Fantasy (FDS)(1986-02-21)(Nintendo EAD)(Nintendo).nsf"},
+      "sha256": "cb6194f0ad3961ba91f9aedbd2889f3325cc69dce7f09aaad553004fbb1154b1",
+      "requiredMetadataChannels": ["FDS"]
+    },
+    {
+      "id": "nsf-apu",
+      "format": "nsf",
+      "destination": "nsf/mother.nsf",
+      "source": {"archive": "Mother (EMU).zophar.zip", "member": "Mother (EMU).zophar/Mother (1989-07-27)(Ape, Pax Softnica)(Nintendo).nsf"},
+      "sha256": "174955aad1a4f388223a0f60d8cf9b4c1c49b180c06dfcaba99f880beaa02a13"
+    },
+    {
+      "id": "spc-final-fantasy-iv",
+      "format": "spc",
+      "destination": "spc/final-fantasy-iv-prelude.spc",
+      "source": {"archive": "Final Fantasy IV (EMU).zophar.zip", "member": "01 The Prelude.spc"},
+      "sha256": "f3e326ee1af73c7b0b60d5002ed3aae2bd71c740323c8d8f22dbd6b662a2eaea"
+    },
+    {
+      "id": "spc-chrono-trigger",
+      "format": "spc",
+      "destination": "spc/chrono-trigger-corridors-of-time.spc",
+      "source": {"archive": "Chrono Trigger (EMU).zophar.zip", "member": "Chrono Trigger (EMU).zophar/304 Corridors of Time.spc"},
+      "sha256": "dd25d45036222fd9350913beb57c610820f23640f725be0d99e8431851c49e48"
+    },
+    {
+      "id": "spc-fire-emblem",
+      "format": "spc",
+      "destination": "spc/fire-emblem-opening.spc",
+      "source": {"archive": "Fire Emblem - Monshou no Nazo (EMU).zophar.zip", "member": "Fire Emblem - Monshou no Nazo (EMU).zophar/108 Opening Theme ~ Mystery of the Emblem.spc"},
+      "sha256": "e0eb6a84371cccb96671f2cd80357eef8fad5881e9688c05ce80e8418d7219c2"
+    }
+  ]
+}

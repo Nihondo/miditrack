@@ -9,6 +9,7 @@ handoff.md
 scripts/release_credentials.sh
 docs/
 soundfonts/*
+testdata/real-corpus/
 
 *.mid
 *.midi

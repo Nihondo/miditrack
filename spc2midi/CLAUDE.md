@@ -50,6 +50,23 @@ otool -L spc2midi
 The resulting Mach-O may link macOS system libraries only. It must not link
 Homebrew paths, `unarr`, or RAR/LZMA runtime libraries.
 
+## Shared hash-pinned real-corpus regression
+
+The repository root's optional acceptance check uses a small, hash-pinned
+selection of user-owned SPC files. The manifest is
+`tests/real_corpus_cases.json`; copies under `testdata/real-corpus/` are
+explicitly git-ignored. Sync and verify them with:
+
+```bash
+python3 scripts/sync_real_corpus.py --source /path/to/source-collection
+python3 scripts/verify_real_corpus.py
+```
+
+The SPC cases cover Final Fantasy IV, Chrono Trigger, and Fire Emblem and
+require each conversion to create more than an empty SMF header. This does not
+replace `./build.sh` or normal build verification, and test data must never be
+committed.
+
 ## Release
 
 The root app builder copies this binary to `Contents/Helpers/spc2midi`, then

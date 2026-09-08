@@ -1116,6 +1116,38 @@ It must not extract entries, write into the corpus, or hide parse errors.
 reported as uninspected archives rather than modified or silently treated as
 songs.
 
+## Hash-pinned local real-corpus regression
+
+`tests/real_corpus_cases.json` identifies a deliberately small set of real
+VGM/VGZ, NSF, and SPC sources by archive-relative path, ZIP member name, and
+SHA-256. The extracted copies live in the repository-local,
+git-ignored `testdata/real-corpus/`; never add game music or a replacement
+archive to Git. Populate or refresh that directory only from a user-owned
+source collection:
+
+```
+python3 scripts/sync_real_corpus.py --source /path/to/source-collection
+python3 scripts/verify_real_corpus.py
+```
+
+The synchronizer validates every source member before its atomic copy and
+refuses to overwrite a different local file without `--replace`. The verifier
+first rechecks all hashes, then runs VGM conversion and the native NSF/SPC
+converters in temporary output directories. It is an opt-in local acceptance
+test, not CI input and not a substitute for synthetic unit tests. A custom
+location can be used with `--corpus-root`; that path is passed to the VGM
+verifier as `REAL_CORPUS_ROOT`.
+
+The current VGM subset exercises YM2203, YM2608, YM2151, C140, HuC6280,
+GBDMG, SN76489, YM2612, YM2413, and SegaPCM with at least one generated MIDI
+note each. Its MSM6258 case intentionally requires the `none` support
+diagnostic: the chosen real file has direct MSM6258 register writes that the
+converter does not model, while still containing supported events. Keep this
+as an explicit unsupported-content regression rather than reporting it as a
+complete MSM6258 conversion. The mounted source collection currently has no
+real AY8910, YM3812, YM3526, or Y8950 candidate; add hash-pinned cases when
+such sources become available.
+
 The regression tests cover unsupported-command boundary preservation, early
 header overlap, YM2151 note generation, YM2203 header/primary/dual-command parsing,
 YM2203 FM key-on-bounded pitch bends, SSG pitch, prescaler, noise and repeated-key behavior,

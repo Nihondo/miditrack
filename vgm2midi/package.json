@@ -12,6 +12,7 @@
     "start": "npm run build && node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "test": "npm run build && node --test tests/*.test.js",
+    "test:real-corpus": "npm run build && node scripts/verify-real-corpus.js",
     "verify:native-stems": "npm run build && bash scripts/build-native.sh && node scripts/verify-native-stems.js",
     "audit:corpus": "npm run build && node scripts/corpus-audit.js"
   },

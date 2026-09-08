@@ -752,6 +752,23 @@ already covers for Square/VRC6-pulse.
   `ProgramForDuty` equality check, alongside the existing suite) passes in
   full.
 
+## Shared hash-pinned real-corpus regression
+
+The repository root has an opt-in end-to-end acceptance check for real source
+material. `tests/real_corpus_cases.json` pins the selected NSF ZIP members by
+SHA-256 and `testdata/real-corpus/` holds only local, git-ignored extracted
+copies. Populate it from a user-owned collection, then run:
+
+```
+python3 scripts/sync_real_corpus.py --source /path/to/source-collection
+python3 scripts/verify_real_corpus.py
+```
+
+The NSF portion converts track 0 for ten seconds, rejects header-only MIDI,
+and checks the metadata channel labels requested by the manifest. Its current
+cases cover a base APU NSF and an FDS NSF. This is intentionally separate from
+`make test`: no copyrighted music is committed or required for normal builds.
+
 ## Out of scope (by user decision)
 
 - CoreMIDI live playback (the original could play through a MIDI device;
