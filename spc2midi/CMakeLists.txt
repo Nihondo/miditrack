@@ -15,8 +15,13 @@ FetchContent_Declare(vgmtrans_no_rsn
   GIT_REPOSITORY https://github.com/vgmtrans/vgmtrans.git
   GIT_TAG        ${VGMTRANS_PIN}
   GIT_SUBMODULES lib/spdlog lib/libchdr lib/zlib
-  PATCH_COMMAND git apply --whitespace=nowarn
-    "${CMAKE_CURRENT_SOURCE_DIR}/patches/vgmtrans-no-rsn.patch"
+  # The source/build cache lives outside this checkout and can survive a
+  # reconfigure. Apply the pinned patch once, then verify its reverse applies
+  # cleanly on later builds instead of failing by trying to apply it twice.
+  PATCH_COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIR=<SOURCE_DIR>"
+    "-DPATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/patches/vgmtrans-no-rsn.patch"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/patches/apply_patch_if_needed.cmake"
   GIT_PROGRESS   TRUE)
 FetchContent_MakeAvailable(vgmtrans_no_rsn)
 

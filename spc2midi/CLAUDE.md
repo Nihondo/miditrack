@@ -17,6 +17,12 @@ continue to exclude all of the following:
 - `lib/unarr` and its include configuration
 - the `unarr` link dependency of `vgmtranscore`
 
+The checkout is cached outside the repository and can outlive CMake's patch
+stamp. `patches/apply_patch_if_needed.cmake` must therefore apply the pinned
+patch only when its forward check succeeds; when it is already present, its
+reverse check must succeed instead. Do not replace this with an unconditional
+`git apply`, or a normal reconfigure will fail against a valid cached source.
+
 There is no RSN-enabled preset, development build, test build, or release
 build. Do not add one. `.rsn` input is rejected by miditrack; its ZIP support
 remains independent and accepts ZIP members ending in `.spc` or `.spc2`.
