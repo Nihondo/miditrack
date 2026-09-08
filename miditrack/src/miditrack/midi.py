@@ -502,6 +502,14 @@ def apply_assignments(
             raise WebValidationError(t("トラック番号が不正です: {track_index}", track_index=track_index))
         track = midi_file.tracks[track_index]
 
+        if not any(message.type in ("note_on", "note_off") for message in track):
+            # 短区間プレビューでは、曲全体では単一チャンネルの編集可能トラックでも
+            # 切り出し窓の中にはnote_on/note_offが1つも無いことがある（volumesの
+            # 同種ガードと同じ理由）。この場合Program Changeを挿入すべきチャンネルが
+            # 特定できないため、PATCH時のvalidate_assignments()が元のトラックに
+            # 対する編集可否を検証済みであることを前提に、静かにスキップする。
+            continue
+
         channel = _single_note_channel(track)
         if channel is None or channel == PERCUSSION_CHANNEL:
             raise WebValidationError(t("トラック{track_index}は編集対象外です", track_index=track_index))
