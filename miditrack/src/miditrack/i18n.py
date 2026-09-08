@@ -113,11 +113,6 @@ def t(message: str, /, **params: Any) -> str:
     return message
 
 
-def reload_catalog_for_tests() -> None:
-    """テストがen.jsonを差し替えた後にキャッシュを破棄するための補助関数。"""
-    _load_catalog.cache_clear()
-
-
 class _StaticHtmlTranslator(HTMLParser):
     """`index.html`の静的テキスト・属性を、data-i18n系マーカーに従って翻訳する。
 

@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from .errors import RubberBandError
+from .tooling import has_wave_audio, stderr_tail
 
 RUBBERBAND_TIMEOUT_SECONDS = 900
 _STDERR_TAIL_LINES = 20
@@ -18,7 +19,7 @@ def _build_partial_path(output_path: Path) -> Path:
 
 def _validate_output_file(output_path: Path) -> None:
     """rubberbandが有効なWAV出力を生成したことを確認する。"""
-    if not output_path.exists() or output_path.stat().st_size <= 44:
+    if not has_wave_audio(output_path):
         raise RubberBandError(
             f"rubberbandによるWAVの書き出しに失敗しました: {output_path.name}"
         )
@@ -71,8 +72,7 @@ def transform_stem(
             ) from error
 
         if result.returncode != 0:
-            stderr_lines = result.stderr.strip().splitlines()
-            tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
+            tail = stderr_tail(result.stderr, _STDERR_TAIL_LINES)
             raise RubberBandError(
                 f"rubberbandの実行に失敗しました（exit={result.returncode}）:\n{tail}"
             )

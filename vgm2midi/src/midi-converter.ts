@@ -2127,7 +2127,6 @@ export class MidiConverter {
 
     // Key On/Off (0x28) - Port 0 only? The spec says 0x28 is usually on Port 0 but controls all channels
     if (port === 0 && reg === 0x28) {
-        const ch = data & 0x07; // 0-2 or 4-6? No, bits 0-2 determine channel within port? 
         // Spec: D0-D2 = Channel (0-2 for Ch1-3, 4-6 for Ch4-6). D4-D7 = Slots.
         // Wait, standard mapping:
         // Ch 0-2: 000, 001, 010
@@ -4346,8 +4345,6 @@ export class MidiConverter {
     if (cmd.register === undefined || cmd.data === undefined) return;
     const reg = cmd.register;
     const data = cmd.data;
-    const instance = cmd.instance ?? 0;
-
     if (reg >= 0x00 && reg <= 0x07) {
       this.ym2413CustomPatch[reg] = data;
       if (reg === 0x01) this.hasYM2413CustomCarrierMultiple = true;
@@ -4736,7 +4733,7 @@ export class MidiConverter {
 
     if (reg === 0x0A) { this.handleGBDMGWaveDACWrite(data, currentTime, activeNotes); return; }
     if (reg === 0x0B) { this.setGBDMGLength('gbdmg_2', data, 256); return; }
-    if (reg === 0x0C) { this.handleGBDMGWaveOutputLevelWrite(data, currentTime, activeNotes); return; }
+    if (reg === 0x0C) { this.handleGBDMGWaveOutputLevelWrite(data, currentTime); return; }
     if (reg === 0x0D) { this.updateGBDMGFrequencyLSB('gbdmg_2', 0x0D, data, currentTime, activeNotes, cmdIndex, instance); return; }
     if (reg === 0x0E) { this.handleGBDMGTriggerWrite('gbdmg_2', 0x0E, data, currentTime, activeNotes, cmdIndex, instance); return; }
 
@@ -4896,8 +4893,7 @@ export class MidiConverter {
   // the same way YM2608's rhythm section resends volume changes.
   private handleGBDMGWaveOutputLevelWrite(
     data: number,
-    currentTime: number,
-    activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
+    currentTime: number
   ): void {
     const key = 'gbdmg_2';
     const state = this.channels.get(key)!;
@@ -5873,7 +5869,7 @@ export class MidiConverter {
 
   private noteOn(
     key: string,
-    midiChannelOffset: number,
+    _midiChannelOffset: number,
     currentTime: number,
     activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
   ): void {
@@ -5979,7 +5975,7 @@ export class MidiConverter {
 
   private noteOff(
     key: string,
-    midiChannelOffset: number,
+    _midiChannelOffset: number,
     currentTime: number,
     activeNotes: Map<string, { note: number; startTime: number; startVolume: number }>
   ): void {

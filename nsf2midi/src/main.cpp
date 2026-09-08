@@ -31,6 +31,8 @@
 
 namespace {
 
+using namespace nsf2midi;
+
 constexpr int kTicksPerQuarter = 480;
 constexpr int kMicrosecondsPerQuarter = 500000;  // 120 BPM 固定
 constexpr double kDefaultDurationSec = 180.0;
@@ -209,6 +211,78 @@ bool ParseArgs(int argc, char** argv, Options& opt) {
     return true;
 }
 
+bool HasValidTrack(const CNSFFile& file, int track) {
+    return track >= 0 && track < file.nTrackCount;
+}
+
+void PrintTrackList(const CNSFFile& file) {
+    std::printf("Title:     %s\n", file.szGameTitle ? file.szGameTitle : "(unknown)");
+    std::printf("Artist:    %s\n", file.szArtist ? file.szArtist : "(unknown)");
+    std::printf("Copyright: %s\n", file.szCopyright ? file.szCopyright : "(unknown)");
+    std::printf("Tracks:    %d\n", file.nTrackCount);
+    std::printf("Region:    %s\n", file.nIsPal ? "PAL" : "NTSC");
+    std::string unsupported = UnsupportedChipName(file.nChipExtensions);
+    if (!unsupported.empty()) {
+        std::printf("Expansion: %s (unsupported by this port)\n", unsupported.c_str());
+    } else if (file.nChipExtensions != 0) {
+        auto channels = BuildChannelList(file.nChipExtensions);
+        std::printf("Expansion: detected (%zu extra channel(s))\n", channels.size() - 5);
+    } else {
+        std::printf("Expansion: none\n");
+    }
+    for (int track = 0; track < file.nTrackCount; track++) {
+        const char* label = (file.szTrackLabels && file.szTrackLabels[track])
+                                ? file.szTrackLabels[track]
+                                : "";
+        if (file.pTrackTime && file.pTrackTime[track] >= 0) {
+            std::printf("  [%2d] %s (%.1f sec)\n", track, label, file.pTrackTime[track] / 1000.0);
+        } else {
+            std::printf("  [%2d] %s\n", track, label);
+        }
+    }
+}
+
+int RenderSelectedChipChannels(const CNSFFile& file, const Options& opt) {
+    if (!HasValidTrack(file, opt.track)) {
+        std::fprintf(stderr, "error: track %d out of range (0..%d)\n", opt.track,
+                     file.nTrackCount - 1);
+        return 1;
+    }
+    if (opt.output_path.empty()) {
+        std::fprintf(stderr, "error: --chip-render requires an <output.wav> path\n");
+        return 1;
+    }
+
+    std::vector<ChannelInfo> channels = BuildChannelList(file.nChipExtensions);
+    std::vector<int> selected;
+    size_t position = 0;
+    while (position <= opt.chip_render_channels.size()) {
+        size_t comma = opt.chip_render_channels.find(',', position);
+        std::string label = opt.chip_render_channels.substr(
+            position, comma == std::string::npos ? std::string::npos : comma - position);
+        if (label.empty()) {
+            std::fprintf(stderr, "error: --chip-render has an empty channel name\n");
+            return 1;
+        }
+        auto channel = std::find_if(channels.begin(), channels.end(),
+                                    [&](const ChannelInfo& info) { return info.label == label; });
+        if (channel == channels.end()) {
+            std::fprintf(stderr, "error: unknown --chip-render channel '%s'\n", label.c_str());
+            return 1;
+        }
+        selected.push_back(channel->core_channel);
+        if (comma == std::string::npos) break;
+        position = comma + 1;
+    }
+
+    if (!RenderChipWav(file, opt.track, opt.chip_render_sample_count, selected, opt.output_path)) {
+        std::fprintf(stderr, "error: failed to render chip WAV: %s\n", opt.output_path.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "wrote %s (%zu channel(s))\n", opt.output_path.c_str(), selected.size());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -227,28 +301,7 @@ int main(int argc, char** argv) {
     }
 
     if (opt.list_only) {
-        std::printf("Title:     %s\n", file.szGameTitle ? file.szGameTitle : "(unknown)");
-        std::printf("Artist:    %s\n", file.szArtist ? file.szArtist : "(unknown)");
-        std::printf("Copyright: %s\n", file.szCopyright ? file.szCopyright : "(unknown)");
-        std::printf("Tracks:    %d\n", file.nTrackCount);
-        std::printf("Region:    %s\n", file.nIsPal ? "PAL" : "NTSC");
-        std::string unsupported = UnsupportedChipName(file.nChipExtensions);
-        if (!unsupported.empty()) {
-            std::printf("Expansion: %s (unsupported by this port)\n", unsupported.c_str());
-        } else if (file.nChipExtensions != 0) {
-            auto channels = BuildChannelList(file.nChipExtensions);
-            std::printf("Expansion: detected (%zu extra channel(s))\n", channels.size() - 5);
-        } else {
-            std::printf("Expansion: none\n");
-        }
-        for (int t = 0; t < file.nTrackCount; t++) {
-            const char* label = (file.szTrackLabels && file.szTrackLabels[t]) ? file.szTrackLabels[t] : "";
-            if (file.pTrackTime && file.pTrackTime[t] >= 0) {
-                std::printf("  [%2d] %s (%.1f sec)\n", t, label, file.pTrackTime[t] / 1000.0);
-            } else {
-                std::printf("  [%2d] %s\n", t, label);
-            }
-        }
+        PrintTrackList(file);
         return 0;
     }
 
@@ -257,50 +310,10 @@ int main(int argc, char** argv) {
     // miditrackが --track-metadata sidecar 経由でトラックごとの音源選択を反映
     // させるたびに呼び直す、軽量な「選択レンダリングのみ」モード。
     if (!opt.chip_render_channels.empty()) {
-        if (opt.track < 0 || opt.track >= file.nTrackCount) {
-            std::fprintf(stderr, "error: track %d out of range (0..%d)\n", opt.track,
-                          file.nTrackCount - 1);
-            return 1;
-        }
-        if (opt.output_path.empty()) {
-            std::fprintf(stderr, "error: --chip-render requires an <output.wav> path\n");
-            return 1;
-        }
-
-        std::vector<ChannelInfo> channels = BuildChannelList(file.nChipExtensions);
-        std::vector<int> selected;
-        size_t pos = 0;
-        while (pos <= opt.chip_render_channels.size()) {
-            size_t comma = opt.chip_render_channels.find(',', pos);
-            std::string label = opt.chip_render_channels.substr(
-                pos, comma == std::string::npos ? std::string::npos : comma - pos);
-            if (label.empty()) {
-                std::fprintf(stderr, "error: --chip-render has an empty channel name\n");
-                return 1;
-            }
-            auto it = std::find_if(channels.begin(), channels.end(),
-                                    [&](const ChannelInfo& info) { return info.label == label; });
-            if (it == channels.end()) {
-                std::fprintf(stderr, "error: unknown --chip-render channel '%s'\n", label.c_str());
-                return 1;
-            }
-            selected.push_back(it->core_channel);
-            if (comma == std::string::npos) break;
-            pos = comma + 1;
-        }
-
-        if (!RenderChipWav(file, opt.track, opt.chip_render_sample_count, selected,
-                            opt.output_path)) {
-            std::fprintf(stderr, "error: failed to render chip WAV: %s\n",
-                          opt.output_path.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "wrote %s (%zu channel(s))\n", opt.output_path.c_str(),
-                      selected.size());
-        return 0;
+        return RenderSelectedChipChannels(file, opt);
     }
 
-    if (opt.track < 0 || opt.track >= file.nTrackCount) {
+    if (!HasValidTrack(file, opt.track)) {
         std::fprintf(stderr, "error: track %d out of range (0..%d)\n", opt.track,
                       file.nTrackCount - 1);
         return 1;

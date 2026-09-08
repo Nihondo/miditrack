@@ -27,6 +27,7 @@ from .errors import ConvertError, WebValidationError
 from .i18n import t
 from .libvgm import metadata_path_for as libvgm_metadata_path_for
 from .nsf_chip import metadata_path_for as nsf_chip_metadata_path_for
+from .tooling import is_executable_file, resolve_resource_root, stderr_tail
 
 CONVERT_TIMEOUT_SECONDS = 300
 _STDERR_TAIL_LINES = 20
@@ -355,19 +356,6 @@ def apply_m3u_titles(songs: list[dict[str, Any]], entries: list[M3uEntry]) -> li
     return updated
 
 
-def _repo_root() -> Path:
-    configured = os.environ.get("MIDITRACK_RESOURCE_ROOT")
-    if configured:
-        return Path(configured)
-    # src/miditrack/convert.py -> src/miditrack -> src -> miditrack -> <repo root>
-    return Path(__file__).resolve().parents[3]
-
-
-def _is_executable_file(path: str) -> bool:
-    p = Path(path)
-    return p.is_file() and os.access(p, os.X_OK)
-
-
 def resolve_converter_argv0(fmt: SourceFormat) -> list[str]:
     """フォーマット別の変換CLIを起動するための前置argvを解決する。
 
@@ -382,21 +370,21 @@ def resolve_converter_argv0(fmt: SourceFormat) -> list[str]:
     """
     env_bin = os.environ.get(fmt.env_var)
     if env_bin:
-        if not _is_executable_file(env_bin):
+        if not is_executable_file(env_bin):
             raise ConvertError(f"{fmt.env_var} が実行可能ファイルではありません: {env_bin}")
         return [env_bin]
 
-    repo_root = _repo_root()
+    repo_root = resolve_resource_root(__file__)
 
     if fmt.key == "nsf":
         sibling = repo_root / "nsf2midi" / "nsf2midi"
-        if _is_executable_file(str(sibling)):
+        if is_executable_file(sibling):
             return [str(sibling)]
         return ["nsf2midi"]
 
     if fmt.key == "spc":
         sibling = repo_root / "spc2midi" / "spc2midi"
-        if _is_executable_file(str(sibling)):
+        if is_executable_file(sibling):
             return [str(sibling)]
         return ["spc2midi"]
 
@@ -536,8 +524,7 @@ def list_songs(fmt: SourceFormat, source_path: Path) -> tuple[dict[str, Any], li
     if fmt.key == "spc" and result.returncode == _SPC_NO_DRIVER_EXIT_CODE:
         raise ConvertError(_spc_no_driver_message(result.stderr))
     if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
+        tail = stderr_tail(result.stderr, _STDERR_TAIL_LINES)
         raise ConvertError(f"{fmt.key}2midi の曲一覧取得に失敗しました（exit={result.returncode}）:\n{tail}")
 
     if fmt.key == "nsf":
@@ -886,8 +873,7 @@ def convert_to_midi(
     if fmt.key == "spc" and result.returncode == _SPC_NO_DRIVER_EXIT_CODE:
         raise ConvertError(_spc_no_driver_message(result.stderr))
     if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
+        tail = stderr_tail(result.stderr, _STDERR_TAIL_LINES)
         raise ConvertError(f"{tool_label} の変換に失敗しました（exit={result.returncode}）:\n{tail}")
 
     if not output_path.exists() or output_path.stat().st_size == 0:

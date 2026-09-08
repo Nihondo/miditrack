@@ -2,29 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .chip_metadata import load_sidecar_payload, read_uint, validate_grouped_sources
 from .errors import RenderError, WebValidationError
 from .i18n import t
+from .tooling import has_wave_audio, is_executable_file, resolve_resource_root
 
 RENDER_TIMEOUT_SECONDS = 300
 
 
-def _repo_root() -> Path:
-    """このパッケージを含むリポジトリのルートを返す。"""
-    configured = os.environ.get("MIDITRACK_RESOURCE_ROOT")
-    if configured:
-        return Path(configured)
-    # src/miditrack/libvgm.py -> src/miditrack -> src -> miditrack -> <repo root>
-    return Path(__file__).resolve().parents[3]
-
-
-DEFAULT_HELPER = _repo_root() / "vgm2midi" / "native" / "bin" / "vgm2midi_stems"
+DEFAULT_HELPER = resolve_resource_root(__file__) / "vgm2midi" / "native" / "bin" / "vgm2midi_stems"
 
 
 @dataclass(frozen=True)
@@ -60,21 +52,23 @@ def metadata_path_for(output_path: Path) -> Path:
 
 
 def _read_uint(value: Any, label: str, maximum: int = 0xFFFFFFFF) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
-        raise WebValidationError(t("libvgmメタデータの{label}が不正です", label=label))
-    return value
+    return read_uint(
+        value,
+        label,
+        maximum,
+        lambda invalid_label: t("libvgmメタデータの{label}が不正です", label=invalid_label),
+    )
 
 
 def load_metadata(path: Path, track_count: int) -> LibvgmMetadata | None:
     """sidecarを検証して読む。存在しない場合は後方互換のためNoneを返す。"""
-    if not path.exists():
+    payload = load_sidecar_payload(
+        path,
+        read_error=lambda error: t("libvgmトラック情報を読み込めません: {error}", error=error),
+        unsupported_message=lambda: t("未対応のlibvgmトラック情報です"),
+    )
+    if payload is None:
         return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise WebValidationError(t("libvgmトラック情報を読み込めません: {error}", error=error)) from error
-    if not isinstance(payload, dict) or payload.get("version") != 1:
-        raise WebValidationError(t("未対応のlibvgmトラック情報です"))
     sample_count = _read_uint(payload.get("sampleCount"), "sampleCount")
     if sample_count == 0 or not isinstance(payload.get("tracks"), list):
         raise WebValidationError(t("libvgmトラック情報の内容が不正です"))
@@ -116,26 +110,19 @@ def validate_sources(
     語彙）。libvgmによる実機レンダリングという実装の違いは"game"という値の
     奥に隠れる。
     """
-    validated: dict[int, str] = {}
-    for track_index, source in raw_sources.items():
-        if source not in {"soundfont", "game"}:
-            raise WebValidationError(t("未知のトラック音源です: {source}", source=source))
-        target = metadata.targets.get(track_index) if metadata else None
-        if target is None:
-            if source == "game":
-                raise WebValidationError(t("トラック{track_index}は原曲の音源へ対応付けできません", track_index=track_index))
-            validated[track_index] = source
-            continue
-        for related_index in metadata.group_indices(target.group_id):
-            validated[related_index] = source
-    return validated
+    return validate_grouped_sources(
+        metadata,
+        raw_sources,
+        unknown_source_message=lambda source: t("未知のトラック音源です: {source}", source=source),
+        unmapped_game_message=lambda index: t("トラック{track_index}は原曲の音源へ対応付けできません", track_index=index),
+    )
 
 
 def resolve_helper() -> Path:
     """環境変数またはリポジトリ同梱のlibvgm helperを解決する。"""
     configured = os.environ.get("VGM2MIDI_STEMS_HELPER")
     helper = Path(configured) if configured else DEFAULT_HELPER
-    if not helper.is_file() or not os.access(helper, os.X_OK):
+    if not is_executable_file(helper):
         raise RenderError(
             "libvgm helperが見つかりません。リポジトリ同梱の"
             "vgm2midi/native/bin/vgm2midi_stemsを復元するか、"
@@ -183,5 +170,5 @@ def render_selection(
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise RenderError(f"libvgmの描画に失敗しました: {detail}")
-    if not output_path.exists() or output_path.stat().st_size <= 44:
+    if not has_wave_audio(output_path):
         raise RenderError("libvgmが有効なWAVを生成しませんでした")

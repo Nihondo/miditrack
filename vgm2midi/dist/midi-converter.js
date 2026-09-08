@@ -1801,7 +1801,6 @@ class MidiConverter {
         }
         // Key On/Off (0x28) - Port 0 only? The spec says 0x28 is usually on Port 0 but controls all channels
         if (port === 0 && reg === 0x28) {
-            const ch = data & 0x07; // 0-2 or 4-6? No, bits 0-2 determine channel within port? 
             // Spec: D0-D2 = Channel (0-2 for Ch1-3, 4-6 for Ch4-6). D4-D7 = Slots.
             // Wait, standard mapping:
             // Ch 0-2: 000, 001, 010
@@ -3560,7 +3559,6 @@ class MidiConverter {
             return;
         const reg = cmd.register;
         const data = cmd.data;
-        const instance = cmd.instance ?? 0;
         if (reg >= 0x00 && reg <= 0x07) {
             this.ym2413CustomPatch[reg] = data;
             if (reg === 0x01)
@@ -3927,7 +3925,7 @@ class MidiConverter {
             return;
         }
         if (reg === 0x0C) {
-            this.handleGBDMGWaveOutputLevelWrite(data, currentTime, activeNotes);
+            this.handleGBDMGWaveOutputLevelWrite(data, currentTime);
             return;
         }
         if (reg === 0x0D) {
@@ -4075,7 +4073,7 @@ class MidiConverter {
     // `state.volume` (a 2-bit code, not a raw envelope byte, unlike the other channels) and
     // read back by gbDmgWaveVelocity(); reflected as expression on an already-sounding note
     // the same way YM2608's rhythm section resends volume changes.
-    handleGBDMGWaveOutputLevelWrite(data, currentTime, activeNotes) {
+    handleGBDMGWaveOutputLevelWrite(data, currentTime) {
         const key = 'gbdmg_2';
         const state = this.channels.get(key);
         state.volume = (data >> 5) & 0x03;
@@ -4907,7 +4905,7 @@ class MidiConverter {
         const exactMidiNote = ((octave + 1) * 12) + semitone + (keyFraction / 64) + clockShift;
         return 440 * Math.pow(2, (exactMidiNote - 69) / 12);
     }
-    noteOn(key, midiChannelOffset, currentTime, activeNotes) {
+    noteOn(key, _midiChannelOffset, currentTime, activeNotes) {
         const descriptor = this.resolveDescriptor(key);
         key = descriptor.sourceKey;
         const state = this.channels.get(key);
@@ -5003,7 +5001,7 @@ class MidiConverter {
             trackState.cursor = currentTick;
         }
     }
-    noteOff(key, midiChannelOffset, currentTime, activeNotes) {
+    noteOff(key, _midiChannelOffset, currentTime, activeNotes) {
         const descriptor = this.resolveDescriptor(key);
         if (activeNotes.has(descriptor.id)) {
             const noteInfo = activeNotes.get(descriptor.id);

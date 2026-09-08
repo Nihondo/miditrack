@@ -15,14 +15,15 @@ libvgm.pyがVGM+libvgm物理チャンネルに対して持つ役割を、NSF+nsf
 
 from __future__ import annotations
 
-import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .chip_metadata import load_sidecar_payload, read_uint, validate_grouped_sources
 from .errors import RenderError, WebValidationError
 from .i18n import t
+from .tooling import has_wave_audio
 
 # convert.pyはmetadata_path_for()をここからimportするため（nsf_chip_metadata_path_for
 # という別名で）、モジュールトップレベルで`from . import convert`すると
@@ -62,9 +63,12 @@ def metadata_path_for(output_path: Path) -> Path:
 
 
 def _read_uint(value: Any, label: str, maximum: int = 0xFFFFFFFF) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= maximum:
-        raise WebValidationError(t("NESチャンネルメタデータの{label}が不正です", label=label))
-    return value
+    return read_uint(
+        value,
+        label,
+        maximum,
+        lambda invalid_label: t("NESチャンネルメタデータの{label}が不正です", label=invalid_label),
+    )
 
 
 def load_metadata(path: Path, track_count: int) -> NsfChipMetadata | None:
@@ -74,14 +78,13 @@ def load_metadata(path: Path, track_count: int) -> NsfChipMetadata | None:
     決して生成されないため、常にNoneが返って従来の--chip-wavステム経路へ
     フォールバックする。）
     """
-    if not path.exists():
+    payload = load_sidecar_payload(
+        path,
+        read_error=lambda error: t("NESチャンネル情報を読み込めません: {error}", error=error),
+        unsupported_message=lambda: t("未対応のNESチャンネル情報です"),
+    )
+    if payload is None:
         return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise WebValidationError(t("NESチャンネル情報を読み込めません: {error}", error=error)) from error
-    if not isinstance(payload, dict) or payload.get("version") != 1:
-        raise WebValidationError(t("未対応のNESチャンネル情報です"))
     sample_count = _read_uint(payload.get("sampleCount"), "sampleCount")
     if sample_count == 0 or not isinstance(payload.get("tracks"), list):
         raise WebValidationError(t("NESチャンネル情報の内容が不正です"))
@@ -112,19 +115,12 @@ def validate_sources(
     metadata: NsfChipMetadata | None, raw_sources: dict[int, str]
 ) -> dict[int, str]:
     """音源選択を検証し、共有物理チャンネル単位へ展開して返す（NSFでは常に単独）。"""
-    validated: dict[int, str] = {}
-    for track_index, source in raw_sources.items():
-        if source not in {"soundfont", "game"}:
-            raise WebValidationError(t("未知のトラック音源です: {source}", source=source))
-        target = metadata.targets.get(track_index) if metadata else None
-        if target is None:
-            if source == "game":
-                raise WebValidationError(t("トラック{track_index}は原曲の音源へ対応付けできません", track_index=track_index))
-            validated[track_index] = source
-            continue
-        for related_index in metadata.group_indices(target.group_id):
-            validated[related_index] = source
-    return validated
+    return validate_grouped_sources(
+        metadata,
+        raw_sources,
+        unknown_source_message=lambda source: t("未知のトラック音源です: {source}", source=source),
+        unmapped_game_message=lambda index: t("トラック{track_index}は原曲の音源へ対応付けできません", track_index=index),
+    )
 
 
 def resolve_helper() -> list[str]:
@@ -177,5 +173,5 @@ def render_selection(
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise RenderError(f"nsf2midiの実機音レンダリングに失敗しました: {detail}")
-    if not output_path.exists() or output_path.stat().st_size <= 44:
+    if not has_wave_audio(output_path):
         raise RenderError("nsf2midiが有効なWAVを生成しませんでした")

@@ -12,10 +12,12 @@ class TestReleaseAppSigning(unittest.TestCase):
     def test_signs_bundled_node_with_allow_jit(self) -> None:
         repository_root = Path(__file__).resolve().parents[2]
         script = (repository_root / "scripts/release_app.sh").read_text(encoding="utf-8")
+        signing_script = (repository_root / "scripts/sign_macho_bundle.sh").read_text(encoding="utf-8")
         self.assertIn('node_entitlements="$script_dir/entitlements-node.plist"', script)
-        self.assertIn('"$candidate" == "$app_path/Contents/Helpers/node"', script)
-        self.assertIn('--options runtime --entitlements "$node_entitlements" --timestamp', script)
-        self.assertIn('--options runtime --timestamp --sign "$identity" "$candidate"', script)
+        self.assertIn('source "$script_dir/sign_macho_bundle.sh"', script)
+        self.assertIn('"$candidate" == "$node_path"', signing_script)
+        self.assertIn('codesign_args+=(--options runtime --timestamp)', signing_script)
+        self.assertIn('--entitlements "$node_entitlements"', signing_script)
 
 
 if __name__ == "__main__":  # pragma: no cover

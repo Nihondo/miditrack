@@ -57,6 +57,9 @@ src/miditrack/
   cli.py                   argparse entry point, launches the web server
   errors.py                MidiTrackError / WebValidationError / RenderError / ConvertError /
                             RubberBandError / MixError
+  tooling.py               shared resource-root, executable, WAV, and subprocess-diagnostic helpers
+  chip_metadata.py         shared JSON validation and physical-channel group expansion for VGM/NSF
+                            track sidecars; format-specific error text stays in libvgm.py/nsf_chip.py
   gm.py                    the 128-name GM table + 16 families (single source of truth)
   midi.py                  track analysis, apply/save program changes and velocity-based volume
   pianoroll.py             read-only note/tempo extraction for the browser piano roll
@@ -67,8 +70,8 @@ src/miditrack/
   rubberband.py            direct rubberband CLI invocation for keeping real-audio stems in
                             sync with a MIDI-layer transform (speed/pitch option validation
                             itself lives in midi.py)
-  mix.py                   ffmpeg resolution + safe subprocess invocation, resamples and mixes
-                            SoundFont parts and NSF/VGM hardware stems at the selected rate
+  mix.py                   ffmpeg argv construction plus one shared safe invocation path; resamples
+                            and mixes SoundFont parts and NSF/VGM hardware stems at the selected rate
   libvgm.py                validates VGM track/channel sidecars and invokes the bundled native
                             helper for a selected physical-channel mix
   preferences.py           favorite-instrument shortlist (pinned/usage) and the last-selected
@@ -78,6 +81,11 @@ src/miditrack/
   web_assets/               index.html / app.css / app.js
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
+
+The root `scripts/sign_macho_bundle.sh` owns the nested-Mach-O signing walk used by
+both app assembly and release signing. It gives only the bundled Node runtime its
+V8 entitlements; release signing additionally enables hardened runtime timestamps.
+Converter-specific build scripts remain independent and must not source it.
 
 ## Why the piano roll is independent from rendering and track sorting
 

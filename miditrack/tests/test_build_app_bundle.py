@@ -68,9 +68,11 @@ class TestBuildAppBundlePlist(unittest.TestCase):
             },
         )
         bundle_script = (self.repository_root / "scripts/build_app_bundle.sh").read_text(encoding="utf-8")
+        signing_script = (self.repository_root / "scripts/sign_macho_bundle.sh").read_text(encoding="utf-8")
         self.assertIn('node_entitlements="$script_dir/entitlements-node.plist"', bundle_script)
-        self.assertIn('"$candidate" == "$bundle_contents/Helpers/node"', bundle_script)
-        self.assertIn('--entitlements "$node_entitlements"', bundle_script)
+        self.assertIn('source "$script_dir/sign_macho_bundle.sh"', bundle_script)
+        self.assertIn('"$candidate" == "$node_path"', signing_script)
+        self.assertIn('--entitlements "$node_entitlements"', signing_script)
 
     def test_compiles_the_icon_composer_asset_with_actool(self) -> None:
         icon_source = self.repository_root / "images/miditrack.icon"

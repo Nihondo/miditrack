@@ -12,18 +12,11 @@ import subprocess
 from pathlib import Path
 
 from .errors import RenderError
+from .tooling import has_wave_audio, is_executable_file, stderr_tail
 
 RENDER_TIMEOUT_SECONDS = 300
 _STDERR_TAIL_LINES = 20
 _SOUNDFONT_EXTENSIONS = (".sf2", ".sf3")
-
-
-def _repo_root() -> Path:
-    configured = os.environ.get("MIDITRACK_RESOURCE_ROOT")
-    if configured:
-        return Path(configured)
-    # src/miditrack/render.py -> src/miditrack -> src -> miditrack -> <repo root>
-    return Path(__file__).resolve().parents[3]
 
 
 def default_soundfont_dirs() -> list[Path]:
@@ -75,11 +68,6 @@ def list_soundfonts(dirs: list[Path] | None = None) -> list[dict]:
     return results
 
 
-def _is_executable_file(path: str) -> bool:
-    p = Path(path)
-    return p.is_file() and os.access(p, os.X_OK)
-
-
 def resolve_midi2wav_bin() -> str:
     """midi2wav.sh の実行体を解決する。
 
@@ -92,14 +80,14 @@ def resolve_midi2wav_bin() -> str:
     """
     env_bin = os.environ.get("MIDI2WAV_BIN")
     if env_bin:
-        if not _is_executable_file(env_bin):
+        if not is_executable_file(env_bin):
             raise RenderError(f"MIDI2WAV_BIN が実行可能ファイルではありません: {env_bin}")
         return env_bin
 
     # src/miditrack/render.py -> src/miditrack -> src -> miditrack
     miditrack_root = Path(__file__).resolve().parents[2]
     sibling = miditrack_root / "midi2wav.sh"
-    if _is_executable_file(str(sibling)):
+    if is_executable_file(sibling):
         return str(sibling)
 
     return "midi2wav"
@@ -144,9 +132,8 @@ def render_wav(
         ) from error
 
     if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
+        tail = stderr_tail(result.stderr, _STDERR_TAIL_LINES)
         raise RenderError(f"midi2wav の実行に失敗しました（exit={result.returncode}）:\n{tail}")
 
-    if not wav_path.exists() or wav_path.stat().st_size <= 44:
+    if not has_wave_audio(wav_path):
         raise RenderError("WAVの書き出しに失敗しました（出力が空です）")

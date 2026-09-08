@@ -5,6 +5,7 @@ script_dir="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
 repo_dir="$(cd -P "$script_dir/.." >/dev/null 2>&1 && pwd)"
 credentials_path="${MIDITRACK_RELEASE_CONFIG:-$script_dir/release_credentials.sh}"
 node_entitlements="$script_dir/entitlements-node.plist"
+source "$script_dir/sign_macho_bundle.sh"
 
 notarize=0
 for arg in "$@"; do
@@ -44,15 +45,7 @@ mkdir -p "$dist_dir"
 
 # Sign nested Mach-O code before sealing the outer bundle. Scripts and data in
 # Resources are sealed by the app signature and do not receive xattr signatures.
-while IFS= read -r -d '' candidate; do
-  if file -b "$candidate" | grep -q 'Mach-O'; then
-    if [[ "$candidate" == "$app_path/Contents/Helpers/node" ]]; then
-      codesign --force --options runtime --entitlements "$node_entitlements" --timestamp --sign "$identity" "$candidate"
-    else
-      codesign --force --options runtime --timestamp --sign "$identity" "$candidate"
-    fi
-  fi
-done < <(find "$app_path/Contents" -type f -print0)
+sign_nested_macho "$app_path/Contents" "$app_path/Contents/Helpers/node" "$identity" "$node_entitlements" true
 codesign --force --options runtime --timestamp --sign "$identity" "$app_path"
 codesign --verify --deep --strict --verbose=4 "$app_path"
 

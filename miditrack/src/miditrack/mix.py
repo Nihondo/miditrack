@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .errors import MixError
+from .tooling import has_wave_audio, is_executable_file, stderr_tail
 
 MIX_TIMEOUT_SECONDS = 300
 _STDERR_TAIL_LINES = 20
@@ -34,6 +35,11 @@ STEM_GAIN = 0.55
 # 分割前の1回レンダリングと同じ音量になる。ステムのような「別枠で足す音」ではないので
 # DRY_GAINのようなヘッドルームは取らない。
 SPLIT_GAIN = 1.0
+
+
+def _is_executable_file(path: str) -> bool:
+    """既存テストのモック境界を保ちながら共通判定へ委譲する。"""
+    return is_executable_file(path)
 
 
 def build_filter_complex(gains: Sequence[float], sample_rate: int = 44100) -> str:
@@ -63,11 +69,6 @@ def build_filter_complex(gains: Sequence[float], sample_rate: int = 44100) -> st
     return ";".join(parts)
 
 
-def _is_executable_file(path: str) -> bool:
-    p = Path(path)
-    return p.is_file() and os.access(p, os.X_OK)
-
-
 def resolve_ffmpeg_bin() -> str:
     """ffmpeg の実行体を解決する。
 
@@ -90,6 +91,29 @@ def resolve_ffmpeg_bin() -> str:
         return found
 
     raise MixError("ffmpeg が見つかりません。FFMPEG_BIN 環境変数か PATH を確認してください")
+
+
+def _run_ffmpeg(argv: list[str], operation: str) -> None:
+    """ffmpegを共通条件で実行し、操作別のMixErrorへ正規化する。"""
+    try:
+        result = subprocess.run(
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=MIX_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        bin_path = argv[0]
+        raise MixError(
+            f"ffmpeg が見つかりません（{bin_path}）。FFMPEG_BIN 環境変数か PATH を確認してください"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise MixError(f"ffmpeg の{operation}が {MIX_TIMEOUT_SECONDS} 秒でタイムアウトしました") from error
+
+    if result.returncode != 0:
+        tail = stderr_tail(result.stderr, _STDERR_TAIL_LINES)
+        raise MixError(f"ffmpeg の実行に失敗しました（exit={result.returncode}）:\n{tail}")
 
 
 def apply_gain(
@@ -128,27 +152,9 @@ def apply_gain(
         str(out_wav),
     ]
 
-    try:
-        result = subprocess.run(
-            argv,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=MIX_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError as error:
-        raise MixError(
-            f"ffmpeg が見つかりません（{bin_path}）。FFMPEG_BIN 環境変数か PATH を確認してください"
-        ) from error
-    except subprocess.TimeoutExpired as error:
-        raise MixError(f"ffmpeg のゲイン適用が {MIX_TIMEOUT_SECONDS} 秒でタイムアウトしました") from error
+    _run_ffmpeg(argv, "ゲイン適用")
 
-    if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
-        raise MixError(f"ffmpeg の実行に失敗しました（exit={result.returncode}）:\n{tail}")
-
-    if not out_wav.exists() or out_wav.stat().st_size <= 44:
+    if not has_wave_audio(out_wav):
         raise MixError("ゲイン適用結果のWAV書き出しに失敗しました（出力が空です）")
 
 
@@ -190,26 +196,8 @@ def trim_wav(
         "2",
         str(out_wav),
     ]
-    try:
-        result = subprocess.run(
-            argv,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=MIX_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError as error:
-        raise MixError(
-            f"ffmpeg が見つかりません（{bin_path}）。FFMPEG_BIN 環境変数か PATH を確認してください"
-        ) from error
-    except subprocess.TimeoutExpired as error:
-        raise MixError(f"ffmpeg の区間切り出しが {MIX_TIMEOUT_SECONDS} 秒でタイムアウトしました") from error
-
-    if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
-        raise MixError(f"ffmpeg の実行に失敗しました（exit={result.returncode}）:\n{tail}")
-    if not out_wav.exists() or out_wav.stat().st_size <= 44:
+    _run_ffmpeg(argv, "区間切り出し")
+    if not has_wave_audio(out_wav):
         raise MixError("区間切り出し結果のWAV書き出しに失敗しました（出力が空です）")
 
 
@@ -250,25 +238,7 @@ def mix_wav(
         str(out_wav),
     ]
 
-    try:
-        result = subprocess.run(
-            argv,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=MIX_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError as error:
-        raise MixError(
-            f"ffmpeg が見つかりません（{bin_path}）。FFMPEG_BIN 環境変数か PATH を確認してください"
-        ) from error
-    except subprocess.TimeoutExpired as error:
-        raise MixError(f"ffmpeg のミックスが {MIX_TIMEOUT_SECONDS} 秒でタイムアウトしました") from error
+    _run_ffmpeg(argv, "ミックス")
 
-    if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        tail = "\n".join(stderr_lines[-_STDERR_TAIL_LINES:])
-        raise MixError(f"ffmpeg の実行に失敗しました（exit={result.returncode}）:\n{tail}")
-
-    if not out_wav.exists() or out_wav.stat().st_size <= 44:
+    if not has_wave_audio(out_wav):
         raise MixError("ミックス結果のWAV書き出しに失敗しました（出力が空です）")
