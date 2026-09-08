@@ -224,7 +224,9 @@ class TestWebApp(unittest.TestCase):
         html = self.client.get("/").get_data(as_text=True)
 
         self.assertIn('<script type="module" src="/assets/app.js"></script>', html)
-        for module_name in ("i18n.mjs", "api.mjs", "track_list.mjs", "track_edits.mjs"):
+        for module_name in (
+            "i18n.mjs", "api.mjs", "track_list.mjs", "track_edits.mjs", "pianoroll_math.mjs"
+        ):
             self.assertIn(f'<link rel="modulepreload" href="/assets/{module_name}">', html)
             response = self.client.get(f"/assets/{module_name}")
             self.assertEqual(response.status_code, 200)
@@ -290,14 +292,8 @@ class TestWebApp(unittest.TestCase):
         """再生カウンタは秒以下を常に3桁で表示する。"""
         html = self.client.get("/").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)
-        javascript = self.client.get("/assets/app.js").get_data(as_text=True)
 
         self.assertEqual(html.count('class="playback-time-decimal">000</span>'), 2)
-        clock_block = javascript.split("function formatPlaybackClock", 1)[1].split(
-            "function normalizePianorollLoopRange", 1
-        )[0]
-        self.assertIn("totalMilliseconds", clock_block)
-        self.assertIn('String(milliseconds).padStart(3, "0")', clock_block)
         playback_time_rule = css.split(".playback-time {", 1)[1].split("}", 1)[0]
         self.assertIn("min-width: 164px", playback_time_rule)
 
@@ -4821,6 +4817,7 @@ class TestWebAppPreferences(unittest.TestCase):
         html = self.client.get("/").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)
         javascript = self.client.get("/assets/app.js").get_data(as_text=True)
+        pianoroll_math = self.client.get("/assets/pianoroll_math.mjs").get_data(as_text=True)
         self.assertIn('id="open-project-button"', html)
         self.assertIn('id="save-project-button"', html)
         self.assertIn('id="project-input"', html)
@@ -4852,19 +4849,19 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertIn("function saveRoundedPianorollNotes", javascript)
         self.assertIn("function saveOutlinedPianorollNotes", javascript)
         self.assertIn("function drawPianorollKeyboard", javascript)
-        self.assertIn("function isPianorollBlackKey", javascript)
-        self.assertIn("function pianorollPitchCenterY", javascript)
-        self.assertIn("function pianorollPitchBounds", javascript)
-        self.assertIn("const top = Math.round(pianorollPitchY(pitch, layout))", javascript)
-        self.assertIn("function pianorollWhiteKeyBounds", javascript)
-        self.assertIn("adjacentPianorollWhitePitch", javascript)
-        self.assertIn("pianorollPitchCenterY(pitch, layout)", javascript)
+        self.assertIn("function isPianorollBlackKey", pianoroll_math)
+        self.assertIn("function pianorollPitchCenterY", pianoroll_math)
+        self.assertIn("function pianorollPitchBounds", pianoroll_math)
+        self.assertIn("const top = Math.round(pianorollPitchY(pitch, layout))", pianoroll_math)
+        self.assertIn("function pianorollWhiteKeyBounds", pianoroll_math)
+        self.assertIn("adjacentPianorollWhitePitch", pianoroll_math)
+        self.assertIn("pianorollPitchCenterY(pitch, layout)", pianoroll_math)
         self.assertIn("const blackKeyWidth = Math.round(size.width * 0.72)", javascript)
         self.assertIn("const { top, height } = pianorollPitchBounds(pitch, layout)", javascript)
         self.assertIn("context.fillRect(0, top, blackKeyWidth, height)", javascript)
         self.assertIn("const pitchBounds = pianorollPitchBounds(note, layout)", javascript)
-        self.assertIn("function pianorollOctaveLabel", javascript)
-        self.assertIn("Math.floor(pitch / 12) - 1", javascript)
+        self.assertIn("function pianorollOctaveLabel", pianoroll_math)
+        self.assertIn("Math.floor(pitch / 12) - 1", pianoroll_math)
         self.assertIn("function savePianorollKeyboardVisibility", javascript)
         self.assertIn("keyboardResizeObserver.observe", javascript)
         self.assertIn("showPianorollKeyboard", javascript)

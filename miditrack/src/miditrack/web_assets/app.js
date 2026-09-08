@@ -2,6 +2,16 @@ import { createTranslator } from "./i18n.mjs";
 import { createApiClient } from "./api.mjs";
 import { createTrackListController } from "./track_list.mjs";
 import { createTrackEditController } from "./track_edits.mjs";
+import {
+  formatPianorollTime,
+  formatPlaybackClock,
+  isPianorollBlackKey,
+  pianorollFieldOffsets,
+  pianorollOctaveLabel,
+  pianorollPitchBounds,
+  pianorollPitchCenterY,
+  pianorollWhiteKeyBounds,
+} from "./pianoroll_math.mjs";
 
 // 他の初期化処理より前にdata-themeを確定させ、ライト→ダークの一瞬のちらつきを
 // 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
@@ -72,7 +82,6 @@ const MIN_LOOP_SECONDS = 0.1;
 const RENDER_DEBOUNCE_DISCRETE_MS = 0;
 // 速度/ピッチのように値がドラッグ・連続入力で変わりうる操作のデバウンス。
 const RENDER_DEBOUNCE_CONTINUOUS_MS = 250;
-const BLACK_PIANO_KEY_PITCH_CLASSES = new Set([1, 3, 6, 8, 10]);
 const THEME_MODES = new Set(["system", "light", "dark"]);
 const LANGUAGE_MODES = new Set(["system", "ja", "en"]);
 const PIANOROLL_HEIGHTS = new Set(["compact", "standard", "tall"]);
@@ -1962,27 +1971,6 @@ function getTrackOutlineColor(trackIndex, trackCount, opacity = 1) {
   return activeTrackColorPalette().outline(trackIndex, trackCount, opacity);
 }
 
-function formatPianorollTime(seconds) {
-  const safeSeconds = Math.max(0, Number(seconds) || 0);
-  const minutes = Math.floor(safeSeconds / 60);
-  const remainder = Math.floor(safeSeconds % 60);
-  return minutes > 0
-    ? t("{minutes}分{seconds}秒", { minutes, seconds: remainder })
-    : t("{seconds}秒", { seconds: remainder });
-}
-
-function formatPlaybackClock(seconds) {
-  const totalMilliseconds = Math.max(0, Math.floor((Number(seconds) || 0) * 1000));
-  const minutes = Math.floor(totalMilliseconds / 60000);
-  const remainder = totalMilliseconds % 60000;
-  const wholeSeconds = Math.floor(remainder / 1000);
-  const milliseconds = remainder % 1000;
-  return {
-    whole: `${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}`,
-    decimal: String(milliseconds).padStart(3, "0"),
-  };
-}
-
 function normalizePianorollLoopRange(startSeconds, endSeconds) {
   const duration = state.pianoroll?.durationSeconds || 0;
   if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || duration <= 0) return null;
@@ -2099,10 +2087,6 @@ async function loadPianoroll() {
   }
 }
 
-function pianorollFieldOffsets(payload) {
-  return Object.fromEntries(payload.fields.map((field, index) => [field, index]));
-}
-
 function drawPianorollGrid(context, width, noteHeight, timelineWidth, scrollLeft) {
   // 背景は表示設定に関わらず常に描く。グリッド線の表示ON/OFFは線だけを
   // 丸ごとスキップし、背景色には影響しない。
@@ -2126,52 +2110,6 @@ function drawPianorollGrid(context, width, noteHeight, timelineWidth, scrollLeft
     context.lineTo(width, y);
   }
   context.stroke();
-}
-
-function pianorollPitchY(pitch, layout) {
-  return layout.height - ((pitch - layout.minNote + 1) / layout.noteSpan * layout.height);
-}
-
-// ノートと鍵盤で同じ整数CSSピクセル境界を使う。音域を高さで割った値は多くの場合
-// 小数になるため、この境界を共有しないと隣り合うCanvasで最大1〜2pxずれる。
-function pianorollPitchBounds(pitch, layout) {
-  const top = Math.round(pianorollPitchY(pitch, layout));
-  const bottom = Math.round(pianorollPitchY(pitch - 1, layout));
-  return { top, bottom, height: Math.max(1, bottom - top) };
-}
-
-function isPianorollBlackKey(pitch) {
-  return BLACK_PIANO_KEY_PITCH_CLASSES.has((pitch % 12 + 12) % 12);
-}
-
-function pianorollOctaveLabel(pitch) {
-  return pitch % 12 === 0 ? `C${Math.floor(pitch / 12) - 1}` : "";
-}
-
-function pianorollPitchCenterY(pitch, layout) {
-  const { top, height } = pianorollPitchBounds(pitch, layout);
-  return top + height / 2;
-}
-
-function adjacentPianorollWhitePitch(pitch, direction) {
-  let adjacentPitch = pitch + direction;
-  while (isPianorollBlackKey(adjacentPitch)) adjacentPitch += direction;
-  return adjacentPitch;
-}
-
-// 黒鍵のMIDI音高行を鍵盤の基準にし、前後の白鍵中心との中点を白鍵の境界にする。
-// これにより黒鍵がロール上のC#/D#などの行と一致し、白鍵も正しい間隔で連続する。
-function pianorollWhiteKeyBounds(pitch, layout) {
-  const pitchHeight = layout.height / layout.noteSpan;
-  const center = pianorollPitchCenterY(pitch, layout);
-  const higherPitch = adjacentPianorollWhitePitch(pitch, 1);
-  const lowerPitch = adjacentPianorollWhitePitch(pitch, -1);
-  const top = (center + pianorollPitchCenterY(higherPitch, layout)) / 2;
-  const bottom = (center + pianorollPitchCenterY(lowerPitch, layout)) / 2;
-  return {
-    top: Math.max(0, top),
-    bottom: Math.min(layout.noteHeight, Math.max(top + pitchHeight, bottom)),
-  };
 }
 
 function updatePianorollKeyboardVisibility() {
@@ -2419,7 +2357,7 @@ function updatePianorollAria(seconds = 0) {
   const current = Math.min(maximum, Math.max(0, seconds));
   canvas.setAttribute("aria-valuemax", String(maximum));
   canvas.setAttribute("aria-valuenow", String(Number(current.toFixed(3))));
-  canvas.setAttribute("aria-valuetext", formatPianorollTime(current));
+  canvas.setAttribute("aria-valuetext", formatPianorollTime(current, t));
 }
 
 function updatePianorollInteraction() {
