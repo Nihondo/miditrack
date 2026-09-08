@@ -1,4 +1,5 @@
-"use strict";
+import { createTranslator } from "./i18n.mjs";
+import { createApiClient } from "./api.mjs";
 
 // 他の初期化処理より前にdata-themeを確定させ、ライト→ダークの一瞬のちらつきを
 // 防ぐ。保存済みのappTheme（light/dark明示指定）はloadPreferences()内の
@@ -38,37 +39,8 @@ const isTokenRequired =
 // ので、両者が別々に"system"を解決して言語が割れないよう、常にこのmetaを
 // 正とする（navigator.languageは見ない）。
 const uiLang = document.querySelector('meta[name="miditrack-lang"]')?.content || "ja";
-let i18nCatalog = {};
-
-// 日本語原文（msgid）をキーに英語訳を引くgettext方式。キーが無ければ日本語の
-// まま返す（未翻訳が安全側に倒れる）。paramsは`{name}`プレースホルダを単純に
-// 文字列置換する — Python側のi18n.t()と違いフォーマット指定子は使わない
-// （app.js側のmsgidは全てこのファイル自身が持つ、サーバーの都合を持ち込まない
-// 独立した文字列のため）。
-function t(message, params) {
-  let text = uiLang === "en" ? i18nCatalog[message] || message : message;
-  if (params) {
-    for (const [key, value] of Object.entries(params)) {
-      text = text.replaceAll(`{${key}}`, value);
-    }
-  }
-  return text;
-}
-
-// 英語カタログの読み込み。日本語表示のときはfetch自体が不要なので早期return。
-// init()の最初（loadPreferences()より前）で1回だけawaitし、以降の全ての
-// 動的レンダリングがt()を安全に呼べる状態にしてから残りの初期化を進める。
-async function loadI18nCatalog() {
-  if (uiLang !== "en") return;
-  try {
-    const response = await fetch("/assets/i18n/en.json");
-    i18nCatalog = await response.json();
-  } catch (_error) {
-    // カタログを読み込めなくても日本語へ安全にフォールバックするだけなので、
-    // ここでUIを止めない。
-    i18nCatalog = {};
-  }
-}
+const { translate: t, loadCatalog: loadI18nCatalog } = createTranslator(uiLang);
+const { apiFetch, audioUrl } = createApiClient({ token, t });
 
 // miditrack_app.swiftのmakeWebView()がWKUserScript（atDocumentStart）で
 // ページ内スクリプトより先に注入するフラグ。ネイティブアプリのときだけ
@@ -612,27 +584,6 @@ function setBusy(isBusy, message = "") {
   if (message) showStatus(message);
   document.querySelectorAll(".solo-button").forEach((button) => { button.disabled = isBusy; });
   updatePlaybackControls();
-}
-
-async function apiFetch(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  headers.set("X-Miditrack-Token", token);
-  const response = await fetch(path, { ...options, headers });
-  if (!response.ok) {
-    let message = t("処理に失敗しました（HTTP {status}）", { status: response.status });
-    try {
-      const payload = await response.json();
-      if (payload.error) message = payload.error;
-    } catch (_error) {
-      // JSONでないエラー応答は既定メッセージを使う。
-    }
-    throw new Error(message);
-  }
-  return response;
-}
-
-function audioUrl(renderId) {
-  return `/api/audio?v=${renderId}&token=${encodeURIComponent(token)}`;
 }
 
 function selectedRenderMode() {

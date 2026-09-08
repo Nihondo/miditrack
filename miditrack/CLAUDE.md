@@ -60,6 +60,11 @@ src/miditrack/
   tooling.py               shared resource-root, executable, WAV, and subprocess-diagnostic helpers
   chip_metadata.py         shared JSON validation and physical-channel group expansion for VGM/NSF
                             track sidecars; format-specific error text stays in libvgm.py/nsf_chip.py
+  runtime_dependencies.py  RuntimeDependencies normalizes renderer/converter/mixer injection while
+                            preserving the legacy create_app() test seams
+  render_service.py        RenderService owns full/preview WAV LRUs, audio source history, monotonic
+                            render generations, player activation, and full/preview cache-retry coordination;
+                            routes retain request validation, domain rendering, and response work
   gm.py                    the 128-name GM table + 16 families (single source of truth)
   midi.py                  track analysis, apply/save program changes and velocity-based volume
   pianoroll.py             read-only note/tempo extraction for the browser piano roll
@@ -78,7 +83,8 @@ src/miditrack/
                             SoundFont, persisted to ~/Library/Application Support/miditrack/
                             preferences.json
   web.py                   create_app() / run_server() (tools/pixelart_web.py shape)
-  web_assets/               index.html / app.css / app.js
+  web_assets/               index.html / app.css / app.js bootstrap; i18n.mjs and api.mjs provide
+                            translation and authenticated fetch boundaries without circular imports
 tests/                      unittest suite, no real fluidsynth/mido/converter subprocess calls
 ```
 

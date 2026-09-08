@@ -37,7 +37,7 @@ try:
 except ImportError as import_error:  # pragma: no cover - exercised via cli.py's own guard
     raise ImportError("miditrack requires Flask") from import_error
 
-from . import convert, i18n, libvgm, midi, mix, nsf_chip, pianoroll, preferences, project, render, rubberband
+from . import convert, i18n, libvgm, midi, mix, nsf_chip, pianoroll, preferences, project, render
 from .i18n import t
 from .convert import SourceFormat
 from .errors import (
@@ -50,6 +50,14 @@ from .errors import (
 )
 from .gm import DEFAULT_GM_PROGRAM, instrument_catalog
 from .midi import TrackInfo
+from .runtime_dependencies import RuntimeDependencies
+from .render_service import (
+    CachedAudio,
+    CachedRenderRequest,
+    PreviewAudio,
+    PreviewRenderRequest,
+    RenderService,
+)
 
 def resolve_asset_directory() -> Path:
     """アプリバンドルまたは開発パッケージのWebアセットを解決する。"""
@@ -120,23 +128,6 @@ NsfChipRendererFunc = Callable[
 # multipartのFileStorage.save()と、Finderからステージング済みのファイルを
 # copyfile()する経路で共有する保存操作。
 UploadSaver = Callable[[Path], None]
-
-
-@dataclass(frozen=True)
-class CachedAudio:
-    """セッション内LRUキャッシュに保持するWAVとサイズ。"""
-
-    path: Path
-    size_bytes: int
-
-
-@dataclass(frozen=True)
-class PreviewAudio:
-    """短区間プレビュー専用LRUに保持するWAVと、その曲全体上の範囲。"""
-
-    path: Path
-    size_bytes: int
-    window: midi.MidiWindow
 
 
 @dataclass(frozen=True)
@@ -259,6 +250,9 @@ class WebSession:
     audio_path: Path | None = None
     current_render_key: str | None = None
     current_render_mode: str | None = None
+    # 現在の全尺WAVへ割り当てたaudio_sourcesの世代番号。短区間プレビューも
+    # render_idを消費するため、単に最新のrender_idを読み直してはならない。
+    current_render_id: int = 0
     midi_revision: int = 0
     state_revision: int = 0
     render_cache: OrderedDict[str, CachedAudio] = field(
@@ -366,6 +360,7 @@ class WebSession:
         self.render_cache_bytes = 0
         self.current_render_key = None
         self.current_render_mode = None
+        self.current_render_id = 0
         # audio_sourcesが指すパスはすべてrender_cache由来なので、上のループで
         # 既にunlink済み。ここでは辞書自体をクリアするだけでよい。
         self.audio_sources.clear()
@@ -837,49 +832,38 @@ def create_app(
     """
     launch_token = token or secrets.token_urlsafe(32)
     web_session = session or WebSession()
-    list_source_songs: ListSongsFunc = list_songs or convert.list_songs
-    convert_to_midi: ConvertFunc = converter or convert.convert_to_midi
-    transform_stem: StemTransformerFunc = stem_transformer or rubberband.transform_stem
-    render_libvgm: LibvgmRendererFunc = libvgm_renderer or libvgm.render_selection
-    render_nsf_chip: NsfChipRendererFunc = nsf_chip_renderer or nsf_chip.render_selection
+    dependencies = RuntimeDependencies(
+        renderer=renderer,
+        list_songs=list_songs,
+        converter=converter,
+        stem_transformer=stem_transformer,
+        mixer=mixer,
+        gain_applier=gain_applier,
+        libvgm_renderer=libvgm_renderer,
+        nsf_chip_renderer=nsf_chip_renderer,
+    )
+    list_source_songs = dependencies.get_list_songs()
+    convert_to_midi = dependencies.get_converter()
+    transform_stem = dependencies.get_stem_transformer()
+    render_libvgm = dependencies.get_libvgm_renderer()
+    render_nsf_chip = dependencies.get_nsf_chip_renderer()
     local_open_root = local_open_dir.resolve() if local_open_dir is not None else None
-
-    def render_wav(
-        midi_path: Path,
-        wav_path: Path,
-        selected_soundfont: Path | None,
-        sample_rate: int,
-    ) -> None:
-        """本番レンダラへsample_rateを渡し、従来の3引数テスト注入も維持する。"""
-        if renderer is not None:
-            renderer(midi_path, wav_path, selected_soundfont)
-            return
-        render.render_wav(
-            midi_path, wav_path, selected_soundfont, sample_rate=sample_rate
-        )
-
-    def mix_wav(
-        inputs: list[tuple[Path, float]], output_path: Path, sample_rate: int
-    ) -> None:
-        """本番ミキサーへsample_rateを渡し、従来の2引数テスト注入も維持する。"""
-        if mixer is not None:
-            mixer(inputs, output_path)
-            return
-        mix.mix_wav(inputs, output_path, sample_rate=sample_rate)
-
-    def apply_gain_wav(
-        input_path: Path, output_path: Path, gain: float, sample_rate: int
-    ) -> None:
-        """本番ゲイン適用（mix.apply_gain）へsample_rateを渡し、テスト注入も可能にする。
-
-        「トラックごとに出力」（POST /api/tracks/export）専用。gainが1.0のとき
-        （実機ステム併用のない通常セッション）は呼び出し側がそもそも呼ばない
-        ため、ffmpeg依存はchipNoise/gameSoundfontと同じく実際に必要な場合のみ発生する。
-        """
-        if gain_applier is not None:
-            gain_applier(input_path, output_path, gain)
-            return
-        mix.apply_gain(input_path, output_path, gain, sample_rate=sample_rate)
+    render_wav = dependencies.render_wav
+    mix_wav = dependencies.mix_wav
+    apply_gain_wav = dependencies.apply_gain
+    render_service = RenderService(
+        web_session,
+        render_cache_max_entries=RENDER_CACHE_MAX_ENTRIES,
+        render_cache_max_bytes=RENDER_CACHE_MAX_BYTES,
+        preview_cache_max_entries=PREVIEW_CACHE_MAX_ENTRIES,
+        preview_cache_max_bytes=PREVIEW_CACHE_MAX_BYTES,
+        audio_source_history_limit=AUDIO_SOURCE_HISTORY_LIMIT,
+    )
+    _cache_lookup = render_service.cache_lookup
+    _cache_store = render_service.cache_store
+    _next_render_id = render_service.next_render_id
+    _register_audio_source = render_service.register_audio_source
+    _cache_output_path = render_service.cache_output_path
 
     app = Flask(__name__, static_folder=str(ASSET_DIR), static_url_path="/assets")
     app.config.update(
@@ -1684,137 +1668,6 @@ def create_app(
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-    def _cache_lookup(cache_key: str) -> Path | None:
-        """LRUキャッシュから有効なWAVを返し、参照順を更新する。
-
-        render_cache/render_cache_bytesの読み書き自体はstate_lockで保護する
-        （ensure_render()がrender_lockを長時間保持する一方、ensure_preview()は
-        render_lockを取らずにここを呼びうるため、rの実データ構造そのものは
-        より細粒度のstate_lockで守る必要がある。詳細はWebSession.state_lockの
-        コメントを参照）。
-        """
-        with web_session.state_lock:
-            entry = web_session.render_cache.get(cache_key)
-            if entry is None:
-                return None
-            if not entry.path.exists() or entry.path.stat().st_size <= 44:
-                web_session.render_cache.pop(cache_key, None)
-                web_session.render_cache_bytes -= entry.size_bytes
-                return None
-            web_session.render_cache.move_to_end(cache_key)
-            return entry.path
-
-    def _evict_render_cache(protected_paths: set[Path]) -> None:
-        """現在利用中のWAVを残し、件数・容量上限まで古いキャッシュを削除する。"""
-        with web_session.state_lock:
-            while (
-                len(web_session.render_cache) > RENDER_CACHE_MAX_ENTRIES
-                or web_session.render_cache_bytes > RENDER_CACHE_MAX_BYTES
-            ):
-                evicted = False
-                for cache_key, entry in list(web_session.render_cache.items()):
-                    if entry.path in protected_paths:
-                        continue
-                    web_session.render_cache.pop(cache_key)
-                    web_session.render_cache_bytes -= entry.size_bytes
-                    entry.path.unlink(missing_ok=True)
-                    evicted = True
-                    break
-                if not evicted:
-                    break
-
-    def _cache_store(
-        cache_key: str, path: Path, protected_paths: set[Path] | None = None
-    ) -> Path:
-        """完成済みWAVをLRUへ登録し、上限を超えた古い項目を削除する。"""
-        with web_session.state_lock:
-            old_entry = web_session.render_cache.pop(cache_key, None)
-            if old_entry is not None:
-                web_session.render_cache_bytes -= old_entry.size_bytes
-                if old_entry.path != path:
-                    old_entry.path.unlink(missing_ok=True)
-            entry = CachedAudio(path=path, size_bytes=path.stat().st_size)
-            web_session.render_cache[cache_key] = entry
-            web_session.render_cache_bytes += entry.size_bytes
-            protected = set(protected_paths or ())
-            protected.add(path)
-            if web_session.audio_path is not None:
-                protected.add(web_session.audio_path)
-            # クロスフェード中に旧render_idへ引き続き応答する必要のあるWAVも、
-            # LRU追い出しの対象から外す（audio_sources自体の説明を参照）。
-            protected.update(web_session.audio_sources.values())
-            _evict_render_cache(protected)
-            return path
-
-    def _preview_cache_lookup(cache_key: str) -> PreviewAudio | None:
-        """短区間プレビュー専用キャッシュから有効なWAVを返す。"""
-        with web_session.state_lock:
-            entry = web_session.preview_cache.get(cache_key)
-            if entry is None:
-                return None
-            if not entry.path.exists() or entry.path.stat().st_size <= 44:
-                web_session.preview_cache.pop(cache_key, None)
-                web_session.preview_cache_bytes -= entry.size_bytes
-                return None
-            web_session.preview_cache.move_to_end(cache_key)
-            return entry
-
-    def _preview_cache_store(
-        cache_key: str, path: Path, window: midi.MidiWindow
-    ) -> PreviewAudio:
-        """完成済み短区間WAVを専用LRUへ登録する。"""
-        with web_session.state_lock:
-            old_entry = web_session.preview_cache.pop(cache_key, None)
-            if old_entry is not None:
-                web_session.preview_cache_bytes -= old_entry.size_bytes
-                if old_entry.path != path:
-                    old_entry.path.unlink(missing_ok=True)
-            entry = PreviewAudio(path, path.stat().st_size, window)
-            web_session.preview_cache[cache_key] = entry
-            web_session.preview_cache_bytes += entry.size_bytes
-            protected_paths = set(web_session.audio_sources.values())
-            while (
-                len(web_session.preview_cache) > PREVIEW_CACHE_MAX_ENTRIES
-                or web_session.preview_cache_bytes > PREVIEW_CACHE_MAX_BYTES
-            ):
-                for old_key, entry in list(web_session.preview_cache.items()):
-                    if entry.path in protected_paths:
-                        continue
-                    web_session.preview_cache.pop(old_key)
-                    web_session.preview_cache_bytes -= entry.size_bytes
-                    entry.path.unlink(missing_ok=True)
-                    break
-                else:
-                    break
-            return entry
-
-    def _next_render_id() -> int:
-        """render_idを1つ、スレッド間で衝突なく払い出す。
-
-        呼び出し側は返り値をローカル変数に捕まえて使い続けること。
-        web_session.render_idを後で読み直すと、その間に別スレッド
-        （ensure_render()と同時に走るensure_preview()等）がさらに
-        インクリメントしている可能性があり、無関係なidを拾ってしまう。
-        """
-        with web_session.state_lock:
-            web_session.render_id += 1
-            return web_session.render_id
-
-    def _register_audio_source(render_id: int, path: Path) -> None:
-        """render_id -> WAVパスを登録し、保持上限を超えた古い項目を追い出す。"""
-        with web_session.state_lock:
-            web_session.audio_sources[render_id] = path
-            web_session.audio_sources.move_to_end(render_id)
-            while len(web_session.audio_sources) > AUDIO_SOURCE_HISTORY_LIMIT:
-                web_session.audio_sources.popitem(last=False)
-
-    def _cache_output_path(kind: str, cache_key: str) -> Path:
-        """セッションキャッシュ内の衝突しないWAVパスを返す。"""
-        assert web_session.root is not None
-        cache_dir = web_session.root / "render-cache"
-        cache_dir.mkdir(exist_ok=True)
-        return cache_dir / f"{kind}-{cache_key[:24]}.wav"
-
     def _apply_source_to(
         source_path: Path, output_path: Path, speed: float, transpose: int
     ) -> dict[str, int | float]:
@@ -1866,26 +1719,16 @@ def create_app(
         invalidate_render()がapplied_path/apply_summaryを対で無効化するため、
         「未適用」は常に「割り当て変更後まだ一度もapplyしていない」と一致する。
         """
-        if web_session.root is None or web_session.original_path is None:
-            raise WebValidationError(t("MIDIファイルがアップロードされていません"))
-        for _attempt in range(3):
-            if web_session.applied_path is not None:
-                return web_session.applied_path
-            state_revision = web_session.state_revision
-            applied_path = web_session.root / "miditrack_edited.mid"
-            started_at = time.perf_counter()
-            apply_summary = _apply_to(
-                applied_path, web_session.speed_ratio, web_session.transpose_semitones
-            )
-            if breakdown is not None:
-                breakdown.apply_ms += round((time.perf_counter() - started_at) * 1000)
-            if state_revision != web_session.state_revision:
-                continue
-            web_session.apply_summary = apply_summary
-            web_session.applied_duration_seconds = float(apply_summary["durationSeconds"])
-            web_session.applied_path = applied_path
-            return applied_path
-        raise WebValidationError(t("設定が連続して変更されたため、MIDIの適用をやり直してください"))
+        applied_path, _summary, elapsed_ms = render_service.ensure_applied(
+            _apply_to,
+            lambda: WebValidationError(t("MIDIファイルがアップロードされていません")),
+            lambda: WebValidationError(
+                t("設定が連続して変更されたため、MIDIの適用をやり直してください")
+            ),
+        )
+        if breakdown is not None:
+            breakdown.apply_ms += elapsed_ms
+        return applied_path
 
     def _source_midi_readonly() -> Any:
         """original_pathのread-only解析済みMIDIを、可能ならキャッシュから返す。
@@ -2386,82 +2229,46 @@ def create_app(
         """
         with web_session.render_lock:
             started_at = time.perf_counter()
-            for _attempt in range(3):
+            breakdown = RenderBreakdown()
+
+            def build_request() -> CachedRenderRequest:
+                nonlocal breakdown
                 breakdown = RenderBreakdown()
-                state_revision = web_session.state_revision
                 applied_path = ensure_applied(breakdown)
                 state_key = _render_state_key(mode)
                 cache_key = f"render:{state_key}"
-                wav_path = _cache_lookup(cache_key)
-                cache_hit = wav_path is not None
-                generated_path: Path | None = None
-                # このイテレーションで新規生成した場合のrender_idをローカルに
-                # 捕まえておく。web_session.render_idを後で読み直すと、
-                # render_lockを取らないensure_preview()が並行して動いていた
-                # 場合にさらに進んでしまっている可能性があるため
-                # （RenderOutcome.render_idのdocstring参照）。
-                work_id: int | None = None
 
-                if wav_path is None:
-                    work_id = _next_render_id()
-                    wav_path = _cache_output_path(mode, state_key)
-                    generated_path = wav_path
-                    try:
-                        _render_applied_midi(
-                            applied_path,
-                            wav_path,
-                            render_id=work_id,
-                            speed=web_session.speed_ratio,
-                            transpose=web_session.transpose_semitones,
-                            sample_rate=RENDER_SAMPLE_RATES[mode],
-                            breakdown=breakdown,
-                        )
-                    except Exception:
-                        generated_path.unlink(missing_ok=True)
-                        raise
+                def render_to(wav_path: Path, work_id: int) -> None:
+                    _render_applied_midi(
+                        applied_path,
+                        wav_path,
+                        render_id=work_id,
+                        speed=web_session.speed_ratio,
+                        transpose=web_session.transpose_semitones,
+                        sample_rate=RENDER_SAMPLE_RATES[mode],
+                        breakdown=breakdown,
+                    )
 
-                if state_revision != web_session.state_revision:
-                    if generated_path is not None:
-                        generated_path.unlink(missing_ok=True)
-                    continue
+                return CachedRenderRequest(cache_key, mode, state_key, render_to)
 
-                if generated_path is not None:
-                    _cache_store(cache_key, wav_path)
-                break
-            else:
-                raise WebValidationError(t("設定が連続して変更されたため、レンダリングをやり直してください"))
+            cached_render = render_service.ensure_cached_render(
+                build_request,
+                lambda: WebValidationError(
+                    t("設定が連続して変更されたため、レンダリングをやり直してください")
+                ),
+            )
+            wav_path = cached_render.path
+            cache_key = cached_render.cache_key
+            cache_hit = cached_render.cache_hit
+            work_id = cached_render.work_id
 
-            active_render_id = 0
-            if activate_player:
-                is_new_player_source = (
-                    web_session.current_render_key != cache_key
-                    or web_session.audio_path != wav_path
+            active_render_id = (
+                render_service.activate_full_render(
+                    cache_key, wav_path, mode, work_id, cache_hit
                 )
-                if work_id is not None:
-                    # このイテレーションで新規生成したWAV。生成時に採番済みの
-                    # idをそのまま使う（web_session.render_idを再度読まない）。
-                    active_render_id = work_id
-                elif is_new_player_source and cache_hit:
-                    # 既にキャッシュ済みの、今までとは別のWAVへ切り替える場合。
-                    # ブラウザが旧render_idのバイト範囲を新WAVへ誤って再利用
-                    # しないよう、新しいidを払い出す。
-                    active_render_id = _next_render_id()
-                web_session.audio_path = wav_path
-                web_session.current_render_key = cache_key
-                web_session.current_render_mode = mode
-                if active_render_id:
-                    # 今回activateされたrender_idがこのWAVを指すよう記録する。旧
-                    # render_id宛のリクエスト（クロスフェード中の旧<audio>要素）は
-                    # get_audio()がこの辞書で解決し、audio_pathが差し替わった後も
-                    # 旧音源を返し続ける。
-                    _register_audio_source(active_render_id, wav_path)
-                else:
-                    # 直前と全く同じ状態への再activate（is_new_player_source=False）。
-                    # 既に正しいrender_idがaudio_sourcesへ登録済みのはずなので、
-                    # ここでweb_session.render_idを読み直して再登録する必要はない
-                    # （並行するensure_preview()が進めた無関係なidを誤って
-                    # このWAVへ結び付けてしまう事故を避ける）。
-                    active_render_id = web_session.render_id
+                if activate_player
+                else 0
+            )
 
             render_ms = round((time.perf_counter() - started_at) * 1000)
             return RenderOutcome(
@@ -2614,70 +2421,71 @@ def create_app(
             end_seconds = quantized_timeline_seconds + PREVIEW_FORWARD_SECONDS
             window_key = f"{start_seconds:.3f}:{end_seconds:.3f}"
             cache_key = f"preview:{preview_state_key}:{window_key}"
-            entry = _preview_cache_lookup(cache_key)
-            cache_hit = entry is not None
-            if entry is None:
-                for _attempt in range(3):
-                    state_revision = web_session.state_revision
-                    work_id = _next_render_id()
-                    raw_window_path = web_session.root / f"preview-{work_id:04d}.raw.mid"
-                    applied_window_path = web_session.root / f"preview-{work_id:04d}.mid"
-                    wav_path = web_session.root / f"preview-{work_id:04d}.wav"
-                    preview_stem_paths: list[Path] = []
-                    try:
-                        window = midi.write_time_window(
-                            web_session.original_path,
-                            raw_window_path,
-                            start_seconds,
-                            end_seconds,
-                            speed=web_session.speed_ratio,
-                            source_midi=_source_midi_readonly(),
-                        )
-                        summary = _apply_source_to(
-                            raw_window_path,
-                            applied_window_path,
-                            web_session.speed_ratio,
-                            web_session.transpose_semitones,
-                        )
-                        # 切り出しMIDIの実際の長さを正とする。終端付近では要求した
-                        # 12秒先まで存在しないため、固定窓長を返すとクライアントの
-                        # シーク・ループの上限が曲末を越えてしまう。
-                        window = midi.MidiWindow(
-                            window.start_seconds,
-                            window.start_seconds + float(summary["durationSeconds"]),
-                        )
-                        preview_chip_stems, preview_stem_paths = _preview_chip_stems(
-                            window, work_id
-                        )
-                        breakdown = RenderBreakdown()
-                        _render_applied_midi(
-                            applied_window_path,
-                            wav_path,
-                            render_id=work_id,
-                            speed=web_session.speed_ratio,
-                            transpose=web_session.transpose_semitones,
-                            sample_rate=RENDER_SAMPLE_RATES[FAST_RENDER_MODE],
-                            chip_render_stems=preview_chip_stems,
-                            include_session_stems=False,
-                            breakdown=breakdown,
-                        )
-                    except Exception:
-                        wav_path.unlink(missing_ok=True)
-                        raise
-                    finally:
-                        raw_window_path.unlink(missing_ok=True)
-                        applied_window_path.unlink(missing_ok=True)
-                        for preview_stem_path in preview_stem_paths:
-                            preview_stem_path.unlink(missing_ok=True)
-                    if state_revision != web_session.state_revision:
-                        wav_path.unlink(missing_ok=True)
-                        continue
-                    entry = _preview_cache_store(cache_key, wav_path, window)
-                    break
-                else:
-                    raise WebValidationError(t("設定が連続して変更されたため、短区間プレビューをやり直してください"))
-            else:
+            breakdown = RenderBreakdown()
+
+            def output_path_for(work_id: int) -> Path:
+                assert web_session.root is not None
+                return web_session.root / f"preview-{work_id:04d}.wav"
+
+            def render_to(wav_path: Path, work_id: int) -> midi.MidiWindow:
+                nonlocal breakdown
+                assert web_session.root is not None
+                assert web_session.original_path is not None
                 breakdown = RenderBreakdown()
+                raw_window_path = web_session.root / f"preview-{work_id:04d}.raw.mid"
+                applied_window_path = web_session.root / f"preview-{work_id:04d}.mid"
+                preview_stem_paths: list[Path] = []
+                try:
+                    window = midi.write_time_window(
+                        web_session.original_path,
+                        raw_window_path,
+                        start_seconds,
+                        end_seconds,
+                        speed=web_session.speed_ratio,
+                        source_midi=_source_midi_readonly(),
+                    )
+                    summary = _apply_source_to(
+                        raw_window_path,
+                        applied_window_path,
+                        web_session.speed_ratio,
+                        web_session.transpose_semitones,
+                    )
+                    # 切り出しMIDIの実際の長さを正とする。終端付近では要求した
+                    # 12秒先まで存在しないため、固定窓長を返すとクライアントの
+                    # シーク・ループの上限が曲末を越えてしまう。
+                    window = midi.MidiWindow(
+                        window.start_seconds,
+                        window.start_seconds + float(summary["durationSeconds"]),
+                    )
+                    preview_chip_stems, preview_stem_paths = _preview_chip_stems(
+                        window, work_id
+                    )
+                    _render_applied_midi(
+                        applied_window_path,
+                        wav_path,
+                        render_id=work_id,
+                        speed=web_session.speed_ratio,
+                        transpose=web_session.transpose_semitones,
+                        sample_rate=RENDER_SAMPLE_RATES[FAST_RENDER_MODE],
+                        chip_render_stems=preview_chip_stems,
+                        include_session_stems=False,
+                        breakdown=breakdown,
+                    )
+                    return window
+                finally:
+                    raw_window_path.unlink(missing_ok=True)
+                    applied_window_path.unlink(missing_ok=True)
+                    for preview_stem_path in preview_stem_paths:
+                        preview_stem_path.unlink(missing_ok=True)
+
+            cached_preview = render_service.ensure_cached_preview(
+                PreviewRenderRequest(cache_key, output_path_for, render_to),
+                lambda: WebValidationError(
+                    t("設定が連続して変更されたため、短区間プレビューをやり直してください")
+                ),
+            )
+            entry = cached_preview.entry
+            cache_hit = cached_preview.cache_hit
 
             preview_render_id = _next_render_id()
             _register_audio_source(preview_render_id, entry.path)

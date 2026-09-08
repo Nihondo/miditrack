@@ -953,9 +953,14 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = icon
         }
         installMainMenu(applicationName: "miditrack", target: self)
-
         splashStartedAt = Date()
 
+        prepareMainWindow()
+        startBackend()
+    }
+
+    /// スプラッシュを重ねたメインウィンドウを表示し、WebViewの通知を接続する。
+    private func prepareMainWindow() {
         let startupBackgroundColor = resolveStartupBackgroundColor()
         let delegate = MiditrackWebDelegate()
         webDelegate = delegate
@@ -982,7 +987,10 @@ final class MiditrackAppDelegate: NSObject, NSApplicationDelegate {
 
         mainWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
 
+    /// ローカルファイル権限を要求できるウィンドウ表示後にバックエンドを起動する。
+    private func startBackend() {
         prepareLogFile()
 
         try? FileManager.default.createDirectory(

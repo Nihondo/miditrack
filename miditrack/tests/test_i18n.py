@@ -119,14 +119,18 @@ def _find_untranslated_web_validation_raises() -> list[tuple[str, int, str]]:
 
 
 def _extract_js_msgids() -> set[str]:
-    """`app.js`内の`t("...")`呼び出しの第1引数（ダブルクオート文字列）を集める。
+    """Webモジュール内の`t("...")`呼び出しの第1引数を集める。
 
-    app.jsは全てのt()呼び出しが単一の文字列リテラル（連結なし）なので、
+    各モジュールは全てのt()呼び出しが単一の文字列リテラル（連結なし）なので、
     正規表現で十分。
     """
-    text = APP_JS_PATH.read_text(encoding="utf-8")
     pattern = re.compile(r'\bt\(\s*\n?\s*"((?:[^"\\]|\\.)*)"')
-    return set(pattern.findall(text))
+    paths = [APP_JS_PATH, *SRC_DIR.joinpath("web_assets").glob("*.mjs")]
+    return {
+        message
+        for path in paths
+        for message in pattern.findall(path.read_text(encoding="utf-8"))
+    }
 
 
 class _HtmlMsgidExtractor:

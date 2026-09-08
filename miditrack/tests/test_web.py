@@ -219,6 +219,17 @@ class TestWebApp(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(response.headers.get("Referrer-Policy"), "no-referrer")
 
+    def test_native_es_modules_are_preloaded_and_served(self) -> None:
+        """ブートストラップとその静的依存モジュールを同一オリジンから配信する。"""
+        html = self.client.get("/").get_data(as_text=True)
+
+        self.assertIn('<script type="module" src="/assets/app.js"></script>', html)
+        for module_name in ("i18n.mjs", "api.mjs"):
+            self.assertIn(f'<link rel="modulepreload" href="/assets/{module_name}">', html)
+            response = self.client.get(f"/assets/{module_name}")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("javascript", response.content_type)
+
     def test_render_mode_radios_stay_visually_hidden_while_focused(self) -> None:
         html = self.client.get("/").get_data(as_text=True)
         css = self.client.get("/assets/app.css").get_data(as_text=True)
