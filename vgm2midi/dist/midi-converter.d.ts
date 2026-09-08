@@ -130,23 +130,8 @@ export declare class MidiConverter {
     private opnCh3PercussionTrackName;
     private ym2608MidiChannel;
     private ym2608TrackName;
-    private frequencyToMidiNote;
-    private frequencyToExactMidi;
-    private psgRegisterToFrequency;
-    private ym2612FrequencyToHz;
-    private ym2203FrequencyToHz;
-    private oplFrequencyToHz;
-    private ay8910RegisterToFrequency;
-    private ym2203SSGRegisterToFrequency;
-    private huc6280RegisterToFrequency;
-    private ym2413RegisterToFrequency;
     /** 選択patchのcarrier Multipleを、明確な2の累乗だけoctave補正に変換する。 */
     private ym2413PitchScale;
-    private gbDmgSquareFrequencyToHz;
-    private gbDmgWaveFrequencyToHz;
-    private gbDmgNoiseFrequencyToHz;
-    private gbDmgNoiseNoteForPeriod;
-    private samplesToTicks;
     convert(): any[];
     /** Game Gear $4F のLRルーティングをSN76489各voiceのCC10へ反映する。 */
     private handleGameGearStereo;

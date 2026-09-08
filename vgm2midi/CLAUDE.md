@@ -1436,6 +1436,46 @@ the real byte layout by hand (chip ID bit 7 in both lists, Flags byte bit
 volume passed through as-is) to pin down the parser fix independently of
 the converter.
 
+## Refactor: `midi-math.ts` — chip-independent MIDI math extracted from `MidiConverter`
+
+`src/midi-converter.ts` grew to over 6,000 lines as chip support was added one
+family at a time, almost entirely inside one `MidiConverter` class. As a first,
+low-risk step toward separating dispatch/lifecycle/export (`MidiConverter`
+itself) from chip-specific conversion logic, every method that did not read or
+write `this` — frequency/period-to-Hz formulas for SN76489, YM2612, YM2203,
+OPL, AY-3-8910/SSG, HuC6280, YM2413, and Game Boy DMG; `frequencyToMidiNote()`/
+`frequencyToExactMidi()`; the shared `noiseDrumNote()` GM-drum-band mapping and
+its five `NOISE_DRUM_*` constants; `greatestCommonDivisor()`; and
+`samplesToTicks()` (parameterized with an explicit `sampleRate`/`ppq` instead
+of reading `this.sampleRate` — always `44100` in practice, so this changes no
+behavior) — moved to `src/midi-math.ts` as plain exported functions with no
+`MidiConverter` dependency. `MIDI_PPQ` moved alongside them as the single
+source of truth; `midi-converter.ts` imports it back for its CSM timer math
+and MIDI-header write. Every call site changed only from `this.foo(...)` to
+`foo(...)` (`samplesToTicks()` calls additionally gained an explicit
+`this.sampleRate` argument); no formula, constant, or comment changed. This
+keeps the byte-for-byte fixture/sidecar output identical — verified by `npm
+test` (all 211 tests, unchanged) after the move, since these tests assert
+exact MIDI note numbers, CC values, and sidecar fields end-to-end.
+
+`ym2413PitchScale()` was evaluated for the same move (it also takes a
+`ChannelState` and returns a pure number) but was left in `MidiConverter`: it
+reads `this.hasYM2413CustomCarrierMultiple`/`this.ym2413CustomPatch`, and
+extracting it would have meant either importing `ChannelState` into
+`midi-math.ts` (a type-only circular import back into `midi-converter.ts`) or
+duplicating the interface — judged not worth it for one function with only two
+call sites. The much larger remaining pieces of the original refactor
+plan — event-output helpers (`addPan()`/`addExpression()`/`noteOn()`/
+`noteOff()` and friends), PCM range analysis
+(`analyzeSigned8BitPCM()`/`romBytesForRange()`/`segaPCMDurationSamples()`/
+`c140DurationSamples()` and friends), and the per-chip
+`handle*Write()` PSG/FM/PCM handlers — all read and mutate `MidiConverter`'s
+own instance state (`this.tracks`, `this.channels`, per-chip state maps) too
+heavily to extract as plain functions without a larger context-object or
+composition redesign. That redesign is deliberately left as a separate,
+future incremental step, each piece landing with its own test run before the
+next, rather than attempted in the same pass as this purely mechanical move.
+
 ## Out of scope (for now)
 
 - Stereo panning (`$01`/`$05`) and LFO/vibrato (`$08`/`$09`) for HuC6280 —

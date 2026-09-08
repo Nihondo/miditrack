@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MidiConverter = exports.YM2413_BUILTIN_CARRIER_MULTIPLES = exports.YM2413_BUILTIN_CARRIER_REGISTER_BYTES = void 0;
 const midi_writer_js_1 = __importDefault(require("midi-writer-js"));
 const vgm_chip_metadata_1 = require("./vgm-chip-metadata");
+const midi_math_1 = require("./midi-math");
 // General MIDI program 81 "Lead 1 (square)" (byte value 80, 0-based). None of the chips
 // this tool converts map cleanly onto a GM instrument, but their tone generators are all
 // pulse/square-ish, so every track is given this one consistent voice explicitly rather
@@ -41,7 +42,6 @@ const YM2203_FM_PITCH_BEND_RANGE = 96;
 const YM2608_FM_PITCH_BEND_RANGE = 96;
 const OPL_FM_PITCH_BEND_RANGE = 96;
 const CHIP_PITCH_BEND_RANGE = 96;
-const MIDI_PPQ = 960;
 const MAX_PCM_ANALYSIS_SAMPLES = 65536;
 // CSM のハードウェアkey-on/key-offは同一のTimer Aオーバーフローで発生する。
 // MIDIで可聴なアタックとして扱える最小単位は1 tickなので、同じtickの複数回
@@ -167,30 +167,6 @@ const YM2151_C2_OPERATOR_MASK = 1 << 3;
 //   convention.
 const GBDMG_SQUARE_KEYS = ['gbdmg_0', 'gbdmg_1'];
 const GBDMG_FRAME_SAMPLES = 44100 / 512;
-// Shared noise-frequency-to-GM-drum bands, used by SN76489, AY-3-8910/YM2203/YM2608 SSG,
-// HuC6280, and YM2151 hardware noise. Each chip normalizes its own noise-rate register to
-// a common [0..1] scale (0 = lowest/slowest, 1 = highest/fastest) before calling
-// noiseDrumNote() below — absolute Hz thresholds would not transfer between chips whose
-// noise-rate ranges differ by orders of magnitude (NES-style ~440Hz-447kHz vs. AY's
-// clock/16/period range), but a normalized position within each chip's own range does.
-const NOISE_DRUM_HIGH_NOTE = 42; // Closed Hi-Hat
-const NOISE_DRUM_MID_NOTE = 38; // Acoustic Snare
-const NOISE_DRUM_LOW_NOTE = 45; // Low Tom
-const NOISE_DRUM_PERIODIC_HIGH_NOTE = 37; // Side Stick (SN76489 tonal/periodic noise)
-const NOISE_DRUM_PERIODIC_LOW_NOTE = 35; // Bass Drum (SN76489 tonal/periodic noise)
-// isPeriodic marks SN76489's tonal/periodic noise mode (FB=0), which sounds pitched rather
-// than like white noise, so it uses a different, more "tonal" pair of drum voices than the
-// three-band white-noise mapping shared by every other chip.
-function noiseDrumNote(normalizedRate, isPeriodic) {
-    if (isPeriodic) {
-        return normalizedRate >= 0.5 ? NOISE_DRUM_PERIODIC_HIGH_NOTE : NOISE_DRUM_PERIODIC_LOW_NOTE;
-    }
-    if (normalizedRate >= 0.7)
-        return NOISE_DRUM_HIGH_NOTE;
-    if (normalizedRate >= 0.35)
-        return NOISE_DRUM_MID_NOTE;
-    return NOISE_DRUM_LOW_NOTE;
-}
 // Logical operator order is O1, O2, O3, O4. Each entry describes the operators
 // whose frequencies can reach one audible carrier for the corresponding algorithm.
 const OPN_OPERATOR_PATHS = [
@@ -226,14 +202,6 @@ const OPL_OPERATOR_PATHS = [
 const OPN_DOUBLED_MULTIPLES = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30];
 /** fmopl.c mul_tabの実MULTIPLEを2倍した整数表。 */
 const OPL_DOUBLED_MULTIPLES = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 20, 24, 24, 30, 30];
-function greatestCommonDivisor(left, right) {
-    let dividend = Math.abs(left);
-    let divisor = Math.abs(right);
-    while (divisor !== 0) {
-        [dividend, divisor] = [divisor, dividend % divisor];
-    }
-    return dividend;
-}
 /** source keyを現在のdescriptor IDへ正規化し、既存handlerのMap APIを保つ。 */
 class DescriptorActiveNotes extends Map {
     constructor(resolveId) {
@@ -1271,91 +1239,12 @@ class MidiConverter {
             return `YM2608${suffix} SSG Noise ${channel}`;
         return `YM2608${suffix} ${sectionName} ${channel}`;
     }
-    frequencyToMidiNote(frequency) {
-        if (frequency <= 20)
-            return 0; // Filter out very low frequencies
-        // MIDI note = 69 + 12 * log2(freq / 440)
-        const note = Math.round(69 + 12 * Math.log2(frequency / 440));
-        return Math.max(0, Math.min(127, note));
-    }
-    frequencyToExactMidi(frequency) {
-        if (frequency <= 20)
-            return 0;
-        return 69 + 12 * Math.log2(frequency / 440);
-    }
-    psgRegisterToFrequency(register, clockRate, flags) {
-        const effectiveRegister = register === 0 && (flags & 0x01) !== 0 ? 0x400 : register;
-        if (effectiveRegister === 0)
-            return 0;
-        // VGM header bit 30 (dual-chip) and bit 31 (T6W28) are flags, not part of the clock
-        // value itself — mask them out the same way the OPN/OPNA/YM2151 clock reads already do.
-        const effectiveClockRate = clockRate & 0x3FFFFFFF;
-        // The usual SN76489 /8 input divider is enabled when flag bit 3 is clear.
-        const divisor = (flags & 0x08) === 0 ? 32 : 4;
-        return effectiveClockRate / (divisor * effectiveRegister);
-    }
-    ym2612FrequencyToHz(fnum, block, clockRate) {
-        if (fnum === 0)
-            return 0;
-        // YM2612 frequency = (fnum * clock) / (144 * 2^(20 - block))
-        // Note: clock is usually ~7.6MHz. Formula assumes FM clock.
-        // If block is undefined, treat as 0
-        const blk = block || 0;
-        const effectiveClockRate = clockRate & 0x3FFFFFFF;
-        return (fnum * effectiveClockRate) / (144 * Math.pow(2, 20 - blk));
-    }
-    ym2203FrequencyToHz(fnum, block, clockRate, prescaler) {
-        if (fnum === 0)
-            return 0;
-        const effectiveClockRate = clockRate & 0x3FFFFFFF;
-        // YM2203 OPN F-Number uses a 144 divisor at the default /6 prescale.
-        return (fnum * effectiveClockRate) / ((24 * prescaler) * Math.pow(2, 20 - block));
-    }
-    oplFrequencyToHz(fnum, block, clockRate) {
-        if (fnum === 0)
-            return 0;
-        const effectiveClockRate = clockRate & vgm_chip_metadata_1.CLOCK_MASK;
-        return (fnum * effectiveClockRate) / (72 * Math.pow(2, 20 - block));
-    }
-    ay8910RegisterToFrequency(register, clockRate, flags) {
-        // Period 0 behaves like 1 in hardware, but that tone is ultrasonic at normal clocks
-        // and cannot be represented faithfully in MIDI; do not clamp it to audible note 127.
-        if (register === 0)
-            return 0;
-        const baseClockRate = clockRate & 0x3FFFFFFF;
-        const effectiveClockRate = (flags & 0x10) !== 0 ? baseClockRate / 2 : baseClockRate;
-        // AY-3-8910 frequency = clock / (16 * register)
-        return effectiveClockRate / (16 * register);
-    }
-    ym2203SSGRegisterToFrequency(register, clockRate, prescaler, flags) {
-        // See ay8910RegisterToFrequency(): the real period-1 equivalent is ultrasonic.
-        if (register === 0)
-            return 0;
-        const baseClockRate = clockRate & 0x3FFFFFFF;
-        const effectiveClockRate = (flags & 0x10) !== 0 ? baseClockRate / 2 : baseClockRate;
-        // The integrated SSG uses master clock / (64 * period) at the default /6 prescale.
-        return (effectiveClockRate * (6 / prescaler)) / (64 * register);
-    }
-    huc6280RegisterToFrequency(register, clockRate) {
-        // HuC6280 PSG: a 12-bit period register drives a 32-step waveform table.
-        // A period of 0 behaves like the maximum period (0x1000) on real hardware.
-        const period = register || 0x1000;
-        const effectiveClockRate = clockRate & 0x3FFFFFFF;
-        return effectiveClockRate / (32 * period);
-    }
-    // YM2413 (OPLL): a 9-bit F-Number combined with a 3-bit block, phase-accumulated at
-    // clock/72 (confirmed against emu2413's calc_phase(): with PM/vibrato disabled and a
-    // Multiple of 1 (the carrier's implicit reference rate), the per-sample phase step
-    // reduces to fnum << block over a 19-bit accumulator, at an output rate of clock/72 —
-    // giving freq = fnum * clock / (72 * 2^(19-block)). The caller applies carrier Multiple
-    // only when it is an exact power of two, avoiding fabricated correction for 3, 5, 10,
-    // 12, or 15.
-    ym2413RegisterToFrequency(fnum, block, clockRate) {
-        const effectiveClockRate = clockRate & vgm_chip_metadata_1.CLOCK_MASK;
-        if (effectiveClockRate <= 0)
-            return 0;
-        return (fnum * effectiveClockRate) / (72 * Math.pow(2, 19 - block));
-    }
+    // frequencyToMidiNote()/frequencyToExactMidi()/psgRegisterToFrequency()/
+    // ym2612FrequencyToHz()/ym2203FrequencyToHz()/oplFrequencyToHz()/
+    // ay8910RegisterToFrequency()/ym2203SSGRegisterToFrequency()/
+    // huc6280RegisterToFrequency()/ym2413RegisterToFrequency()は`this`に依存しない
+    // 純粋関数として、他のチップ非依存なMIDI数学と合わせてmidi-math.tsへ移設した
+    // （上のimportを参照）。
     /** 選択patchのcarrier Multipleを、明確な2の累乗だけoctave補正に変換する。 */
     ym2413PitchScale(state) {
         const instrument = state.ym2413Instrument ?? 0;
@@ -1365,64 +1254,9 @@ class MidiConverter {
         const multiple = YM2413_OPERATOR_MULTIPLES[multipleNibble] ?? 1;
         return Number.isInteger(Math.log2(multiple)) ? multiple : 1;
     }
-    // Game Boy DMG pulse channels (1-2): an 11-bit period register x drives a phase
-    // accumulator that wraps every (2048-x) input-clock cycles, divided by 32 to reach the
-    // final tone frequency — confirmed against Pan Docs' "Frequency = 131072/(2048-x)" at the
-    // chip's fixed 4194304Hz clock (131072 = 4194304/32); this generalizes that to an
-    // explicit clock parameter rather than hardcoding the reference value.
-    gbDmgSquareFrequencyToHz(period, clockRate) {
-        const effectiveClockRate = clockRate & vgm_chip_metadata_1.CLOCK_MASK;
-        if (effectiveClockRate <= 0 || period >= 2048)
-            return 0;
-        return effectiveClockRate / (32 * (2048 - period));
-    }
-    // Game Boy DMG wave channel (3): same 11-bit period/phase-accumulator shape as the pulse
-    // channels, but divided by 64 instead of 32 — the wave channel steps through all 32
-    // 4-bit wave-RAM samples per period instead of one square edge, doubling the reference
-    // rate (Pan Docs: "Frequency = 65536/(2048-x)"; 65536 = 4194304/64).
-    gbDmgWaveFrequencyToHz(period, clockRate) {
-        const effectiveClockRate = clockRate & vgm_chip_metadata_1.CLOCK_MASK;
-        if (effectiveClockRate <= 0 || period >= 2048)
-            return 0;
-        return effectiveClockRate / (64 * (2048 - period));
-    }
-    // Game Boy DMG noise channel (4): NR43 packs a 4-bit shift `s` and a 3-bit divisor code
-    // `r` (r=0 means divisor 0.5, matching the "For r=0 assume r=0.5" rule in Pan Docs'
-    // "Frequency = 524288/r/2^(s+1)" at the chip's fixed clock; 524288 = 4194304/8).
-    gbDmgNoiseFrequencyToHz(nr43, clockRate) {
-        const effectiveClockRate = clockRate & vgm_chip_metadata_1.CLOCK_MASK;
-        if (effectiveClockRate <= 0)
-            return 0;
-        const shift = (nr43 >> 4) & 0x0F;
-        const divisorCode = nr43 & 0x07;
-        const divisor = divisorCode === 0 ? 0.5 : divisorCode;
-        return effectiveClockRate / (8 * divisor * Math.pow(2, shift + 1));
-    }
-    // Maps NR43's raw byte to a GM drum band via the shared noiseDrumNote() helper. The
-    // chip's actual audible range is far wider than the other chips' noise generators (a few
-    // Hz up to several hundred kHz), so this clamps to an approximate audible band before
-    // taking the same log-scale normalization SN76489's noise handling uses, rather than
-    // normalizing against the raw register range the way HuC6280/YM2151 do (their registers
-    // already map roughly linearly to perceived rate; NR43's shift/divisor combination does
-    // not). Width mode (NR43 bit3, 15-bit vs. 7-bit LFSR — a timbre distinction, "metallic"
-    // vs. "white") is intentionally not mapped to a different drum note, consistent with how
-    // every other chip's noise mode/LFSR-width control is collapsed to one portable GM voice
-    // in this file (see "Hardware-noise conversion" in CLAUDE.md).
-    gbDmgNoiseNoteForPeriod(nr43, clockRate) {
-        const freq = this.gbDmgNoiseFrequencyToHz(nr43, clockRate);
-        const clamped = Math.max(30, Math.min(15000, freq || 30));
-        const normalizedRate = Math.log2(clamped / 30) / Math.log2(15000 / 30);
-        return noiseDrumNote(normalizedRate, false);
-    }
-    samplesToTicks(samples, tempo) {
-        // Convert VGM samples to MIDI ticks
-        // VGM is at 44100 Hz
-        // Absolute sample time prevents rounding error accumulating across events.
-        const ppq = MIDI_PPQ;
-        const seconds = samples / this.sampleRate;
-        const quarterNotes = (seconds * tempo) / 60;
-        return Math.round(quarterNotes * ppq);
-    }
+    // gbDmgSquareFrequencyToHz()/gbDmgWaveFrequencyToHz()/gbDmgNoiseFrequencyToHz()/
+    // gbDmgNoiseNoteForPeriod()/samplesToTicks()も`this`に依存しない純粋関数として
+    // midi-math.tsへ移設した（上のimportを参照）。
     convert() {
         let currentTime = 0;
         const activeNotes = new DescriptorActiveNotes(key => this.resolveDescriptor(key).id);
@@ -1649,7 +1483,7 @@ class MidiConverter {
                         // Volume change while active -> Send Expression (CC 11)
                         const expression = Math.max(0, Math.min(127, 127 - (state.volume * 8)));
                         const trackState = this.getTrack(key);
-                        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+                        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
                         const gap = Math.max(0, currentTick - trackState.cursor);
                         const midiCh = this.midiChannelForKey(key);
                         trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
@@ -1734,14 +1568,14 @@ class MidiConverter {
         const nf = control & 0x03;
         let normalizedRate;
         if (nf === 3) {
-            const toneFreq = this.psgRegisterToFrequency(this.channels.get('psg_2').frequency, this.vgmData.header.sn76489Clock, this.vgmData.header.sn76489Flags);
+            const toneFreq = (0, midi_math_1.psgRegisterToFrequency)(this.channels.get('psg_2').frequency, this.vgmData.header.sn76489Clock, this.vgmData.header.sn76489Flags);
             const clamped = Math.max(100, Math.min(8000, toneFreq || 100));
             normalizedRate = Math.log2(clamped / 100) / Math.log2(8000 / 100);
         }
         else {
             normalizedRate = [1.0, 0.55, 0.25][nf];
         }
-        return noiseDrumNote(normalizedRate, isPeriodic);
+        return (0, midi_math_1.noiseDrumNote)(normalizedRate, isPeriodic);
     }
     // NF=3 makes the noise generator follow channel 2's own tone frequency, so a change to
     // that channel's period can move the noise's effective pitch even though nothing on
@@ -1990,7 +1824,7 @@ class MidiConverter {
                 continue;
             }
             timer.nextOverflow = nextOverflow + periodSamples;
-            const currentTick = this.samplesToTicks(nextOverflow, this.options.tempo);
+            const currentTick = (0, midi_math_1.samplesToTicks)(nextOverflow, this.options.tempo, this.sampleRate);
             if (timer.lastEmittedTick === currentTick)
                 continue;
             if (timer.nextRelease !== undefined)
@@ -2020,7 +1854,7 @@ class MidiConverter {
     }
     /** OPN/OPMが共通で使う1 MIDI tick分のCSM pulse長をsampleへ換算する。 */
     csmPulseSamples() {
-        return Math.max(1, (CSM_MIDI_PULSE_TICKS * 60 * this.sampleRate) / (this.options.tempo * MIDI_PPQ));
+        return Math.max(1, (CSM_MIDI_PULSE_TICKS * 60 * this.sampleRate) / (this.options.tempo * midi_math_1.MIDI_PPQ));
     }
     /** OPN Timer Aの1周期をVGM sampleへ換算する。 */
     opnCsmPeriodSamples(chip, timer) {
@@ -2097,7 +1931,7 @@ class MidiConverter {
             if ((totalLevels[operator] ?? 0) >= 0x7F)
                 continue; // silenced operator, not audible
             const state = this.channels.get(context.operatorKeys[operator]);
-            const note = this.frequencyToMidiNote(this.opnCh3OperatorFrequency(context, state));
+            const note = (0, midi_math_1.frequencyToMidiNote)(this.opnCh3OperatorFrequency(context, state));
             if (note > 0)
                 notes.push(note);
         }
@@ -2186,7 +2020,7 @@ class MidiConverter {
             if ((slotMask & (1 << operator)) === 0 || totalLevels[operator] >= 0x7F)
                 continue;
             const state = this.channels.get(context.operatorKeys[operator]);
-            const note = this.frequencyToMidiNote(this.opnCh3OperatorFrequency(context, state));
+            const note = (0, midi_math_1.frequencyToMidiNote)(this.opnCh3OperatorFrequency(context, state));
             if (note > 0)
                 carrierNotes.push(note);
         }
@@ -2194,7 +2028,7 @@ class MidiConverter {
     }
     opnCh3OperatorFrequency(context, state) {
         if (context.chip === 'YM2612') {
-            return this.ym2612FrequencyToHz(state.frequency, state.block ?? 0, this.vgmData.header.ym2612Clock);
+            return (0, midi_math_1.ym2612FrequencyToHz)(state.frequency, state.block ?? 0, this.vgmData.header.ym2612Clock);
         }
         const clock = context.chip === 'YM2203'
             ? this.vgmData.header.ym2203Clock
@@ -2202,7 +2036,7 @@ class MidiConverter {
         const prescaler = context.chip === 'YM2203'
             ? this.ym2203Prescalers[context.instance]
             : this.ym2608Prescalers[context.instance];
-        return this.ym2203FrequencyToHz(state.frequency, state.block ?? 0, clock, prescaler);
+        return (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, clock, prescaler);
     }
     opnCh3PercussionNoteForCarrierNotes(carrierNotes) {
         if (carrierNotes.length === 0)
@@ -2333,7 +2167,7 @@ class MidiConverter {
         if ([...operatorIndexes].some(operator => !multiplierWritten[operator]))
             return 1;
         const activeMultiples = [...operatorIndexes].map(operator => doubledMultiples[multipliers[operator] ?? 0]);
-        const commonMultiplier = activeMultiples.reduce(greatestCommonDivisor) / 2;
+        const commonMultiplier = activeMultiples.reduce(midi_math_1.greatestCommonDivisor) / 2;
         if (commonMultiplier === 0.5)
             return 0.5;
         const isPowerOfTwo = Number.isInteger(commonMultiplier)
@@ -2583,7 +2417,7 @@ class MidiConverter {
         const frequency = this.getNoteFrequency(key, state);
         if (frequency <= 20)
             return;
-        const semitoneOffset = this.frequencyToExactMidi(frequency) - state.baseMidiNote;
+        const semitoneOffset = (0, midi_math_1.frequencyToExactMidi)(frequency) - state.baseMidiNote;
         this.addPitchBend(key, semitoneOffset, pitchBendRange, currentTime);
     }
     handleYM2608Write(cmd, currentTime, activeNotes, cmdIndex) {
@@ -2869,7 +2703,7 @@ class MidiConverter {
         // underflow), matching the register-0 handling used elsewhere in this file.
         const effectivePeriod = period === 0 ? 1 : period;
         const normalizedRate = 1 - (effectivePeriod - 1) / 30;
-        return noiseDrumNote(normalizedRate, false);
+        return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
     }
     ssgNoiseNote(keyPrefix) {
         return this.ssgNoiseNoteForPeriod(this.ssgNoisePeriods.get(keyPrefix) ?? 1);
@@ -3118,7 +2952,7 @@ class MidiConverter {
     // HuC6280's $07 above.)
     ym2151NoiseNoteForPeriod(nfrq) {
         const normalizedRate = (31 - (nfrq & 0x1F)) / 31;
-        return noiseDrumNote(normalizedRate, false);
+        return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
     }
     handleHuC6280Write(cmd, currentTime, activeNotes, cmdIndex) {
         if (cmd.register === undefined || cmd.data === undefined)
@@ -4108,8 +3942,8 @@ class MidiConverter {
         if (!activeNotes.has(key))
             return;
         const clockRate = this.vgmData.header.gbDmgClock;
-        const oldNote = this.gbDmgNoiseNoteForPeriod(oldNoisePeriod, clockRate);
-        const newNote = this.gbDmgNoiseNoteForPeriod(data, clockRate);
+        const oldNote = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(oldNoisePeriod, clockRate);
+        const newNote = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(data, clockRate);
         if (oldNote === newNote)
             return;
         this.noteOff(key, 0, currentTime, activeNotes);
@@ -4128,7 +3962,7 @@ class MidiConverter {
         if (activeNotes.has(key))
             this.noteOff(key, 0, currentTime, activeNotes);
         if (this.gbDmgEnvelopeDacEnabled(state.volume)) {
-            const note = this.gbDmgNoiseNoteForPeriod(state.noisePeriod ?? 0, this.vgmData.header.gbDmgClock);
+            const note = (0, midi_math_1.gbDmgNoiseNoteForPeriod)(state.noisePeriod ?? 0, this.vgmData.header.gbDmgClock);
             this.updateGBDMGPan(key, 3, currentTime);
             this.noteOnPercussion(key, this.gbDmgEnvelopeVelocity(state.volume), currentTime, activeNotes, note);
         }
@@ -4626,7 +4460,7 @@ class MidiConverter {
     // NFRQ below.)
     huc6280NoiseNoteForPeriod(rawValue) {
         const normalizedRate = (rawValue & 0x1F) / 31;
-        return noiseDrumNote(normalizedRate, false);
+        return (0, midi_math_1.noiseDrumNote)(normalizedRate, false);
     }
     addHuC6280Expression(key, volume, currentTime) {
         this.addExpression(key, Math.round((volume / 31) * 127), currentTime);
@@ -4692,7 +4526,7 @@ class MidiConverter {
             ...(isLoop || durationSamples === undefined ? {} : { durationSamples }),
             ...(dataBlock?.lengthBytes === undefined ? {} : { dataLengthBytes: dataBlock.lengthBytes }),
         });
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.NoteOnEvent({
             pitch,
@@ -4711,7 +4545,7 @@ class MidiConverter {
         const trackState = this.getTrack(descriptor.id);
         trackState.pcmEvents ?? (trackState.pcmEvents = []);
         trackState.pcmEvents.push({ type: 'stop', sampleTime: currentTime });
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.NoteOffEvent({
             pitch,
@@ -4731,7 +4565,7 @@ class MidiConverter {
             startVolume: velocity,
         });
         const trackState = this.getTrack(descriptor.id);
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.NoteOnEvent({
             pitch,
@@ -4770,7 +4604,7 @@ class MidiConverter {
     addExpression(key, expression, currentTime) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         const clampedExpression = Math.max(0, Math.min(127, expression));
         trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
@@ -4798,7 +4632,7 @@ class MidiConverter {
         this.pcmChannel10Pan = clampedPan;
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({
             controllerNumber: 10,
@@ -4818,17 +4652,17 @@ class MidiConverter {
             state.pan = pan;
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         trackState.track.addEvent(new midi_writer_js_1.default.ControllerChangeEvent({ controllerNumber: 10, controllerValue: pan, channel: descriptor.midiChannel, delta: gap }));
         trackState.cursor = currentTick;
     }
     getNoteFrequency(key, state) {
         if (key.startsWith('psg_')) {
-            return this.psgRegisterToFrequency(state.frequency, this.vgmData.header.sn76489Clock, this.vgmData.header.sn76489Flags);
+            return (0, midi_math_1.psgRegisterToFrequency)(state.frequency, this.vgmData.header.sn76489Clock, this.vgmData.header.sn76489Flags);
         }
         else if (key.startsWith('ym2612_')) {
-            const baseFrequency = this.ym2612FrequencyToHz(state.frequency, state.block || 0, this.vgmData.header.ym2612Clock);
+            const baseFrequency = (0, midi_math_1.ym2612FrequencyToHz)(state.frequency, state.block || 0, this.vgmData.header.ym2612Clock);
             const pitchScale = state.active
                 ? (state.opnActivePitchScale ?? 1)
                 : this.opnPitchScale(state);
@@ -4839,26 +4673,26 @@ class MidiConverter {
             const instance = parseInt(instanceText);
             const prescaler = this.ym2203Prescalers[instance];
             if (section === 'fm' || section === 'ch3sp') {
-                const baseFrequency = this.ym2203FrequencyToHz(state.frequency, state.block ?? 0, this.vgmData.header.ym2203Clock, prescaler);
+                const baseFrequency = (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, this.vgmData.header.ym2203Clock, prescaler);
                 const pitchScale = state.active
                     ? (state.opnActivePitchScale ?? 1)
                     : this.opnPitchScale(state);
                 return baseFrequency * pitchScale;
             }
-            return this.ym2203SSGRegisterToFrequency(state.frequency, this.vgmData.header.ym2203Clock, prescaler, this.vgmData.header.ym2203AyFlags);
+            return (0, midi_math_1.ym2203SSGRegisterToFrequency)(state.frequency, this.vgmData.header.ym2203Clock, prescaler, this.vgmData.header.ym2203AyFlags);
         }
         else if (key.startsWith('ym2608_')) {
             const [, instanceText, section] = key.split('_');
             const instance = parseInt(instanceText);
             const prescaler = this.ym2608Prescalers[instance];
             if (section === 'fm' || section === 'ch3sp') {
-                const baseFrequency = this.ym2203FrequencyToHz(state.frequency, state.block ?? 0, this.vgmData.header.ym2608Clock, prescaler);
+                const baseFrequency = (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, this.vgmData.header.ym2608Clock, prescaler);
                 const pitchScale = state.active
                     ? (state.opnActivePitchScale ?? 1)
                     : this.opnPitchScale(state);
                 return baseFrequency * pitchScale;
             }
-            return this.ym2203SSGRegisterToFrequency(state.frequency, this.vgmData.header.ym2608Clock, prescaler, this.vgmData.header.ym2608AyFlags);
+            return (0, midi_math_1.ym2203SSGRegisterToFrequency)(state.frequency, this.vgmData.header.ym2608Clock, prescaler, this.vgmData.header.ym2608AyFlags);
         }
         else if (this.isOPLFMKey(key)) {
             const chip = key.split('_')[0].toUpperCase();
@@ -4867,7 +4701,7 @@ class MidiConverter {
                 : chip === 'YM3526'
                     ? this.vgmData.header.ym3526Clock
                     : this.vgmData.header.y8950Clock;
-            const baseFrequency = this.oplFrequencyToHz(state.frequency, state.block ?? 0, clockRate);
+            const baseFrequency = (0, midi_math_1.oplFrequencyToHz)(state.frequency, state.block ?? 0, clockRate);
             const pitchScale = state.active
                 ? (state.opnActivePitchScale ?? 1)
                 : this.oplPitchScale(state);
@@ -4877,20 +4711,20 @@ class MidiConverter {
             return this.ym2151KeyToFrequency(state.keyCode || 0, state.keyFraction || 0);
         }
         else if (key.startsWith('ay8910_')) {
-            return this.ay8910RegisterToFrequency(state.frequency, this.vgmData.header.ay8910Clock, this.vgmData.header.ay8910Flags);
+            return (0, midi_math_1.ay8910RegisterToFrequency)(state.frequency, this.vgmData.header.ay8910Clock, this.vgmData.header.ay8910Flags);
         }
         else if (key.startsWith('huc6280_')) {
-            return this.huc6280RegisterToFrequency(state.frequency, this.vgmData.header.huc6280Clock);
+            return (0, midi_math_1.huc6280RegisterToFrequency)(state.frequency, this.vgmData.header.huc6280Clock);
         }
         else if (key.startsWith('ym2413_')) {
-            const rawFrequency = this.ym2413RegisterToFrequency(state.frequency, state.block ?? 0, this.vgmData.header.ym2413Clock);
+            const rawFrequency = (0, midi_math_1.ym2413RegisterToFrequency)(state.frequency, state.block ?? 0, this.vgmData.header.ym2413Clock);
             return rawFrequency * (state.active ? (state.opnActivePitchScale ?? 1) : this.ym2413PitchScale(state));
         }
         else if (key === 'gbdmg_2') {
-            return this.gbDmgWaveFrequencyToHz(state.frequency, this.vgmData.header.gbDmgClock);
+            return (0, midi_math_1.gbDmgWaveFrequencyToHz)(state.frequency, this.vgmData.header.gbDmgClock);
         }
         else if (GBDMG_SQUARE_KEYS.includes(key)) {
-            return this.gbDmgSquareFrequencyToHz(state.frequency, this.vgmData.header.gbDmgClock);
+            return (0, midi_math_1.gbDmgSquareFrequencyToHz)(state.frequency, this.vgmData.header.gbDmgClock);
         }
         return 0;
     }
@@ -4910,13 +4744,13 @@ class MidiConverter {
         key = descriptor.sourceKey;
         const state = this.channels.get(key);
         const freq = this.getNoteFrequency(key, state);
-        const midiNote = this.frequencyToMidiNote(freq);
+        const midiNote = (0, midi_math_1.frequencyToMidiNote)(freq);
         if (midiNote > 0 && midiNote < 128) {
             state.midiNote = midiNote;
             state.baseMidiNote = midiNote; // Capture base note
             activeNotes.set(descriptor.id, { note: midiNote, startTime: currentTime, startVolume: state.volume });
             const trackState = this.getTrack(descriptor.id);
-            const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+            const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
             const gap = Math.max(0, currentTick - trackState.cursor);
             // Simple velocity mapping
             let velocity = 80;
@@ -4966,7 +4800,7 @@ class MidiConverter {
             // event-type nibble, producing 0xE0 | 16 === 0xF0 (a SysEx-start byte) instead
             // of a Pitch Bend byte — corrupting the rest of the track for any MIDI reader
             // that doesn't happen to resync (GarageBand does not).
-            const exactMidiNote = this.frequencyToExactMidi(freq);
+            const exactMidiNote = (0, midi_math_1.frequencyToExactMidi)(freq);
             const semitoneOffset = exactMidiNote - midiNote;
             const bendRange = this.pitchBendRangeForKey(key);
             const bend = Math.max(-1, Math.min(1, semitoneOffset / bendRange));
@@ -5007,7 +4841,7 @@ class MidiConverter {
             const noteInfo = activeNotes.get(descriptor.id);
             // We don't need duration from start time anymore, just delta from last event (cursor)
             const trackState = this.getTrack(descriptor.id);
-            const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+            const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
             const gap = Math.max(0, currentTick - trackState.cursor);
             const midiCh = descriptor.midiChannel;
             trackState.track.addEvent(new midi_writer_js_1.default.NoteOffEvent({
@@ -5024,7 +4858,7 @@ class MidiConverter {
     updateNotePitch(key, midiChannelOffset, currentTime, activeNotes) {
         const state = this.channels.get(key);
         const freq = this.getNoteFrequency(key, state);
-        const newExactNote = this.frequencyToExactMidi(freq);
+        const newExactNote = (0, midi_math_1.frequencyToExactMidi)(freq);
         if (activeNotes.has(key)) {
             const diff = newExactNote - state.baseMidiNote;
             // Dynamic Threshold Logic:
@@ -5054,7 +4888,7 @@ class MidiConverter {
     addPitchBend(key, semitoneOffset, semitoneRange, currentTime) {
         const descriptor = this.resolveDescriptor(key);
         const trackState = this.getTrack(descriptor.id);
-        const currentTick = this.samplesToTicks(currentTime, this.options.tempo);
+        const currentTick = (0, midi_math_1.samplesToTicks)(currentTime, this.options.tempo, this.sampleRate);
         const gap = Math.max(0, currentTick - trackState.cursor);
         const midiChannel = descriptor.midiChannel;
         const bend = Math.max(-1, Math.min(1, semitoneOffset / semitoneRange));
@@ -5217,7 +5051,7 @@ class MidiConverter {
     /** MIDI writer の固定divisionを 960 PPQ へ置換する。 */
     buildMidiFile(tracks) {
         const file = Buffer.from(new midi_writer_js_1.default.Writer(tracks).buildFile());
-        file.writeUInt16BE(MIDI_PPQ, 12);
+        file.writeUInt16BE(midi_math_1.MIDI_PPQ, 12);
         return file;
     }
     /** チップ別DAW編集用sidecarを、通常の混在出力と併せて書き出す。 */
