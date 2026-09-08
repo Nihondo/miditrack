@@ -274,6 +274,15 @@ class MidiConverter {
         // Ch3 mode and active collapsed-percussion track are isolated per OPN chip instance.
         this.opnCh3SpecialModes = new Map();
         this.opnCh3PercussionActiveKeys = new Map();
+        // Whether Special mode was EVER entered for this OPN chip instance, across the whole
+        // file — unlike opnCh3SpecialModes (the *current* mode), this never reverts to false.
+        // libvgmTargetForDescriptor() uses this to withhold a libvgm ("game") option from the
+        // channel-3 parent track (Op4) once Special mode has been active at any point: real
+        // hardware has no way to mute Op1-3 independently of Op4 on the shared physical
+        // channel, so offering "game" only on the parent track would let a user switch Op4
+        // to hardware audio (the real composite Ch3 voice, including Op1-3) while Op1-3's own
+        // MIDI tracks keep sounding through SoundFont at the same time — an audible duplicate.
+        this.opnCh3SpecialEverActive = new Set();
         // Counts how often a Ch3 Special attack keys on 2+ audible operators within
         // OPN_CH3_UNISON_SEMITONE_THRESHOLD of each other, per OPN chip instance — a source
         // driving every operator at (near-)identical pitch is playing one melodic voice in
@@ -677,9 +686,14 @@ class MidiConverter {
                 opnOperatorTotalLevels: state.opnOperatorTotalLevels?.slice(),
             }]));
     }
-    opnCh3Context(chip, instance = 0) {
+    /** OPN Ch3 Special関連state（opnCh3SpecialModes等）のMapキーを、YM2612は
+     * インスタンス非依存、YM2203/YM2608はチップ+インスタンスで構築する。 */
+    opnCh3StateKey(chip, instance) {
         const lowerChip = chip.toLowerCase();
-        const stateKey = chip === 'YM2612' ? lowerChip : `${lowerChip}_${instance}`;
+        return chip === 'YM2612' ? lowerChip : `${lowerChip}_${instance}`;
+    }
+    opnCh3Context(chip, instance = 0) {
+        const stateKey = this.opnCh3StateKey(chip, instance);
         const parentKey = chip === 'YM2612' ? 'ym2612_2' : `${stateKey}_fm_2`;
         const operatorKeys = [
             `${stateKey}_ch3sp_1`,
@@ -1443,6 +1457,7 @@ class MidiConverter {
         this.ym2612DirectDACLastWriteTime = undefined;
         this.opnCh3SpecialModes.clear();
         this.opnCh3PercussionActiveKeys.clear();
+        this.opnCh3SpecialEverActive.clear();
         this.opnCh3UnisonStats.clear();
         this.opnCsmTimers.clear();
         this.opmCsmTimers.clear();
@@ -1894,6 +1909,8 @@ class MidiConverter {
         this.channels.get(context.parentKey).keyOnMask = 0;
         this.opnCsmTimer(context.chip, context.instance).manualKeyOnMask = 0;
         this.opnCh3SpecialModes.set(context.stateKey, isSpecial);
+        if (isSpecial)
+            this.opnCh3SpecialEverActive.add(context.stateKey);
     }
     /** OPN Timer Aの値をCSM schedulerへ反映する。 */
     updateOPNCsmTimerRegister(chip, instance, register, data) {
@@ -5063,6 +5080,16 @@ class MidiConverter {
         }));
         trackState.cursor = currentTick;
     }
+    /** OPN channel-3の親トラック（Ch3 Special時のOp4）をlibvgmの選択対象から除外すべきか。
+     *
+     * Ch3 Specialモードが一度でも有効になったチップインスタンスでは、Op1-3専用トラックは
+     * （安全な一対一のミュート対象がないため）そもそもlibvgmターゲットを持たない。親トラック
+     * （通常のFM ch3、Op4）だけを除外しないと、それを「原曲」に切り替えたときlibvgmが物理
+     * channel3全体（Op1-4の複合音）をレンダリングする一方でOp1-3のMIDIトラックはSoundFontで
+     * 鳴り続け、実機の複合音とSoundFontの音が二重に鳴ってしまう。 */
+    isOPNCh3ParentChannelExcludedFromLibvgm(chip, instance, channel) {
+        return channel === 2 && this.opnCh3SpecialEverActive.has(this.opnCh3StateKey(chip, instance));
+    }
     /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。 */
     libvgmTargetForDescriptor(descriptor) {
         const { chip, instance, section, channel, sourceKey } = descriptor;
@@ -5087,7 +5114,8 @@ class MidiConverter {
                 mainChannel = 6;
                 isSuggested = true;
             }
-            else if (!sourceKey.includes('_ch3sp_') && !sourceKey.includes('_ch3perc_'))
+            else if (!sourceKey.includes('_ch3sp_') && !sourceKey.includes('_ch3perc_')
+                && !this.isOPNCh3ParentChannelExcludedFromLibvgm('YM2612', instance, channel))
                 mainChannel = channel;
         }
         else if (chip === 'YM2151') {
@@ -5101,14 +5129,14 @@ class MidiConverter {
         }
         else if (chip === 'YM2203') {
             deviceType = 0x06;
-            if (section === 'fm')
+            if (section === 'fm' && !this.isOPNCh3ParentChannelExcludedFromLibvgm('YM2203', instance, channel))
                 mainChannel = channel;
             else if (section === 'ssg' || section === 'noise')
                 linkedChannel = channel;
         }
         else if (chip === 'YM2608') {
             deviceType = 0x07;
-            if (section === 'fm')
+            if (section === 'fm' && !this.isOPNCh3ParentChannelExcludedFromLibvgm('YM2608', instance, channel))
                 mainChannel = channel;
             else if (section === 'ssg' || section === 'noise')
                 linkedChannel = channel;

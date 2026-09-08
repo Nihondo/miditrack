@@ -35,6 +35,7 @@ export declare class MidiConverter {
     private ym2612DirectDACLastWriteTime?;
     private opnCh3SpecialModes;
     private opnCh3PercussionActiveKeys;
+    private opnCh3SpecialEverActive;
     private opnCh3UnisonStats;
     private opnCsmTimers;
     private opmCsmTimers;
@@ -70,6 +71,9 @@ export declare class MidiConverter {
     private restoreChipScalars;
     /** 変換間で可変レジスタを共有しないための深い状態複製。 */
     private cloneChannels;
+    /** OPN Ch3 Special関連state（opnCh3SpecialModes等）のMapキーを、YM2612は
+     * インスタンス非依存、YM2203/YM2608はチップ+インスタンスで構築する。 */
+    private opnCh3StateKey;
     private opnCh3Context;
     private initializeOPNCh3SpecialChannels;
     private midiChannelForKey;
@@ -403,6 +407,14 @@ export declare class MidiConverter {
     private noteOff;
     private updateNotePitch;
     private addPitchBend;
+    /** OPN channel-3の親トラック（Ch3 Special時のOp4）をlibvgmの選択対象から除外すべきか。
+     *
+     * Ch3 Specialモードが一度でも有効になったチップインスタンスでは、Op1-3専用トラックは
+     * （安全な一対一のミュート対象がないため）そもそもlibvgmターゲットを持たない。親トラック
+     * （通常のFM ch3、Op4）だけを除外しないと、それを「原曲」に切り替えたときlibvgmが物理
+     * channel3全体（Op1-4の複合音）をレンダリングする一方でOp1-3のMIDIトラックはSoundFontで
+     * 鳴り続け、実機の複合音とSoundFontの音が二重に鳴ってしまう。 */
+    private isOPNCh3ParentChannelExcludedFromLibvgm;
     /** MIDIトラック記述子をlibvgmのdevice/channel mute選択へ変換する。 */
     private libvgmTargetForDescriptor;
     /** MIDIファイルを書き出し、音符が生成されなかった場合は空ファイルを作らず失敗させる。 */
