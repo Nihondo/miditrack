@@ -66,9 +66,11 @@ export function psgRegisterToFrequency(register: number, clockRate: number, flag
 export function ym2612FrequencyToHz(fnum: number, block: number, clockRate: number): number {
   if (fnum === 0) return 0;
   // YM2612 frequency = (fnum * clock) / (288 * 2^(20 - block)).
-  // The phase generator's F-Number base has an additional /2 compared with
-  // the OPN formula used by YM2203/YM2608. The operator MULTI handling applies
-  // the patch ratio separately in event-output.ts.
+  // The OPN2 phase generator's F-Number base has an additional /2 compared
+  // with the plain OPN formula used by YM2203 (see ym2203FrequencyToHz()).
+  // YM2608's OPNA core shares this same /2 (see ym2608FrequencyToHz()) -
+  // only YM2203 uses the undivided 144 base. The operator MULTI handling
+  // applies the patch ratio separately in event-output.ts.
   // If block is undefined, treat as 0
   const blk = block || 0;
   const effectiveClockRate = clockRate & 0x3FFFFFFF;
@@ -85,6 +87,34 @@ export function ym2203FrequencyToHz(
   const effectiveClockRate = clockRate & 0x3FFFFFFF;
   // YM2203 OPN F-Number uses a 144 divisor at the default /6 prescale.
   return (fnum * effectiveClockRate) / ((24 * prescaler) * Math.pow(2, 20 - block));
+}
+
+export function ym2608FrequencyToHz(
+  fnum: number,
+  block: number,
+  clockRate: number,
+  prescaler: number
+): number {
+  if (fnum === 0) return 0;
+  const blk = block || 0;
+  const effectiveClockRate = clockRate & 0x3FFFFFFF;
+  // YM2608's OPNA FM core includes the same phase-generator /2 as YM2612
+  // (see ym2612FrequencyToHz()), giving a 288 divisor at the default /6
+  // prescale - twice YM2203's 144. Confirmed against libvgm-rendered audio
+  // for real YM2608 corpus material (Hydlide 3).
+  return (fnum * effectiveClockRate) / ((48 * prescaler) * Math.pow(2, 20 - blk));
+}
+
+// The integrated SSG core's own divider halves twice as the shared FM
+// Prescaler register (see updateYM2203Prescaler()/updateYM2608Prescaler())
+// steps /6 -> /3 -> /2, unlike the FM path above where the divisor scales
+// linearly with the prescaler value itself. Confirmed against libvgm-rendered
+// audio: the naive `6 / prescaler` ratio this replaces matches at /3 but is
+// off by one semitone short of an octave at /2.
+function opnSSGPrescaleRatio(prescaler: number): number {
+  if (prescaler === 2) return 4;
+  if (prescaler === 3) return 2;
+  return 1; // default /6 prescale
 }
 
 export function oplFrequencyToHz(fnum: number, block: number, clockRate: number): number {
@@ -113,8 +143,25 @@ export function ym2203SSGRegisterToFrequency(
   if (register === 0) return 0;
   const baseClockRate = clockRate & 0x3FFFFFFF;
   const effectiveClockRate = (flags & 0x10) !== 0 ? baseClockRate / 2 : baseClockRate;
+  // YM2203's integrated SSG core uses master clock / (32 * period) at the
+  // default /6 prescale - half of YM2608's /64 OPNA SSG divisor below,
+  // mirroring the FM core's 144-vs-288 split in ym2203FrequencyToHz()/
+  // ym2608FrequencyToHz(). Confirmed against libvgm-rendered audio.
+  return (effectiveClockRate * opnSSGPrescaleRatio(prescaler)) / (32 * register);
+}
+
+export function ym2608SSGRegisterToFrequency(
+  register: number,
+  clockRate: number,
+  prescaler: number,
+  flags: number
+): number {
+  // See ay8910RegisterToFrequency(): the real period-1 equivalent is ultrasonic.
+  if (register === 0) return 0;
+  const baseClockRate = clockRate & 0x3FFFFFFF;
+  const effectiveClockRate = (flags & 0x10) !== 0 ? baseClockRate / 2 : baseClockRate;
   // The integrated SSG uses master clock / (64 * period) at the default /6 prescale.
-  return (effectiveClockRate * (6 / prescaler)) / (64 * register);
+  return (effectiveClockRate * opnSSGPrescaleRatio(prescaler)) / (64 * register);
 }
 
 export function huc6280RegisterToFrequency(register: number, clockRate: number): number {

@@ -1353,7 +1353,7 @@ test('YM2612 channel 3 percussion mode collapses composite hits to GM drum famil
   );
 
   assert.equal(converter.generatedNoteCount, 5);
-  for (const note of [36, 36, 42, 50, 41]) {
+  for (const note of [36, 38, 42, 49, 47]) {
     assert.notEqual(midi.indexOf(Buffer.from([0x99, note])), -1, `missing GM note ${note}`);
   }
   assert.equal(midi.indexOf(Buffer.from([0x9A])), -1); // no independent Op1 track
@@ -2190,7 +2190,7 @@ test('YM2203 integrated SSG converts tone pitch and noise rhythm separately', ()
   const midi = Buffer.from(new MidiWriter.Writer(converter.convert()).buildFile());
   assert.notEqual(midi.indexOf(Buffer.from('YM2203 SSG 0')), -1);
   assert.notEqual(midi.indexOf(Buffer.from('YM2203 SSG Noise 0')), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x93, 69])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x93, 81])), -1);
   assert.notEqual(midi.indexOf(Buffer.from([0x99, 42])), -1);
 });
 
@@ -2237,8 +2237,8 @@ test('YM2203 integrated SSG split period writes do not emit an intermediate phan
     .map(event => event.pitch);
 
   // Without the split-write guard, the intermediate MSB-only state briefly reads as
-  // note 37 and retriggers a spurious extra Note On/Off pair before the real one.
-  assert.deepEqual(noteOnPitches, [69]);
+  // note 49 and retriggers a spurious extra Note On/Off pair before the real one.
+  assert.deepEqual(noteOnPitches, [81]);
   assert.equal(converter.generatedNoteCount, 1);
 });
 
@@ -2261,8 +2261,8 @@ test('YM2203 prescaler changes retune the integrated SSG by one octave', () => {
 
   const MidiWriter = require('midi-writer-js');
   const midi = Buffer.from(new MidiWriter.Writer(converter.convert()).buildFile());
-  assert.notEqual(midi.indexOf(Buffer.from([0x93, 69])), -1);
   assert.notEqual(midi.indexOf(Buffer.from([0x93, 81])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x93, 93])), -1);
 });
 
 test('YM2203 prescaler changes retune an active channel 3 special operator', () => {
@@ -2301,7 +2301,7 @@ test('second YM2203 uses separate FM and SSG track identities', () => {
   const MidiWriter = require('midi-writer-js');
   const midi = Buffer.from(new MidiWriter.Writer(converter.convert()).buildFile());
   assert.notEqual(midi.indexOf(Buffer.from('YM2203 #2 SSG 0')), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x9A, 69])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x9A, 81])), -1);
 });
 
 test('YM2608 converts all six FM channels and keeps F-Number changes inside one key-on', () => {
@@ -2332,7 +2332,7 @@ test('YM2608 converts all six FM channels and keeps F-Number changes inside one 
   assert.equal(pitchBends.length, 2);
   assert.equal(rangeEntry.controllerValue, 96);
   assert.notEqual(midi.indexOf(Buffer.from('YM2608 FM 3')), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x93, 60])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x93, 48])), -1);
 });
 
 test('YM2608 channel 3 special mode exposes four operator pitches by default', () => {
@@ -2343,10 +2343,10 @@ test('YM2608 channel 3 special mode exposes four operator pitches by default', (
   );
 
   assert.equal(converter.generatedNoteCount, 4);
-  assert.notEqual(midi.indexOf(Buffer.from([0x92, 60])), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x9D, 48])), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x9E, 72])), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x9F, 84])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x92, 48])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x9D, 36])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x9E, 60])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x9F, 72])), -1);
   assert.notEqual(midi.indexOf(Buffer.from('YM2608 Ch3 Special Op1')), -1);
 });
 

@@ -15,7 +15,7 @@
 
 import type { MidiConverter, OPNCh3Context, OPNCh3Chip, ChannelState } from '../midi-converter';
 import { OPN_OPERATOR_PATHS } from '../midi-converter';
-import { frequencyToMidiNote, ym2612FrequencyToHz, ym2203FrequencyToHz } from '../midi-math';
+import { frequencyToMidiNote, ym2612FrequencyToHz, ym2203FrequencyToHz, ym2608FrequencyToHz } from '../midi-math';
 import { addExpression, addPan, noteOn, noteOff, noteOnPercussion, updateNotePitch } from '../event-output';
 
 type ActiveNoteMap = Map<string, { note: number; startTime: number; startVolume: number }>;
@@ -318,28 +318,35 @@ export function opnCh3OperatorFrequency(host: MidiConverter, context: OPNCh3Cont
       host.vgmData.header.ym2612Clock
     );
   }
-  const clock = context.chip === 'YM2203'
-    ? host.vgmData.header.ym2203Clock
-    : host.vgmData.header.ym2608Clock;
-  const prescaler = context.chip === 'YM2203'
-    ? host.ym2203Prescalers[context.instance]
-    : host.ym2608Prescalers[context.instance];
-  return ym2203FrequencyToHz(state.frequency, state.block ?? 0, clock, prescaler);
+  if (context.chip === 'YM2608') {
+    return ym2608FrequencyToHz(
+      state.frequency,
+      state.block ?? 0,
+      host.vgmData.header.ym2608Clock,
+      host.ym2608Prescalers[context.instance]
+    );
+  }
+  return ym2203FrequencyToHz(
+    state.frequency,
+    state.block ?? 0,
+    host.vgmData.header.ym2203Clock,
+    host.ym2203Prescalers[context.instance]
+  );
 }
 
 export function opnCh3PercussionNoteForCarrierNotes(carrierNotes: number[]): number {
   if (carrierNotes.length === 0) return 38;
   carrierNotes.sort((left, right) => left - right);
   const note = carrierNotes[Math.floor(carrierNotes.length / 2)];
-  if (note <= 48) return 36;
-  if (note <= 64) return 38;
-  if (note >= 108) return 42;
-  if (note >= 88) return 49;
-  if (note <= 68) return 41;
-  if (note <= 72) return 43;
-  if (note <= 75) return 45;
-  if (note <= 78) return 47;
-  if (note <= 81) return 48;
+  if (note <= 36) return 36;
+  if (note <= 52) return 38;
+  if (note >= 96) return 42;
+  if (note >= 76) return 49;
+  if (note <= 56) return 41;
+  if (note <= 60) return 43;
+  if (note <= 63) return 45;
+  if (note <= 66) return 47;
+  if (note <= 69) return 48;
   return 50;
 }
 

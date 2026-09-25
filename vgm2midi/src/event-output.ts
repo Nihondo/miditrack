@@ -21,9 +21,11 @@ import {
   psgRegisterToFrequency,
   ym2612FrequencyToHz,
   ym2203FrequencyToHz,
+  ym2608FrequencyToHz,
   oplFrequencyToHz,
   ay8910RegisterToFrequency,
   ym2203SSGRegisterToFrequency,
+  ym2608SSGRegisterToFrequency,
   huc6280RegisterToFrequency,
   ym2413RegisterToFrequency,
   gbDmgWaveFrequencyToHz,
@@ -275,7 +277,7 @@ export function getNoteFrequency(host: MidiConverter, key: string, state: Channe
         const instance = parseInt(instanceText);
         const prescaler = host.ym2608Prescalers[instance];
         if (section === 'fm' || section === 'ch3sp') {
-          const baseFrequency = ym2203FrequencyToHz(
+          const baseFrequency = ym2608FrequencyToHz(
             state.frequency,
             state.block ?? 0,
             host.vgmData.header.ym2608Clock,
@@ -286,7 +288,7 @@ export function getNoteFrequency(host: MidiConverter, key: string, state: Channe
             : host.opnPitchScale(state);
           return baseFrequency * pitchScale;
         }
-        return ym2203SSGRegisterToFrequency(
+        return ym2608SSGRegisterToFrequency(
           state.frequency,
           host.vgmData.header.ym2608Clock,
           prescaler,

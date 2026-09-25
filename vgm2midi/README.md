@@ -346,12 +346,15 @@ vgm2midi song.vgz --ch3-special-percussion
 
 - FM synthesis parameters are simplified — MIDI has no native FM voice
   model, so YM2203/YM2608/YM2612/YM2151 channels are approximated as simple notes.
-  YM2612's F-Number base includes its phase-generator /2, then uses algorithm,
-  key-on mask, total level, and explicitly written operator multipliers for an
-  unambiguous shared power-of-two octave correction (including 0.5x). YM2203 and
-  YM2608 follow the same multiplier policy with their respective frequency bases.
-  Ratios without a shared power-of-two factor, detune, envelopes, and perceived
-  missing fundamentals remain raw F-Number approximations
+  YM2612 and YM2608 share the same OPN2/OPNA phase-generator F-Number base
+  (including its extra /2 relative to YM2203's OPN base); YM2608's integrated
+  SSG likewise uses its own OPNA-scaled divisor, distinct from YM2203's SSG.
+  Both frequency bases are confirmed against libvgm-rendered audio for real
+  corpus material. On top of that base, algorithm, key-on mask, total level,
+  and explicitly written operator multipliers drive an unambiguous shared
+  power-of-two octave correction (including 0.5x). Ratios without a shared
+  power-of-two factor, detune, envelopes, and perceived missing fundamentals
+  remain raw F-Number approximations
 - YM2413 defers reverse `$20`-then-`$10` key-on ordering and models only an
   explicit power-of-two carrier-Multiple correction. Non-power-of-two ratios,
   envelopes, detune, and the original OPLL timbre remain outside MIDI's model.

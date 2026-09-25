@@ -220,13 +220,13 @@ function getNoteFrequency(host, key, state) {
         const instance = parseInt(instanceText);
         const prescaler = host.ym2608Prescalers[instance];
         if (section === 'fm' || section === 'ch3sp') {
-            const baseFrequency = (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, host.vgmData.header.ym2608Clock, prescaler);
+            const baseFrequency = (0, midi_math_1.ym2608FrequencyToHz)(state.frequency, state.block ?? 0, host.vgmData.header.ym2608Clock, prescaler);
             const pitchScale = state.active
                 ? (state.opnActivePitchScale ?? 1)
                 : host.opnPitchScale(state);
             return baseFrequency * pitchScale;
         }
-        return (0, midi_math_1.ym2203SSGRegisterToFrequency)(state.frequency, host.vgmData.header.ym2608Clock, prescaler, host.vgmData.header.ym2608AyFlags);
+        return (0, midi_math_1.ym2608SSGRegisterToFrequency)(state.frequency, host.vgmData.header.ym2608Clock, prescaler, host.vgmData.header.ym2608AyFlags);
     }
     else if (host.isOPLFMKey(key)) {
         const chip = key.split('_')[0].toUpperCase();

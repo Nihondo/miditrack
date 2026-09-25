@@ -59,6 +59,18 @@ alternate converter entry points.
   sidecar events when appropriate, not false retriggers.
 - General MIDI percussion uses channel 10. Keep channel assignment and program
   changes centralized in event-output helpers.
+- OPN-family frequency formulas are chip-specific, not interchangeable: YM2612
+  and YM2608 share the same OPN2/OPNA phase-generator F-Number base (a 288
+  divisor at the default /6 FM prescale, in `ym2612FrequencyToHz()`/
+  `ym2608FrequencyToHz()` in `midi-math.ts`); YM2203's plain OPN base uses 144
+  instead. The integrated SSG core has its own, separate chip-specific
+  divisor (`ym2203SSGRegisterToFrequency()` vs `ym2608SSGRegisterToFrequency()`)
+  and prescale ratio (`opnSSGPrescaleRatio()`: 1/2/4 for /6, /3, /2 - not
+  linear with the prescaler value the way the FM divisor is). Verify any
+  change to these formulas against `native/bin/vgm2midi_stems --selection`
+  audio (render one chip/channel, compare its pitch against the generated
+  MIDI note) rather than by inspection alone - an octave-scale mixup here is
+  easy to get algebraically self-consistent but audibly wrong.
 
 ## Supported interpretation and deliberate limits
 

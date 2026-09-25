@@ -269,36 +269,33 @@ function opnCh3OperatorFrequency(host, context, state) {
     if (context.chip === 'YM2612') {
         return (0, midi_math_1.ym2612FrequencyToHz)(state.frequency, state.block ?? 0, host.vgmData.header.ym2612Clock);
     }
-    const clock = context.chip === 'YM2203'
-        ? host.vgmData.header.ym2203Clock
-        : host.vgmData.header.ym2608Clock;
-    const prescaler = context.chip === 'YM2203'
-        ? host.ym2203Prescalers[context.instance]
-        : host.ym2608Prescalers[context.instance];
-    return (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, clock, prescaler);
+    if (context.chip === 'YM2608') {
+        return (0, midi_math_1.ym2608FrequencyToHz)(state.frequency, state.block ?? 0, host.vgmData.header.ym2608Clock, host.ym2608Prescalers[context.instance]);
+    }
+    return (0, midi_math_1.ym2203FrequencyToHz)(state.frequency, state.block ?? 0, host.vgmData.header.ym2203Clock, host.ym2203Prescalers[context.instance]);
 }
 function opnCh3PercussionNoteForCarrierNotes(carrierNotes) {
     if (carrierNotes.length === 0)
         return 38;
     carrierNotes.sort((left, right) => left - right);
     const note = carrierNotes[Math.floor(carrierNotes.length / 2)];
-    if (note <= 48)
+    if (note <= 36)
         return 36;
-    if (note <= 64)
+    if (note <= 52)
         return 38;
-    if (note >= 108)
+    if (note >= 96)
         return 42;
-    if (note >= 88)
+    if (note >= 76)
         return 49;
-    if (note <= 68)
+    if (note <= 56)
         return 41;
-    if (note <= 72)
+    if (note <= 60)
         return 43;
-    if (note <= 75)
+    if (note <= 63)
         return 45;
-    if (note <= 78)
+    if (note <= 66)
         return 47;
-    if (note <= 81)
+    if (note <= 69)
         return 48;
     return 50;
 }
