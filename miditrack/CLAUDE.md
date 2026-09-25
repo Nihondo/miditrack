@@ -135,6 +135,8 @@ response rather than absorb business logic.
   safely.
 - Preferences are partial updates. Validate every supplied field and preserve
   other valid stored fields.
+- Variation speed and transpose defaults live in preferences; validate both
+  axes and their combined render count with `midi.validate_variation_options()`.
 - `.miditrack` import is staged and validated before it replaces the active
   session. Archive names and members must remain path-safe.
 - Download names are sanitized stems, never user-controlled paths. Per-track

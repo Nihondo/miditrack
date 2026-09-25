@@ -857,6 +857,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .settings-section .convert-field.is-checkbox { margin-bottom: 10px; }
 .settings-section .field-group { margin-top: 12px; }
 .settings-section .field-group:first-child { margin-top: 0; }
+.settings-section .convert-field + .convert-field { margin-top: 12px; }
 
 /* 関連する設定は横並びにして、視線移動を少なくする。チェックボックスは
    内容幅のまま詰め、色・セレクト設定は同じ幅の2カラムに揃える。 */

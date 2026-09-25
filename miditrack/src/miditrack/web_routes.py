@@ -1616,8 +1616,12 @@ def create_app(
     @app.post("/api/variations")
     def variations_endpoint() -> Response:
         body = request.get_json(silent=True) or {}
+        defaults = preferences.load_preferences()
+        requested_speeds = body.get("speeds")
+        requested_transposes = body.get("transposes")
         speeds, transposes = midi.validate_variation_options(
-            body.get("speeds"), body.get("transposes")
+            requested_speeds if requested_speeds is not None else defaults["variationSpeeds"],
+            requested_transposes if requested_transposes is not None else defaults["variationTransposes"],
         )
         include_midi = body.get("includeMidi", True)
         if not isinstance(include_midi, bool):

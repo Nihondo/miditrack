@@ -157,6 +157,8 @@ const state = {
   pianorollGridColor: null, // グリッド線色のユーザー指定（#rrggbb）。nullならテーマ既定。
   trackColorPalette: "rainbow", // トラック配色パレット（rainbow/muted/accessible）。
   renderWorkers: "auto", // レンダリングジョブの同時処理数（"auto"またはユーザー指定の整数）。設定として永続化する。
+  variationSpeeds: [1.2, 1.0, 0.8], // バリエーション生成欄の既定値。設定として永続化する。
+  variationTransposes: [-2, -1, 0, 1, 2],
   instrumentRows: [],     // 現在描画中の楽器行 { select, pinButton } の一覧。ピン留め変更時に全行を再描画する。
   // 現在描画中の全トラック行のコントロール参照
   // { sourceInputs, programSelect, volumeSlider, muteButton }（無いものはnull）。
@@ -404,6 +406,10 @@ async function loadPreferences() {
     state.renderWorkers = RENDER_WORKER_OPTIONS.has(payload.renderWorkers)
       ? payload.renderWorkers
       : "auto";
+    state.variationSpeeds = payload.variationSpeeds || state.variationSpeeds;
+    state.variationTransposes = payload.variationTransposes || state.variationTransposes;
+    $("#variation-speeds").value = state.variationSpeeds.join(", ");
+    $("#variation-transposes").value = state.variationTransposes.join(", ");
     $("#pianoroll-rounded-notes").checked = state.hasRoundedPianorollNotes;
     $("#pianoroll-outlined-notes").checked = state.hasOutlinedPianorollNotes;
     $("#pianoroll-show-keyboard").checked = state.isPianorollKeyboardVisible;
@@ -479,6 +485,8 @@ function syncSettingsDialogControls() {
   $("#pianoroll-grid-color").value =
     state.pianorollGridColor || cssColor("--pianoroll-grid-line", "#ebecf0");
   $("#render-workers").value = String(state.renderWorkers);
+  $("#default-variation-speeds").value = state.variationSpeeds.join(", ");
+  $("#default-variation-transposes").value = state.variationTransposes.join(", ");
 }
 
 // 環境設定（表示設定・動作設定）の変更をサーバー側設定へ保存する。起動ごとに
@@ -3918,7 +3926,8 @@ async function handleVariations() {
     return;
   }
   const includeMidi = $("#variation-include-midi").checked;
-  const comboCount = (speeds.length || 3) * (transposes.length || 5);
+  const comboCount = (speeds.length || state.variationSpeeds.length)
+    * (transposes.length || state.variationTransposes.length);
   setBusy(true, t("バリエーションを生成中…（{count}回レンダリングします）", { count: comboCount }));
   try {
     const response = await apiFetch("/api/variations", {
@@ -4198,6 +4207,34 @@ function setupSettingsDialog() {
     state.renderWorkers = event.target.value === "auto" ? "auto" : Number(event.target.value);
     savePreferenceFields({ renderWorkers: state.renderWorkers });
   });
+
+  for (const [inputId, outputId, field] of [
+    ["#default-variation-speeds", "#variation-speeds", "variationSpeeds"],
+    ["#default-variation-transposes", "#variation-transposes", "variationTransposes"],
+  ]) {
+    $(inputId).addEventListener("change", async (event) => {
+      const values = parseNumberList(event.target.value);
+      if (values === null) {
+        showStatus(t("速度・ピッチには数値をカンマ区切りで入力してください"), "error");
+        event.target.value = state[field].join(", ");
+        return;
+      }
+      try {
+        const response = await apiFetch("/api/preferences", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [field]: values }),
+        });
+        const payload = await response.json();
+        state[field] = payload[field];
+        event.target.value = state[field].join(", ");
+        $(outputId).value = event.target.value;
+      } catch (error) {
+        showStatus(error.message, "error");
+        event.target.value = state[field].join(", ");
+      }
+    });
+  }
 
   // 色ピッカーはinputイベント（ドラッグ中）でプレビューだけを更新し、
   // changeイベント（確定時）でPATCHを送る。ドラッグ中に毎回保存しないため。

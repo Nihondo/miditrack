@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from . import i18n
+from . import i18n, midi
 from .errors import WebValidationError
 from .gm import GM_PROGRAM_NAMES
 
@@ -106,6 +106,8 @@ def _empty_preferences() -> dict[str, Any]:
         "trackColorPalette": "rainbow",
         "hideEmptyTracks": True,
         "renderWorkers": "auto",
+        "variationSpeeds": list(midi.DEFAULT_VARIATION_SPEEDS),
+        "variationTransposes": list(midi.DEFAULT_VARIATION_TRANSPOSES),
         "ensemblePresets": build_default_ensemble_presets(),
     }
 
@@ -180,6 +182,11 @@ def load_preferences() -> dict[str, Any]:
             result[field] = _FIELD_VALIDATORS[field](data.get(field))
         except WebValidationError:
             result[field] = default
+    try:
+        midi.validate_variation_options(result["variationSpeeds"], result["variationTransposes"])
+    except WebValidationError:
+        result["variationSpeeds"] = list(midi.DEFAULT_VARIATION_SPEEDS)
+        result["variationTransposes"] = list(midi.DEFAULT_VARIATION_TRANSPOSES)
     return result
 
 
@@ -328,6 +335,15 @@ def resolve_render_workers(value: str | int) -> int:
     return max(RENDER_WORKERS_MIN, min(RENDER_WORKERS_MAX, value))
 
 
+def _validate_variation_speeds(value: Any) -> list[float]:
+    # もう片方の軸を1値に固定し、MIDI側の型・範囲・件数・重複除去を再利用する。
+    return midi.validate_variation_options(value, [0])[0]
+
+
+def _validate_variation_transposes(value: Any) -> list[int]:
+    return midi.validate_variation_options([1.0], value)[1]
+
+
 def validate_ensemble_presets(value: Any) -> list[dict[str, Any]]:
     """編成プリセット一覧を検証し、保存用の正規化済みデータを返す。"""
     if value is None:
@@ -393,6 +409,8 @@ _FIELD_VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "trackColorPalette": lambda value: _validate_choice(value, TRACK_COLOR_PALETTES, "trackColorPalette"),
     "hideEmptyTracks": lambda value: _validate_bool(value, "hideEmptyTracks"),
     "renderWorkers": _validate_render_workers,
+    "variationSpeeds": _validate_variation_speeds,
+    "variationTransposes": _validate_variation_transposes,
     "ensemblePresets": validate_ensemble_presets,
 }
 
@@ -411,6 +429,7 @@ def save_preferences(updates: dict[str, Any]) -> dict[str, Any]:
     for field, validator in _FIELD_VALIDATORS.items():
         if field in updates:
             current[field] = validator(updates[field])
+    midi.validate_variation_options(current["variationSpeeds"], current["variationTransposes"])
 
     path = preferences_path()
     path.parent.mkdir(parents=True, exist_ok=True)

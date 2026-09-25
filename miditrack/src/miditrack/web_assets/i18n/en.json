@@ -167,6 +167,7 @@
   "ピアノロールを読み込めませんでした。": "Couldn't load the piano roll.",
   "ピアノロール表示。再生コントロールやキーボードでも再生位置を変更できます。": "Piano roll display. You can also change the playback position with the playback controls or keyboard.",
   "ピッチ": "Pitch",
+  "バリエーション生成の既定値": "Variation defaults",
   "ピッチ（半音、カンマ区切り）": "Pitch in semitones (comma-separated)",
   "ピッチ（半音）は{min_value}〜{max_value}の範囲で指定してください: {value}": "Pitch (semitones) must be {min_value}-{max_value}: {value}",
   "ピッチ（半音）は整数で指定してください: {value!r}": "Pitch (semitones) must be an integer: {value!r}",

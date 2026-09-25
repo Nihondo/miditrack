@@ -134,7 +134,7 @@ Rendering starts automatically after edits and completed renders are cached for 
 
 **Download MIDI / WAV (bottom)** — Download MIDI saves the edited file with current instrument assignments. Download WAV produces a 44.1 kHz stereo WAV using the current track settings, speed, and pitch. Edit the **filename** field before downloading to set the base name.
 
-**Generate variations in bulk** — Enter comma-separated speed multipliers and semitone values, then click **Download variations as ZIP**. Check **Include MIDI in ZIP** to add the corresponding MIDI file for each combination. Accepts up to 6 speeds, 8 transposes, and 15 total combinations. The audition speed and pitch settings are not changed.
+**Generate variations in bulk** — Enter comma-separated speed multipliers and semitone values, then click **Download variations as ZIP**. Set the initial values for these fields under **Variation defaults** in Preferences. Check **Include MIDI in ZIP** to add the corresponding MIDI file for each combination. Accepts up to 6 speeds, 8 transposes, and 15 total combinations. The audition speed and pitch settings are not changed.
 
 **Export per track** — **Download per track as ZIP** produces one WAV per audible track. Check **Combine original-sound tracks** to merge all original-sound channels into one file, avoiding a full re-render per hardware channel. File names include `_midi` or `_orig` to indicate the render source.
 
@@ -144,7 +144,7 @@ Changing a SoundFont, a track setting, or the filename invalidates previously ge
 
 ![Preferences](images/miditrack_ss.png)
 
-Open the preferences panel from the header's gear icon. Changes take effect immediately and are preserved across restarts. Fields are grouped into **Display settings** (appearance only) and **Behaviour settings** (how rendering runs).
+Open the preferences panel from the header's gear icon. Changes take effect immediately and are preserved across restarts. Fields are grouped into **Display settings** (appearance) and **Behaviour settings** (variation defaults and rendering).
 
 **Display settings**
 
@@ -162,6 +162,8 @@ Open the preferences panel from the header's gear icon. Changes take effect imme
 **Track list** — *Hide tracks with zero notes* removes empty tracks from the list.
 
 **Behaviour settings**
+
+**Variation defaults** sets the comma-separated speed multipliers and pitch shifts (semitones) shown when you open the app. Changing them updates the bulk-generation fields. The same limits of 6 speeds, 8 pitch shifts, and 15 combinations apply.
 
 **Concurrent render jobs** controls how many render jobs (FluidSynth track splits, chip/hardware channels, and bulk-variation combinations) run at once. **Auto** picks a conservative value from the machine's CPU count; choose a fixed number (1/2/4/8) to override it.
 

@@ -1594,6 +1594,26 @@ class TestWebApp(unittest.TestCase):
         # 一切フォールバックしない。
         self.assertEqual(self.stem_transform_calls, [])
 
+    def test_variations_use_saved_defaults_when_lists_are_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            os.environ, {"MIDITRACK_PREFERENCES_PATH": str(Path(temp_dir) / "preferences.json")}
+        ):
+            self.client.patch(
+                "/api/preferences",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"variationSpeeds": [1.5]}),
+            )
+            self.client.patch(
+                "/api/preferences",
+                headers={**AUTH_HEADERS, "Content-Type": "application/json"},
+                data=json.dumps({"variationTransposes": [-1, 1]}),
+            )
+            self._upload()
+            response = self.client.post("/api/variations", headers=AUTH_HEADERS)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(response.get_json()["items"]), 2)
+            self.assertEqual(len(self.render_calls), 2)
+
     def test_variations_default_includes_midi_in_zip(self) -> None:
         self._upload()
         self.client.post("/api/variations", headers=AUTH_HEADERS)
@@ -4256,6 +4276,8 @@ class TestWebAppPreferences(unittest.TestCase):
         self.assertEqual(payload["trackColorPalette"], "rainbow")
         self.assertTrue(payload["hideEmptyTracks"])
         self.assertEqual(payload["renderWorkers"], "auto")
+        self.assertEqual(payload["variationSpeeds"], [1.2, 1.0, 0.8])
+        self.assertEqual(payload["variationTransposes"], [-2, -1, 0, 1, 2])
         self.assertEqual(
             [preset["name"] for preset in payload["ensemblePresets"]],
             ["ゲームリード", "アコースティック", "ジャズカルテット"],

@@ -488,6 +488,17 @@
       <div class="settings-group">
         <h3 class="settings-group-title" data-i18n>動作設定</h3>
         <section class="settings-section">
+          <h4 class="output-section-title" data-i18n>バリエーション生成の既定値</h4>
+          <div class="convert-field">
+            <label for="default-variation-speeds" data-i18n>速度倍率（カンマ区切り）</label>
+            <input type="text" id="default-variation-speeds" value="1.2, 1, 0.8">
+          </div>
+          <div class="convert-field">
+            <label for="default-variation-transposes" data-i18n>ピッチ（半音、カンマ区切り）</label>
+            <input type="text" id="default-variation-transposes" value="-2, -1, 0, 1, 2">
+          </div>
+        </section>
+        <section class="settings-section">
           <div class="field-group">
             <label class="field-label" for="render-workers" data-i18n>レンダリング同時処理数</label>
             <select id="render-workers" class="program-select">

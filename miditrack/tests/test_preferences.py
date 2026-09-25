@@ -187,6 +187,36 @@ class TestPreferences(unittest.TestCase):
         self.path.write_text(json.dumps({"renderWorkers": 99}), encoding="utf-8")
         self.assertEqual(preferences.load_preferences()["renderWorkers"], "auto")
 
+    def test_variation_defaults_round_trip_and_preserve_other_settings(self) -> None:
+        preferences.save_preferences({"renderWorkers": 2})
+        preferences.save_preferences({"variationSpeeds": [1.5, 1.0]})
+        preferences.save_preferences({"variationTransposes": [-1, 0, 1]})
+        loaded = preferences.load_preferences()
+        self.assertEqual(loaded["variationSpeeds"], [1.5, 1.0])
+        self.assertEqual(loaded["variationTransposes"], [-1, 0, 1])
+        self.assertEqual(loaded["renderWorkers"], 2)
+
+    def test_variation_defaults_reject_invalid_values_and_combination_count(self) -> None:
+        for update in (
+            {"variationSpeeds": []},
+            {"variationSpeeds": [True]},
+            {"variationTransposes": [0.5]},
+            {"variationTransposes": list(range(6))},
+        ):
+            with self.subTest(update=update), self.assertRaises(WebValidationError):
+                preferences.save_preferences(update)
+        self.assertEqual(preferences.load_preferences()["variationSpeeds"], [1.2, 1.0, 0.8])
+
+    def test_load_invalid_variation_combination_falls_back(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(
+            json.dumps({"variationSpeeds": [1, 2, 3, 4], "variationTransposes": [0, 1, 2, 3]}),
+            encoding="utf-8",
+        )
+        loaded = preferences.load_preferences()
+        self.assertEqual(loaded["variationSpeeds"], [1.2, 1.0, 0.8])
+        self.assertEqual(loaded["variationTransposes"], [-2, -1, 0, 1, 2])
+
 
 class TestResolveRenderWorkers(unittest.TestCase):
     def test_auto_uses_half_cpu_count_capped(self) -> None:
