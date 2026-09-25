@@ -65,12 +65,14 @@ export function psgRegisterToFrequency(register: number, clockRate: number, flag
 
 export function ym2612FrequencyToHz(fnum: number, block: number, clockRate: number): number {
   if (fnum === 0) return 0;
-  // YM2612 frequency = (fnum * clock) / (144 * 2^(20 - block))
-  // Note: clock is usually ~7.6MHz. Formula assumes FM clock.
+  // YM2612 frequency = (fnum * clock) / (288 * 2^(20 - block)).
+  // The phase generator's F-Number base has an additional /2 compared with
+  // the OPN formula used by YM2203/YM2608. The operator MULTI handling applies
+  // the patch ratio separately in event-output.ts.
   // If block is undefined, treat as 0
   const blk = block || 0;
   const effectiveClockRate = clockRate & 0x3FFFFFFF;
-  return (fnum * effectiveClockRate) / (144 * Math.pow(2, 20 - blk));
+  return (fnum * effectiveClockRate) / (288 * Math.pow(2, 20 - blk));
 }
 
 export function ym2203FrequencyToHz(

@@ -1134,7 +1134,7 @@ test('YM2612 split F-Number writes do not emit intermediate phantom notes', () =
   assert.equal(converter.generatedNoteCount, 1);
 });
 
-test('YM2612 common x4 operator multipliers raise the extracted pitch by two octaves', () => {
+test('YM2612 common x4 operator multipliers apply one octave above the corrected base', () => {
   const { midi } = convertYM2612Commands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x04 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x30, data: 0x04 },
@@ -1148,11 +1148,11 @@ test('YM2612 common x4 operator multipliers raise the extracted pitch by two oct
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x00 },
   ], 0x40000000 + 7670453);
 
-  assert.notEqual(midi.indexOf(Buffer.from([0x94, 84])), -1);
-  assert.equal(midi.indexOf(Buffer.from([0x94, 60])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x94, 72])), -1);
+  assert.equal(midi.indexOf(Buffer.from([0x94, 84])), -1);
 });
 
-test('YM2612 explicit common MULTI=0 lowers the extracted pitch by one octave', () => {
+test('YM2612 explicit common MULTI=0 lowers the extracted pitch by two octaves from the legacy base formula', () => {
   const { midi } = convertYM2612Commands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x07 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x30, data: 0x00 },
@@ -1166,11 +1166,11 @@ test('YM2612 explicit common MULTI=0 lowers the extracted pitch by one octave', 
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x00 },
   ]);
 
-  assert.notEqual(midi.indexOf(Buffer.from([0x94, 48])), -1);
-  assert.equal(midi.indexOf(Buffer.from([0x94, 60])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x94, 36])), -1);
+  assert.equal(midi.indexOf(Buffer.from([0x94, 48])), -1);
 });
 
-test('YM2612 algorithm and key-on mask limit octave correction to audible operator paths', () => {
+test('YM2612 algorithm and key-on mask select the multiplier correction path', () => {
   const { midi } = convertYM2612Commands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x04 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x30, data: 0x01 },
@@ -1184,10 +1184,11 @@ test('YM2612 algorithm and key-on mask limit octave correction to audible operat
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x00 },
   ]);
 
-  assert.notEqual(midi.indexOf(Buffer.from([0x94, 84])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x94, 72])), -1);
+  assert.equal(midi.indexOf(Buffer.from([0x94, 84])), -1);
 });
 
-test('YM2612 maximum total level excludes an inaudible carrier from octave correction', () => {
+test('YM2612 total levels select the multiplier correction path', () => {
   const { midi } = convertYM2612Commands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x07 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x30, data: 0x01 },
@@ -1202,7 +1203,8 @@ test('YM2612 maximum total level excludes an inaudible carrier from octave corre
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x00 },
   ]);
 
-  assert.notEqual(midi.indexOf(Buffer.from([0x94, 84])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x94, 72])), -1);
+  assert.equal(midi.indexOf(Buffer.from([0x94, 84])), -1);
 });
 
 test('YM2612 multipliers without a shared power-of-two factor retain raw pitch', () => {
@@ -1219,11 +1221,11 @@ test('YM2612 multipliers without a shared power-of-two factor retain raw pitch',
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x00 },
   ]);
 
-  assert.notEqual(midi.indexOf(Buffer.from([0x94, 60])), -1);
-  assert.equal(midi.indexOf(Buffer.from([0x94, 72])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x94, 48])), -1);
+  assert.equal(midi.indexOf(Buffer.from([0x94, 60])), -1);
 });
 
-test('YM2612 multiplier changes apply on the next key-on without a transient note', () => {
+test('YM2612 multiplier changes apply their correction at the next key-on', () => {
   const { converter, midi } = convertYM2612Commands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xB0, data: 0x07 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x30, data: 0x01 },
@@ -1247,7 +1249,7 @@ test('YM2612 multiplier changes apply on the next key-on without a transient not
 
   assert.equal(converter.generatedNoteCount, 2);
   assert.notEqual(midi.indexOf(Buffer.from([0x94, 60])), -1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x94, 72])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x94, 48])), -1);
 });
 
 test('YM2612 channel 3 special mode gives each operator an independent note', () => {
@@ -1255,17 +1257,16 @@ test('YM2612 channel 3 special mode gives each operator an independent note', ()
     // $27 bits 7-6 = 01 selects Special mode for channel 3.
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x27, data: 0x40 },
     // Op4 keeps using the normal ch3 registers ($A2/$A6, channel index 2): block=3,
-    // fnum=0x184 -> note 60, per the existing "multipliers without a shared power-of-two
-    // factor retain raw pitch" regression above (same block/fnum values, pitch scale 1).
+    // fnum=0x184 -> note 48 with YM2612's phase-generator /2 frequency base.
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA6, data: 0x1A },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA2, data: 0x84 },
-    // Op1 ($A9/$AD): same fnum, block=2 -> one octave down (note 48).
+    // Op1 ($A9/$AD): same fnum, block=2 -> one octave down (note 36).
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAD, data: 0x12 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA9, data: 0x84 },
-    // Op2 ($AA/$AE): same fnum, block=4 -> one octave up (note 72).
+    // Op2 ($AA/$AE): same fnum, block=4 -> one octave up (note 60).
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAE, data: 0x22 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAA, data: 0x84 },
-    // Op3 ($A8/$AC): same fnum, block=5 -> two octaves up (note 84).
+    // Op3 ($A8/$AC): same fnum, block=5 -> two octaves up (note 72).
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAC, data: 0x2A },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA8, data: 0x84 },
     // Key on all four operators (slots) of channel index 2 (D0-D1=2, D2=0) at once.
@@ -1275,16 +1276,16 @@ test('YM2612 channel 3 special mode gives each operator an independent note', ()
   ]);
 
   assert.equal(converter.generatedNoteCount, 4);
-  assert.notEqual(midi.indexOf(Buffer.from([0x96, 60])), -1); // Op4 on ym2612_2 (MIDI ch 7)
-  assert.notEqual(midi.indexOf(Buffer.from([0x9A, 48])), -1); // Op1 on ym2612_ch3sp_1 (MIDI ch 11)
-  assert.notEqual(midi.indexOf(Buffer.from([0x9B, 72])), -1); // Op2 on ym2612_ch3sp_2 (MIDI ch 12)
-  assert.notEqual(midi.indexOf(Buffer.from([0x9C, 84])), -1); // Op3 on ym2612_ch3sp_3 (MIDI ch 13)
+  assert.notEqual(midi.indexOf(Buffer.from([0x96, 48])), -1); // Op4 on ym2612_2 (MIDI ch 7)
+  assert.notEqual(midi.indexOf(Buffer.from([0x9A, 36])), -1); // Op1 on ym2612_ch3sp_1 (MIDI ch 11)
+  assert.notEqual(midi.indexOf(Buffer.from([0x9B, 60])), -1); // Op2 on ym2612_ch3sp_2 (MIDI ch 12)
+  assert.notEqual(midi.indexOf(Buffer.from([0x9C, 72])), -1); // Op3 on ym2612_ch3sp_3 (MIDI ch 13)
 });
 
 test('YM2612 channel 3 special frequencies ignore port 1 writes', () => {
   const { converter, midi } = convertYM2612Commands([
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x27, data: 0x40 },
-    // Valid port-0 Op1 frequency: note 48.
+    // Valid port-0 Op1 frequency: note 36.
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xAD, data: 0x12 },
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0xA9, data: 0x84 },
     // The same register numbers on port 1 must not overwrite Ch3 Special state.
@@ -1296,8 +1297,8 @@ test('YM2612 channel 3 special frequencies ignore port 1 writes', () => {
   ]);
 
   assert.equal(converter.generatedNoteCount, 1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x9A, 48])), -1);
-  assert.equal(midi.indexOf(Buffer.from([0x9A, 84])), -1);
+  assert.notEqual(midi.indexOf(Buffer.from([0x9A, 36])), -1);
+  assert.equal(midi.indexOf(Buffer.from([0x9A, 72])), -1);
 });
 
 test('YM2612 channel 3 percussion mode collapses composite hits to GM drum families', () => {
@@ -1352,7 +1353,7 @@ test('YM2612 channel 3 percussion mode collapses composite hits to GM drum famil
   );
 
   assert.equal(converter.generatedNoteCount, 5);
-  for (const note of [36, 38, 42, 49, 47]) {
+  for (const note of [36, 36, 42, 50, 41]) {
     assert.notEqual(midi.indexOf(Buffer.from([0x99, note])), -1, `missing GM note ${note}`);
   }
   assert.equal(midi.indexOf(Buffer.from([0x9A])), -1); // no independent Op1 track
@@ -1406,7 +1407,7 @@ test('YM2612 channel 3 special mode is off by default, leaving normal ch3 key-on
   ]);
 
   assert.equal(converter.generatedNoteCount, 1);
-  assert.notEqual(midi.indexOf(Buffer.from([0x96, 60])), -1); // ym2612_2 (MIDI ch 7), unaffected
+  assert.notEqual(midi.indexOf(Buffer.from([0x96, 48])), -1); // ym2612_2 (MIDI ch 7), unaffected
 });
 
 test('YM2612 channel 6 avoids General MIDI percussion channel 10', () => {
@@ -1418,8 +1419,8 @@ test('YM2612 channel 6 avoids General MIDI percussion channel 10', () => {
     { type: 'chip_write', chip: 'YM2612', port: 0, register: 0x28, data: 0x06 },
   ]);
 
-  assert.notEqual(midi.indexOf(Buffer.from([0x9D, 60])), -1); // MIDI channel 14
-  assert.equal(midi.indexOf(Buffer.from([0x99, 60])), -1); // never GM percussion channel 10
+  assert.notEqual(midi.indexOf(Buffer.from([0x9D, 48])), -1); // MIDI channel 14
+  assert.equal(midi.indexOf(Buffer.from([0x99, 48])), -1); // never GM percussion channel 10
 });
 
 test('YM2612 carrier Total Level derives note-on velocity', () => {

@@ -85,10 +85,10 @@ SegaPCM/C140 sample-trigger extraction — see `NOTICE.md` for the origin and
   C219 raw/μ-law ranges expose decoded waveform statistics and a descriptive
   `timbre` label (`quiet`, `tonal`, or `noise-like`). This never changes MIDI
   events or claims a semantic instrument name
-- Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm paths share
-  an explicitly written, unambiguous power-of-two operator multiplier, including
-  `MULTI=0`'s effective 0.5x ratio; the correction is latched at key-on so patch
-  setup immediately before key-off cannot create transient notes
+- Corrects YM2203/YM2608/YM2612 notes by whole octaves when the active algorithm
+  paths share an explicitly written, unambiguous power-of-two operator multiplier,
+  including `MULTI=0`'s effective 0.5x ratio; corrections are latched at key-on so
+  patch setup immediately before key-off cannot create transient notes
 - Honors SN76489 and AY/YM2149 clock-divider/period flags, masks chip-type and
   dual-chip bits out of clock values, and keeps dual AY8910/HuC6280 instances
   in separate MIDI tracks
@@ -345,12 +345,13 @@ vgm2midi song.vgz --ch3-special-percussion
 ### Limitations
 
 - FM synthesis parameters are simplified — MIDI has no native FM voice
-  model, so YM2203/YM2608/YM2612/YM2151 channels are approximated as simple notes. For
-  YM2203, YM2608, and YM2612, algorithm, key-on mask, total level, and explicitly
-  written operator multipliers are used only for unambiguous shared power-of-two
-  octave correction (including 0.5x). Ratios without a shared power-of-two
-  factor, detune, envelopes, and perceived missing
-  fundamentals remain raw F-Number approximations
+  model, so YM2203/YM2608/YM2612/YM2151 channels are approximated as simple notes.
+  YM2612's F-Number base includes its phase-generator /2, then uses algorithm,
+  key-on mask, total level, and explicitly written operator multipliers for an
+  unambiguous shared power-of-two octave correction (including 0.5x). YM2203 and
+  YM2608 follow the same multiplier policy with their respective frequency bases.
+  Ratios without a shared power-of-two factor, detune, envelopes, and perceived
+  missing fundamentals remain raw F-Number approximations
 - YM2413 defers reverse `$20`-then-`$10` key-on ordering and models only an
   explicit power-of-two carrier-Multiple correction. Non-power-of-two ratios,
   envelopes, detune, and the original OPLL timbre remain outside MIDI's model.
